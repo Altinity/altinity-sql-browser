@@ -882,8 +882,11 @@ describe('drag a Library row onto a Dashboard (#428)', () => {
 
   it('drags as text only when no workspace aggregate is committed yet', () => {
     // Nothing to assign to, and no workspace id to scope the identity by.
+    // `libraryApp({ workspace: false })` already leaves `currentWorkspace`
+    // at `makeApp()`'s own default (`null`) — no `app.currentWorkspace =
+    // null` re-assignment needed (and, post-#590, none compiles: the setter
+    // no longer accepts `null` — see app.types.ts).
     const { app, list, row } = libraryApp({ workspace: false });
-    app.currentWorkspace = null;
     renderSavedHistory(app);
     const setData = dragStart(qs(savedList(app), '.saved-row'));
 

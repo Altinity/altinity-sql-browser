@@ -77,9 +77,12 @@ const treeApp = (over: Partial<DashboardTreeApp> = {}) => {
       // projection never changes, and every post-delete assertion would be
       // made against rows the write was supposed to have removed.
       app.currentWorkspace = candidate as never;
-      // …and REPAINTS from it (production: `applyCommittedWorkspace` →
-      // `invalidateDashboardTree` → the app-shell effect), so anything reading
-      // the painted rows after a commit sees what the write actually left.
+      // …and REPAINTS from it (production: `applyCommittedWorkspace`'s
+      // `app.currentWorkspace` write IS the notification now, #590 — the
+      // app-shell tree effect subscribes through `app.committedWorkspace`),
+      // so anything reading the painted rows after a commit sees what the
+      // write actually left. This fake `mutateWorkspace` has no real signal
+      // effect chain, so it repaints explicitly instead.
       renderDashboardTree(app);
       return { ok: true, workspace: candidate, dashboardRevision: null, data: input!.data };
     }) as App['mutateWorkspace'];

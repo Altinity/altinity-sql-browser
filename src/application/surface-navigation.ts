@@ -14,9 +14,13 @@
 //     mount/dispose and the Dashboard render-target projection);
 //   - `beginSurfaceTransition`/`disposeCurrentSurface` (what a transition tears
 //     down before this module's own route/surface write lands);
-//   - `renderWorkspaceNotFound`/`renderWorkspaceLoading` (the two placeholder
-//     DOM states — reached through `hooks.renderWorkspaceNotFound`/
-//     `hooks.renderWorkspaceLoading`);
+//   - the app-side surface-retirement COORDINATOR (#590 §1.9) — the only
+//     writer of the transitional `{ status, currentWorkspace: null }` pair
+//     and the shell-destroying "not found"/"loading" placeholder renders,
+//     reached only through `hooks.retireToWorkspaceLoading`/
+//     `hooks.retireToWorkspaceFailure`/`hooks.rerenderRetiredSurface` — this
+//     module never writes `currentWorkspace = null` or disposes a shell
+//     itself;
 //   - `app.renderDashboard`/`app.renderApp` (reached through `hooks.renderDashboard`/
 //     `hooks.renderApp`);
 //   - `resetCorruptWorkspace` (drives `app.workspace.delete` alongside
@@ -27,7 +31,11 @@
 // `app.sqlRoute`/`app.mainSurface`/`app.currentWorkspace`/
 // `app.workspaceRouteStatus`/`app.surfaceCommands` remain App DATA PROPERTIES
 // (read by dashboard.ts, dashboard-tree.ts, file-menu.ts, app-shell.ts,
-// shortcuts.ts, saved-history.ts) — this module never owns them directly. It
+// shortcuts.ts, saved-history.ts) — #590 made `mainSurface`/`currentWorkspace`
+// signal-backed ACCESSOR pairs on `App` (peeking getter, notifying setter);
+// this module still reads/writes them as plain properties through the
+// `SurfaceStatePort` thunk (the accessor is the compatibility surface, #590
+// §1.3) and never owns the signals themselves. It
 // receives the live `app` object, narrowed structurally to `SurfaceStatePort`,
 // through a `surface: () => SurfaceStatePort` thunk (per the plan's exact
 // wording: "Decision: `surface: () => app`") and mutates through that SAME
@@ -55,17 +63,16 @@
 //     directly, which reflects `loadWorkspaceOnBoot`'s own canonicalization by
 //     the time `consumeLegacyShared` runs).
 
+import { batch } from '@preact/signals-core';
 import type { StoredWorkspaceV5, SavedQueryV2 } from '../generated/json-schema.types.js';
 import { activeTab } from '../state.js';
 import type { AppState } from '../state.js';
 import type { WorkspaceRepository, WorkspaceLoadResult } from '../workspace/workspace-repository.js';
 import type { WorkspaceSession } from './workspace-session.js';
-import {
-  replaceDashboard, resolveCompatibilityDashboard, withCompatibilityDashboard,
-} from '../workspace/workspace-dashboards.js';
+import { resolveCompatibilityDashboard } from '../workspace/workspace-dashboards.js';
 import {
   QUERY_SURFACE, isSameDashboardSelection, mainSurfaceRoute, reconcileMainSurface,
-  carryCurrentMember, resolveOpenDashboard, selectedDashboardId, withCurrentMember,
+  carryCurrentMember, resolveOpenDashboard, withCurrentMember,
   dashboardHistorySnapshot, readDashboardHistorySnapshot, restoreDashboardSurface,
 } from './main-surface.js';
 import type {
@@ -85,8 +92,16 @@ import type { SqlRoute } from '../core/sql-route.js';
 export interface SurfaceStatePort {
   sqlRoute: SqlRoute;
   mainSurface: MainSurfaceState;
-  currentWorkspace: StoredWorkspaceV5 | null;
-  workspaceRouteStatus: WorkspaceRouteStatus;
+  // #590 decision 16: this module's own writes to both fields are gone (the
+  // transitional null-publication + status pair now live behind the
+  // app-side retirement coordinator's named ops, reached only through
+  // `deps.hooks`) — narrowed to `readonly` so a port-typed reference cannot
+  // reopen the write path the accessor's asymmetric setter closes (pass-8
+  // finding: TS checks accessor-vs-writable assignability via the GETTER's
+  // type, so an un-narrowed port would still compile `port.currentWorkspace
+  // = null` and invoke the real setter at runtime).
+  readonly currentWorkspace: StoredWorkspaceV5 | null;
+  readonly workspaceRouteStatus: WorkspaceRouteStatus;
   surfaceCommands: SurfaceCommandPort | null;
 }
 
@@ -105,14 +120,30 @@ export interface SurfaceNavigationDeps {
     applyCommittedWorkspace(ws: StoredWorkspaceV5): void;
     renderApp(): void;
     renderDashboard(): void;
-    renderWorkspaceLoading(): void;
-    renderWorkspaceNotFound(): void;
+    /** #590 §1.9 — replaces the old `renderWorkspaceLoading` hook: owns the
+     *  `{ status: 'loading', currentWorkspace: null }` publication INSIDE the
+     *  app-side retirement coordinator's batch, before its disposing render —
+     *  covers both `navigateSqlRoute`'s workspace-switch span and its
+     *  `handleSqlPopState` mirror. This module sequences nothing against
+     *  disposal: it calls this one hook and nothing else. */
+    retireToWorkspaceLoading(): void;
+    /** #590 §1.7/§1.9 pass-6 — the two boot-load failure branches (corrupt /
+     *  not-found / error) publish `{ status, currentWorkspace: null }`
+     *  status-first through the coordinator's fixed internal write order.
+     *  Zero shell effects are live at boot, so this hook's disposal arm is
+     *  empty — it still exists so no `currentWorkspace = null` write remains
+     *  outside the coordinator. */
+    retireToWorkspaceFailure(status: 'not-found' | 'error'): void;
+    /** #590 §1.9 — re-render the CURRENT retired status (loading / not-found /
+     *  error) without publishing anything, for `renderCurrentSurface`'s
+     *  re-entry arms: the status/null pair was already published by one of
+     *  the ops above, and this only repaints. */
+    rerenderRetiredSurface(): void;
     onCorruptWorkspace(id: string): void;
     retryPendingOAuthDocumentRecovery(): void;
     closeShortcutDialog(): void;
     resetShortcutChord(): void;
     isSignedIn(): boolean;
-    invalidateDashboardTree(): void;
     /** Extended beyond the plan's `toast(message: string): void` — the corrupt-
      *  workspace toast (`loadWorkspaceOnBoot`) needs the SAME recovery-action
      *  button (`flashToast`'s own `action` option) the pre-extraction inline
@@ -164,7 +195,6 @@ export interface SurfaceNavigation {
   currentRouteSearch(): string;
   renderCurrentSurface(): void;
   loadWorkspaceOnBoot(): Promise<StoredWorkspaceV5 | null>;
-  reloadDashboardRoute(): void;
   openDashboard(request: OpenDashboardRequest): void;
   showQuerySurface(): void;
   showDashboardSurface(mode: DashboardSurfaceMode): void;
@@ -236,8 +266,7 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       : await deps.session.resolveImplicitOrProvision();
     if (generation !== routeLoadGeneration) return null;
     if (result.status === 'corrupt') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = 'error';
+      deps.hooks.retireToWorkspaceFailure('error');
       deps.hooks.toast(
         'Saved workspace could not be read. Other local workspaces remain unaffected.',
         { action: { label: 'Reset workspace', onClick: () => { deps.hooks.onCorruptWorkspace(result.id); } } },
@@ -245,8 +274,7 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       return null;
     }
     if (result.status !== 'ok') {
-      app.currentWorkspace = null;
-      app.workspaceRouteStatus = explicitKey !== null ? 'not-found' : 'error';
+      deps.hooks.retireToWorkspaceFailure(explicitKey !== null ? 'not-found' : 'error');
       const normalized = normalizeSqlRouteSearch(routeSearch);
       app.sqlRoute = normalized.route;
       if (normalized.search !== routeSearch) {
@@ -260,29 +288,41 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
     // this stale load project or write the route.
     await deps.session.recordOpened(workspace);
     if (generation !== routeLoadGeneration) return null;
-    deps.hooks.applyCommittedWorkspace(workspace);
-    const canonicalRoute = routeForWorkspace(app.sqlRoute, workspace.key);
-    const canonicalSearch = buildSqlRouteSearch(canonicalRoute, routeSearch);
-    app.sqlRoute = canonicalRoute;
-    if (canonicalSearch !== routeSearch) {
-      routeSearch = canonicalSearch;
-      deps.history.replaceState(null, '', deps.basePath() + routeSearch + (deps.locationHash() || ''));
-    }
-    // #425: this is a URL-driven open (boot, a deep link, or a workspace
-    // switch), so the ROUTE decides the surface — including which Dashboard,
-    // resolved through the compatibility selector because the URL carries no id.
-    adoptRouteMainSurface();
+    // #590 §1.5/§1.9 decision 7: ONE outer `batch()` spanning the projection
+    // AND the route-adopted surface — long-lived-subscriber hardening (no
+    // shell effect is ever live across this exact span: the old shell was
+    // disposed by the `retireToWorkspaceLoading` funnel before this point,
+    // and the destination shell mounts AFTER this function returns, with its
+    // own registration-time initial runs). Nests fine with
+    // `applyCommittedWorkspace`'s own inner batch (batch is reentrant). The
+    // route canonicalization/`history.replaceState` calls are non-signal
+    // side effects, safe inside a batch.
+    batch(() => {
+      deps.hooks.applyCommittedWorkspace(workspace);
+      const canonicalRoute = routeForWorkspace(app.sqlRoute, workspace.key);
+      const canonicalSearch = buildSqlRouteSearch(canonicalRoute, routeSearch);
+      app.sqlRoute = canonicalRoute;
+      if (canonicalSearch !== routeSearch) {
+        routeSearch = canonicalSearch;
+        deps.history.replaceState(null, '', deps.basePath() + routeSearch + (deps.locationHash() || ''));
+      }
+      // #425: this is a URL-driven open (boot, a deep link, or a workspace
+      // switch), so the ROUTE decides the surface — including which
+      // Dashboard, resolved through the compatibility selector because the
+      // URL carries no id.
+      adoptRouteMainSurface();
+    });
     return workspace;
   };
 
   const renderCurrentSurface = (): void => {
     const app = deps.surface();
-    if (app.workspaceRouteStatus === 'loading') {
-      deps.hooks.renderWorkspaceLoading();
-      return;
-    }
+    // #590 §1.9: `status`/`currentWorkspace` were already published — by one
+    // of the retirement coordinator's named ops — before this dispatch ever
+    // runs on a retired path, so this re-entry never republishes; it only
+    // repaints the DOM the current status implies.
     if (app.workspaceRouteStatus !== 'ready' || !app.currentWorkspace) {
-      deps.hooks.renderWorkspaceNotFound();
+      deps.hooks.rerenderRetiredSurface();
       return;
     }
     if (app.sqlRoute.surface === 'dashboard') deps.hooks.renderDashboard();
@@ -297,9 +337,11 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
     const needsWorkspaceLoad = workspaceChanged || app.currentWorkspace === null;
     writeRoute(route, method);
     if (needsWorkspaceLoad) {
-      app.workspaceRouteStatus = 'loading';
-      app.currentWorkspace = null;
-      deps.hooks.renderWorkspaceLoading();
+      // #590 §1.8/§1.9: the transitional `{ 'loading', null }` publication and
+      // the disposing render are now ONE atomic op, owned by the app-side
+      // retirement coordinator — this module sequences nothing against
+      // disposal.
+      deps.hooks.retireToWorkspaceLoading();
       const expectedGeneration = routeLoadGeneration + 1;
       // #588 I-9 boundary ③: a newer navigation/popstate landing while this
       // await is pending must leave this stale wave's project/render unrun.
@@ -329,9 +371,9 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       deps.hooks.dispatchCurrentSurface();
       return;
     }
-    app.workspaceRouteStatus = 'loading';
-    app.currentWorkspace = null;
-    deps.hooks.renderWorkspaceLoading();
+    // #590 §1.8/§1.9 mirror of `navigateSqlRoute`'s workspace-switch span
+    // above (fix-one-boundary-check-the-mirror) — same atomic op.
+    deps.hooks.retireToWorkspaceLoading();
     const expectedGeneration = routeLoadGeneration + 1;
     // #588 I-9 boundary ④: same reasoning as boundary ③, for the popstate path.
     const workspace = await deps.hooks.dispatchLoadWorkspaceOnBoot();
@@ -384,11 +426,11 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
     app.mainSurface = surface;
     writeRoute(mainSurfaceRoute(surface, surfaceRouteKey()), method);
     if (surface.kind === 'dashboard') stampDashboardHistoryEntry();
-    // #426: the tree lives in the PERSISTENT shell, so a surface transition
-    // does not repaint it as a side effect of re-rendering the work area — it
-    // needs telling. Current Dashboard/member styling is derived from this
-    // state.
-    deps.hooks.invalidateDashboardTree();
+    // #426/#590: the tree lives in the PERSISTENT shell, so a surface
+    // transition does not repaint it as a side effect of re-rendering the
+    // work area — it observes this write itself (`app.mainSurface` is now
+    // signal-backed, through `app.treeNavigation`'s structural key), no
+    // explicit invalidation call needed.
     deps.hooks.dispatchCurrentSurface();
   };
 
@@ -423,7 +465,6 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       // tree repaints.
       if (resolution.surface.pendingFocus === null) {
         app.mainSurface = resolution.surface;
-        deps.hooks.invalidateDashboardTree();
         return;
       }
       // #426 — IN-PLACE member navigation. The tree makes repeated
@@ -434,7 +475,6 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       const outcome = focusDashboardMember(member);
       if (outcome === 'ok') {
         app.mainSurface = withCurrentMember(app.mainSurface, member);
-        deps.hooks.invalidateDashboardTree();
         return;
       }
       if (outcome === 'missing') {
@@ -485,11 +525,12 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       return;
     }
     const method = app.sqlRoute.surface === 'dashboard' ? 'replace' : 'push';
+    // #590: `kind` is provably `'query'` already in this branch (a
+    // dashboard-kind surface would have produced a non-null `selectedId`
+    // above), so this is a same-reference write to the frozen `QUERY_SURFACE`
+    // singleton — a provable no-op that notifies nothing.
     app.mainSurface = QUERY_SURFACE;
     writeRoute({ surface: 'dashboard', workspaceKey: surfaceRouteKey(), mode }, method);
-    // The one surface transition that does not go through `applyMainSurface`,
-    // so it has to tell the tree itself.
-    deps.hooks.invalidateDashboardTree();
     deps.hooks.dispatchCurrentSurface();
   };
 
@@ -600,25 +641,6 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
       };
   };
 
-  const reloadDashboardRoute = (): void => {
-    const app = deps.surface();
-    // #424: fold the projected Dashboard back into the COLLECTION, preserving
-    // every other entry. A null projection means "this workspace has no
-    // Dashboard", which can only happen when the collection is already empty
-    // — never a reason to drop a stored Dashboard, so the array is left alone.
-    // #425: fold it back into the SELECTED entry, addressed by id.
-    const selectedId = selectedDashboardId(app.mainSurface);
-    const foldProjection = (workspace: StoredWorkspaceV5): StoredWorkspaceV5 => {
-      if (!deps.state.dashboard) return workspace;
-      if (selectedId === null) return withCompatibilityDashboard(workspace, deps.state.dashboard);
-      return replaceDashboard(workspace, selectedId, deps.state.dashboard) ?? workspace;
-    };
-    app.currentWorkspace = app.currentWorkspace
-      ? { ...foldProjection(app.currentWorkspace), queries: deps.state.savedQueries }
-      : null;
-    deps.hooks.renderDashboard();
-  };
-
   return {
     navigateSqlRoute,
     handleSqlPopState,
@@ -628,7 +650,6 @@ export function createSurfaceNavigation(deps: SurfaceNavigationDeps): SurfaceNav
     currentRouteSearch,
     renderCurrentSurface,
     loadWorkspaceOnBoot,
-    reloadDashboardRoute,
     openDashboard,
     showQuerySurface,
     showDashboardSurface,

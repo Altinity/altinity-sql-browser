@@ -1537,15 +1537,20 @@ describe('Import example dashboard (#506)', () => {
 });
 
 describe('afterLibraryChange — dashboard route (#302)', () => {
-  it('on the dashboard route, a commit reloads the dashboard route and skips the Workbench repaint', async () => {
+  // #590 §1.6: the post-commit Dashboard-route refresh is render-only now —
+  // `reloadDashboardRoute` (a fold-and-reassign that would be a SECOND
+  // `committedWorkspace` settlement once the aggregate is signal-backed) is
+  // deleted; `afterLibraryChange`'s Dashboard branch calls the render-only
+  // `app.renderCurrentSurface()` instead.
+  it('on the dashboard route, a commit re-renders the dashboard route (render-only) and skips the Workbench repaint', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
     const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
     app.sqlRoute = { surface: 'dashboard', workspaceKey: app.state.workspaceKey, mode: 'edit' };
-    app.reloadDashboardRoute = vi.fn();
+    app.renderCurrentSurface = vi.fn();
     pickDashboardImport(app);
     await flush();
-    expect(app.reloadDashboardRoute).toHaveBeenCalled();
+    expect(app.renderCurrentSurface).toHaveBeenCalled();
     expect(app.state.dashboard).not.toBeNull(); // the commit itself still landed
     expect(app.updateSaveBtn).not.toHaveBeenCalled();
     expect(app.updateEditorModeUi).not.toHaveBeenCalled();

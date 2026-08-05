@@ -85,7 +85,14 @@ describe('side-panel registry — upper pane tab row (#587)', () => {
     const { app, tabsRow, render } = mount({ currentWorkspace: workspace([]) });
     render();
     expect(tabText(tabsRow)[1]).toBe('Dashboards· 0');
-    app.currentWorkspace = null;
+    // #590: the public setter no longer accepts `null` (a transitional null
+    // publication is a named departure operation owned by `app.ts`'s
+    // surface-retirement coordinator, not part of the general writable
+    // port) — this fixture bypasses that the same way `mount()` above
+    // bypasses the `TreeWorkspace`/`StoredWorkspaceV5` mismatch, via `as
+    // never`, to drive the fake through a transition no production
+    // `DashboardTreeApp`-typed caller performs directly.
+    app.currentWorkspace = null as never;
     render();
     expect(tabText(tabsRow)[1]).toBe('Dashboards· 0');
   });

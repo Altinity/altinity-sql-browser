@@ -377,3 +377,60 @@ reactive slice.
 No framework pull here: the change is about persistence atomicity and validation,
 not a render model. The imperative-islands + signals-for-invalidation decision
 stands.
+
+## Addendum — the committed workspace aggregate and main-surface navigation
+## become reactive at the source (#590)
+
+The previous addendum's "`state.savedQueries` is a **projection**... it never
+was [a signal]" held for the whole committed aggregate through #426/#427: the
+Dashboard tree, the Dashboards tab count, and the Library/History repaint all
+depended on `app.currentWorkspace`/`app.mainSurface` — two plain, non-reactive
+fields — through an explicit invalidation counter (`state.dashboardTreeRevision`)
+that every write site had to remember to bump. Two review passes (#427, and the
+bug class this issue was opened to close) each found one more write site that
+forgot to. #590 retires the counter and makes both fields signal-backed accessor
+pairs (a peeking getter — untracked, live, identical read semantics to the old
+plain field — and a notifying setter): the mutation is now structurally its own
+notification, so a future write path cannot forget it the way the counter's own
+call sites twice did.
+
+This is a narrower reactivity slice than the `savedQueries`/Dashboard-CRUD
+model above, not a reversal of it: `state.savedQueries`/`state.dashboard`
+remain plain, non-reactive projections (no consumer of the committed
+aggregate reads them for its invalidation signal — the three affected
+consumers all read `currentWorkspace.dashboards` and `mainSurface` directly),
+and `app.mutateWorkspace`'s validate-before-publish, serialize-per-app commit
+discipline is untouched. Two design choices worth recording against this
+ADR's precedent of preferring explicit, narrow signals over tracked-everything
+reactivity:
+
+- **Peeking getters, not tracked getters.** A tracked read would silently
+  subscribe every effect whose call stack happens to touch `app.currentWorkspace`
+  (there are ~75 read sites), changing repaint cardinality in ways no one
+  audited. Subscription is explicit instead: the tree/tab-count/Library
+  effects read `app.committedWorkspace.value`/`app.treeNavigation.value` (two
+  new `ReadonlySignal` members) at their top, the same explicit-dependency
+  style `app-shell.ts`'s other effects already use.
+- **A computed structural key, not the whole surface object, for the tree's
+  main-surface dependency.** `app.treeNavigation` is a `computed` string over
+  exactly the fields the tree renders from (`kind`/`dashboardId`/
+  `currentMember`) — the one-shot delivery fields (`pendingFocus`/
+  `pendingScrollTop`) are excluded by construction, so consuming them (every
+  Dashboard/tile focus-delivery consumption) notifies nothing. This is the
+  same "narrow the signal to what a real consumer needs" instinct as the
+  `dashboardsCount`/`databasesCount` split in `sidebar-upper.ts` — a second,
+  reactive-but-unscoped `MainSurfaceState` signal was deliberately rejected as
+  a zero-consumer primitive (hard rule 5) until a second subscriber needs the
+  whole surface reactively.
+
+A transitional `null` publication (a workspace load failure, sign-out, an
+external delete racing a mounted shell) is not part of the general writable
+accessor at all — `app.currentWorkspace`'s setter is asymmetric (accepts
+`StoredWorkspaceV5`, never `null`) and a closure-private surface-retirement
+coordinator inside `createApp` is the sole owner of the null publication,
+batched atomically with disposing whichever shell is live so a surface never
+repaints against a state it is about to be torn down under. This is the one
+place #590 reaches past "just add signals" into lifecycle ordering — five
+independent review passes each found a different call site where a live
+write raced shell disposal, which is why the fix is one coordinator with
+exclusive mutation authority rather than five independent patches.

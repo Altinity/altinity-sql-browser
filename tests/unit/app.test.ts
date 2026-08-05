@@ -1,8 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
+import { effect } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
+// #590 — namespace imports so `vi.spyOn` can count REAL shell-effect
+// repaints through the live ESM binding (the SAME function reference
+// `app-shell.ts` calls internally — verified against this exact codebase's
+// Vite/Vitest transform, which resolves named imports through the module
+// namespace object rather than caching a value at import time).
+import * as dashboardTreeModule from '../../src/ui/dashboard-tree.js';
+import * as sidePanelRegistryModule from '../../src/ui/side-panel-registry.js';
+// #590 Issue Test #4 / invariant (b): `commitUi`'s call to `renderDashboardTree`
+// (dashboard-tree.ts) is a SAME-module reference, invisible to a spy on the
+// `dashboardTreeModule` namespace above — `deriveDashboardTree`
+// (application/dashboard-tree-model.ts) is the cross-module call
+// `renderDashboardTree` makes exactly once per invocation regardless of
+// caller, so spying on it counts both the imperative and reactive paths.
+import * as dashboardTreeModelModule from '../../src/application/dashboard-tree-model.js';
+import { withPendingFocus, withoutPendingFocus } from '../../src/application/main-surface.js';
 import { bootstrap } from '../../src/main.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { createSpecEditor } from '../../src/editor/spec-editor.js';
@@ -10,7 +26,7 @@ import type { SpecEditorApp } from '../../src/editor/spec-editor.js';
 import type { EditorPort } from '../../src/editor/editor-port.types.js';
 import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
-import { libraryControls } from '../../src/ui/file-menu.js';
+import { libraryControls, buildWorkspaceTitle, renderLibraryTitle } from '../../src/ui/file-menu.js';
 import { handleKeydown } from '../../src/ui/shortcuts.js';
 import { createClickArbiter } from '../../src/core/tree-click-arbiter.js';
 import type { ClickArbiter } from '../../src/core/tree-click-arbiter.js';
@@ -6819,15 +6835,18 @@ describe('unified /sql routing', () => {
       const { app } = readyApp(['a'], '?ws=ops&surface=dashboard');
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't1' } });
       const renders = (app.renderCurrentSurface as Mock).mock.calls.length;
-      const revision = app.state.dashboardTreeRevision.value;
-      // Opening the Dashboard ROW deselects the member — nothing re-renders, but
-      // the tree has to repaint or it keeps the old row marked current.
+      // #590: the counter is gone — `app.treeNavigation` is the tree's ONE
+      // reactive dependency now (a computed structural key over `kind`/
+      // `dashboardId`/`currentMember`). Opening the Dashboard ROW deselects
+      // the member — nothing re-renders, but the key must change (the tree
+      // has to repaint) or it keeps the old row marked current.
+      const key = app.treeNavigation.value;
       app.openDashboard({ dashboardId: 'a', mode: 'edit' });
       expect(app.renderCurrentSurface).toHaveBeenCalledTimes(renders);
       expect(app.mainSurface).toEqual({
         kind: 'dashboard', dashboardId: 'a', mode: 'edit', currentMember: null, pendingFocus: null, pendingScrollTop: null,
       });
-      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+      expect(app.treeNavigation.value).not.toBe(key);
     });
 
     // #429/#472 — the Dashboard tree row opens on a PLAIN click now, so a
@@ -6871,7 +6890,7 @@ describe('unified /sql routing', () => {
       const route = app.sqlRoute;
       const { focusMember, port } = fakePort('ok');
       app.surfaceCommands = port;
-      const revision = app.state.dashboardTreeRevision.value;
+      const key = app.treeNavigation.value;
 
       app.openDashboard({ dashboardId: 'a', mode: 'edit', focus: { kind: 'tile', id: 't7' } });
 
@@ -6884,7 +6903,10 @@ describe('unified /sql routing', () => {
         kind: 'dashboard', dashboardId: 'a', mode: 'edit',
         currentMember: { kind: 'tile', id: 't7' }, pendingFocus: null, pendingScrollTop: null,
       });
-      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+      // #590: `app.treeNavigation`'s structural key changed (currentMember
+      // is part of the tuple) — the tree's reactive dependency, replacing
+      // the deleted counter.
+      expect(app.treeNavigation.value).not.toBe(key);
     });
 
     it('a `pending` in-place report falls back to the normal render transition', () => {
@@ -7008,12 +7030,21 @@ describe('unified /sql routing', () => {
       }
     });
 
-    it('invalidates the tree even on the empty-collection Dashboard entry point', () => {
+    // #590 §1 audit table (nav:492), decision 12: `app.mainSurface` is
+    // already query-kind on an empty collection (no compatibility Dashboard
+    // to select), so this branch's `app.mainSurface = QUERY_SURFACE` write
+    // is a same-reference write to the frozen singleton — a PROVABLE no-op
+    // under signals (tree inputs unchanged ⇒ output byte-identical). The
+    // old counter bumped unconditionally here; that was exactly the
+    // over-notification this issue's mechanism retires.
+    it('does not fire the tree on the empty-collection Dashboard entry point — a same-reference no-op', () => {
       const { app } = readyApp([]);
-      const revision = app.state.dashboardTreeRevision.value;
+      const surface = app.mainSurface;
+      const key = app.treeNavigation.value;
       app.showDashboardSurface('edit');
       // The one surface transition that bypasses `applyMainSurface`.
-      expect(app.state.dashboardTreeRevision.value).toBeGreaterThan(revision);
+      expect(app.mainSurface).toBe(surface);
+      expect(app.treeNavigation.value).toBe(key);
     });
 
     it('an absent or non-Dashboard port reports `pending`, never `ok`', () => {
@@ -7555,99 +7586,14 @@ describe('unified /sql routing', () => {
       .toBeLessThan(vi.mocked(app.renderCurrentSurface).mock.invocationCallOrder[0]);
   });
 
-  it('reloadDashboardRoute also handles a missing current projection', () => {
-    const app = createApp(env());
-    app.currentWorkspace = null;
-    app.renderDashboard = vi.fn();
-    app.reloadDashboardRoute();
-    expect(app.currentWorkspace).toBeNull();
-    expect(app.renderDashboard).toHaveBeenCalledOnce();
-  });
-
-  // #425: an in-tab import folds the projected document back into the SELECTED
-  // entry by id. Writing the compatibility slot here would overwrite the
-  // collection's FIRST Dashboard while a different one is on screen.
-  it('reloadDashboardRoute folds the projection into the selected Dashboard by id', () => {
-    const app = createApp(env());
-    const dash = (id: string, revision: number): DashboardDocumentV2 => ({
-      documentVersion: 2, id, title: id, revision,
-      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      tiles: [],
-    });
-    const workspace: StoredWorkspaceV5 = {
-      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [],
-      dashboards: [dash('first', 1), dash('second', 1)],
-    };
-    // Establish the workspace first (this is what sets `state.workspaceId`), then
-    // select, then re-project — a SAME-workspace projection, which is the only
-    // kind that keeps a selection.
-    app.applyCommittedWorkspace(workspace);
-    app.mainSurface = {
-      kind: 'dashboard', dashboardId: 'second', mode: 'edit',
-      currentMember: null, pendingFocus: null, pendingScrollTop: null,
-    };
-    // Project through the real path: `state.dashboard` is whatever
-    // `applyCommittedWorkspace` put there — the SELECTED document — never a
-    // hand-made one production could not produce.
-    app.applyCommittedWorkspace(workspace);
-    expect(app.state.dashboard!.id).toBe('second');
-    // The Dashboard surface edits that projection in place before folding it back.
-    app.state.dashboard = { ...app.state.dashboard!, revision: 7 };
-    app.renderDashboard = vi.fn();
-    app.reloadDashboardRoute();
-    expect(app.currentWorkspace!.dashboards.map((d) => [d.id, d.revision]))
-      .toEqual([['first', 1], ['second', 7]]);
-  });
-
-  it('reloadDashboardRoute writes the compatibility slot when nothing is selected', () => {
-    const app = createApp(env());
-    const dash = (id: string, revision: number): DashboardDocumentV2 => ({
-      documentVersion: 2, id, title: id, revision,
-      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      tiles: [],
-    });
-    const workspace: StoredWorkspaceV5 = {
-      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [],
-      dashboards: [dash('first', 1), dash('second', 1)],
-    };
-    app.currentWorkspace = workspace;
-    app.renderDashboard = vi.fn();
-    // The legacy entry point: no selection, so the projection lands on slot 0 and
-    // every later entry is preserved.
-    app.state.dashboard = dash('imported', 4);
-    app.reloadDashboardRoute();
-    expect(app.currentWorkspace!.dashboards.map((d) => d.id)).toEqual(['imported', 'second']);
-
-    // No projection at all → the collection is untouched (never a reason to drop
-    // a stored Dashboard).
-    app.currentWorkspace = workspace;
-    app.state.dashboard = null;
-    app.reloadDashboardRoute();
-    expect(app.currentWorkspace!.dashboards.map((d) => d.id)).toEqual(['first', 'second']);
-  });
-
-  it('reloadDashboardRoute leaves the collection alone when the selection is gone', () => {
-    const app = createApp(env());
-    const only: DashboardDocumentV2 = {
-      documentVersion: 2, id: 'first', title: 'first', revision: 1,
-      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
-      tiles: [],
-    };
-    app.currentWorkspace = {
-      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [only],
-    };
-    // A selection pinned before the entry was deleted elsewhere: the fold must
-    // not guess into another slot. (`state.dashboard` still holds the document
-    // that surface was editing.)
-    app.mainSurface = {
-      kind: 'dashboard', dashboardId: 'deleted', mode: 'edit',
-      currentMember: null, pendingFocus: null, pendingScrollTop: null,
-    };
-    app.state.dashboard = { ...only, id: 'deleted', revision: 9 };
-    app.renderDashboard = vi.fn();
-    app.reloadDashboardRoute();
-    expect(app.currentWorkspace!.dashboards).toEqual([only]);
-  });
+  // #590 §1.6: `reloadDashboardRoute` (the post-commit Dashboard-route fold-
+  // and-reassign) is deleted outright — a signal-backed `currentWorkspace`
+  // would make its unconditional reassignment a SECOND settlement per
+  // Dashboard-route commit, even when the folded content is value-identical
+  // (reference-based signal equality). `afterLibraryChange` now calls the
+  // render-only `app.renderCurrentSurface()` instead (file-menu.test.ts's
+  // Dashboard branch, and this file's real File-menu Dashboard-route
+  // settlement test below, cover its replacement).
 
   it('renderCurrentSurface dispatches a ready dashboard route to its renderer', () => {
     const app = createApp(env());
@@ -7673,11 +7619,17 @@ describe('unified /sql routing', () => {
     expect(app.renderApp).toHaveBeenCalledOnce();
   });
 
-  it('renders the dedicated not-found surface for an explicit missing key', () => {
-    const app = createApp(env());
-    app.sqlRoute = { surface: 'workspace', workspaceKey: 'gone' };
-    app.currentWorkspace = null;
-    app.workspaceRouteStatus = 'not-found';
+  it('renders the dedicated not-found surface for an explicit missing key', async () => {
+    // #590: a transitional `currentWorkspace = null` is a named departure
+    // operation now (the coordinator's `retireToWorkspaceFailure`), not a
+    // direct public write — drive the REAL not-found path instead of
+    // hand-setting the pair.
+    const app = createApp(env({ location: {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=gone', hash: '', host: 'ch.example',
+    } as Location }));
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'empty' as const }));
+    await app.loadWorkspaceOnBoot();
+    expect(app.workspaceRouteStatus).toBe('not-found');
     app.renderCurrentSurface();
     expect(app.root!.querySelector('.workspace-not-found')).not.toBeNull();
     expect(app.root!.textContent).toContain('No local workspace exists for “gone”');
@@ -7688,10 +7640,13 @@ describe('unified /sql routing', () => {
     await app.loadWorkspaceOnBoot();
     app.renderApp();
     const remove = vi.spyOn(document, 'removeEventListener');
-    app.sqlRoute = { surface: 'workspace', workspaceKey: 'gone' };
-    app.currentWorkspace = null;
-    app.workspaceRouteStatus = 'not-found';
-    app.renderCurrentSurface();
+    // #590: drive the REAL navigation-to-a-missing-key path (the coordinator's
+    // `retireToWorkspaceLoading` disposes the mounted shell first, then the
+    // not-found result's `rerenderRetiredSurface` dispatch disposes again —
+    // this is the real production shape the old hand-set pair stood in for).
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'empty' as const }));
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: 'gone' }, 'push');
+    expect(app.workspaceRouteStatus).toBe('not-found');
     expect(remove.mock.calls.some(([type]) => type === 'selectionchange')).toBe(true);
     remove.mockRestore();
   });
@@ -7983,7 +7938,10 @@ describe('unified /sql routing', () => {
     const workspace: StoredWorkspaceV5 = {
       storageVersion: 5, id: 'a', key: 'a', name: 'A', queries: [], dashboards: [],
     };
-    app.currentWorkspace = null;
+    // `app.currentWorkspace` is already `null` at this point — a fresh
+    // `createApp()` seeds the backing signal to `null` — so no explicit
+    // reset is needed (and, post-#590, none would compile: the setter no
+    // longer accepts `null`).
     app.workspace.loadByKey = vi.fn(async () => ({ status: 'ok' as const, workspace }));
     app.workspace.markOpened = vi.fn(async () => ({ ok: true as const, workspace }));
     app.retryPendingOAuthDocumentRecovery = vi.fn(() => ({ kind: 'absent' } as const));
@@ -8113,8 +8071,12 @@ describe('unified /sql routing', () => {
 
     // Commit a Dashboard with no tiles: `savedQueries` is untouched, but the
     // formerly owned copy now has no owner.
+    // #590: the direct assignment itself is the notification now — no
+    // manual bump. This is deliberately a NOVEL, funnel-bypassing write (no
+    // `applyCommittedWorkspace` call): under the counter mechanism this
+    // exact write needed the deleted `dashboardTreeRevision.value += 1;`
+    // line to repaint at all, which is the #426/#427 bug class #590 retires.
     app.currentWorkspace = { ...tiled, dashboards: [{ ...tiled.dashboards[0], tiles: [], layout: { type: 'flow', version: 1, preset: 'report', items: {} } }] };
-    app.state.dashboardTreeRevision.value += 1;
 
     expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent).sort())
       .toEqual(['Panel copy', 'Standalone']);
@@ -8717,5 +8679,537 @@ describe('createApp — Dashboard variable tabs (#457)', () => {
 
       expect(app.dom.saveBtn!.disabled).toBe(false);
     });
+  });
+});
+
+// #590 — the committed workspace aggregate (`app.currentWorkspace`) and
+// main-surface navigation (`app.mainSurface`) are now signal-backed, and the
+// #426 counter (`state.dashboardTreeRevision`) is retired. This block covers
+// the issue's own Tests #1/#3/#5 and the plan's invariant map (§9) that
+// aren't already covered by the re-fixtured assertions elsewhere in this
+// file (member-clear, in-place-nav, empty-collection entry, #427 ownership).
+//
+// Repaint counting uses `vi.spyOn` on the REAL exported render functions
+// `renderDashboardTree`/`renderSidePanelTabs` through their live ESM
+// bindings — the SAME function references `app-shell.ts` calls internally
+// (verified empirically against this repo's Vite/Vitest transform), which is
+// what lets these tests count actual shell-effect repaints without exposing
+// a test-only counter on `app-shell.ts` itself. `renderSidePanelTabs` has
+// exactly two production call sites (the upper tab-count effect and the
+// lower Library/History effect) — calls are split by comparing the first
+// argument against `app.dom.upperRoleTabs`.
+describe('#590 — reactive committed-workspace / main-surface signals', () => {
+  const dashDoc = (id: string, tiles: Array<{ id: string; queryId: string }> = []): DashboardDocumentV2 => ({
+    documentVersion: 2, id, title: id, revision: 1,
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    tiles,
+  });
+
+  // `mountAppShell`'s own "catalog bootstrap-load tail" (its header comment)
+  // fires `catalog.loadSchema()` on every real mount — a fire-and-forget
+  // async load that updates `state.schema`/`state.schemaError`, which the
+  // upper-tab-count effect also depends on. Settling it before a test
+  // captures its "before" repaint counts keeps that unrelated background
+  // settlement out of the measurement window (verified empirically: without
+  // this, `state.schema.value` was observed changing from `null` to `[]`
+  // mid-test, producing a spurious extra upper-tab repaint).
+  async function settleSchemaLoad(app: App): Promise<void> {
+    await vi.waitFor(() => {
+      expect(app.state.schema.value !== null || app.state.schemaError.value !== null).toBe(true);
+    });
+  }
+
+  async function mountedQueryApp(ws: StoredWorkspaceV5): Promise<App> {
+    const app = createApp(env());
+    await seedActiveWorkspace(app, ws);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: ws.key };
+    app.renderApp();
+    await settleSchemaLoad(app);
+    return app;
+  }
+
+  function repaintCounts(app: App, tabsSpy: Mock, treeSpy: Mock): { tree: number; upper: number; lower: number } {
+    const upper = (tabsSpy.mock.calls as unknown[][])
+      .filter((call) => call[0] === app.dom.upperRoleTabs).length;
+    return { tree: (treeSpy.mock.calls as unknown[][]).length, upper, lower: (tabsSpy.mock.calls as unknown[][]).length - upper };
+  }
+
+  // ---------------------------------------------------------------------
+  // Issue Tests #1 — a new mutation path re-runs effects with no manual call
+  // ---------------------------------------------------------------------
+
+  it('Issue Test #1(a): a novel direct app.currentWorkspace assignment — no funnel, no invalidation call — re-runs all three shell effects', async () => {
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [dashDoc('d1')],
+    };
+    const app = await mountedQueryApp(ws);
+    const treeSpy = vi.spyOn(dashboardTreeModule, 'renderDashboardTree');
+    const tabsSpy = vi.spyOn(sidePanelRegistryModule, 'renderSidePanelTabs');
+    const before = repaintCounts(app, tabsSpy, treeSpy);
+
+    // A shape no existing production caller produces (no
+    // `applyCommittedWorkspace`, no manual invalidation — the API doesn't
+    // exist any more): the assignment ITSELF is the notification.
+    app.currentWorkspace = { ...ws, dashboards: [...ws.dashboards, dashDoc('d2')] };
+
+    const after = repaintCounts(app, tabsSpy, treeSpy);
+    expect(after.tree).toBeGreaterThan(before.tree);
+    expect(after.upper).toBeGreaterThan(before.upper);
+    expect(after.lower).toBeGreaterThan(before.lower);
+  });
+
+  it('Issue Test #1(b): a fresh app.mutateWorkspace commit (a shape no existing caller produces) repaints all three effects once it settles', async () => {
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [dashDoc('d1')],
+    };
+    const app = await mountedQueryApp(ws);
+    const treeSpy = vi.spyOn(dashboardTreeModule, 'renderDashboardTree');
+    const tabsSpy = vi.spyOn(sidePanelRegistryModule, 'renderSidePanelTabs');
+    const before = repaintCounts(app, tabsSpy, treeSpy);
+
+    const result = await app.mutateWorkspace(async (latest) => ({
+      candidate: { ...(latest ?? ws), dashboards: [...(latest ?? ws).dashboards, dashDoc('d2')] },
+    }));
+
+    expect(result.ok).toBe(true);
+    const after = repaintCounts(app, tabsSpy, treeSpy);
+    expect(after.tree).toBeGreaterThan(before.tree);
+    expect(after.upper).toBeGreaterThan(before.upper);
+    expect(after.lower).toBeGreaterThan(before.lower);
+  });
+
+  // ---------------------------------------------------------------------
+  // Invariant (d) — one commit settles the three live shell effects exactly
+  // once; the mixed-snapshot ordering claim (§1.5).
+  // ---------------------------------------------------------------------
+
+  it('invariant (d): one mutateWorkspace commit settles each of the three shell effects exactly once', async () => {
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [dashDoc('d1')],
+    };
+    const app = await mountedQueryApp(ws);
+    const treeSpy = vi.spyOn(dashboardTreeModule, 'renderDashboardTree');
+    const tabsSpy = vi.spyOn(sidePanelRegistryModule, 'renderSidePanelTabs');
+    const before = repaintCounts(app, tabsSpy, treeSpy);
+
+    await app.mutateWorkspace(async (latest) => ({ candidate: { ...(latest ?? ws), name: 'Renamed' } }));
+
+    const after = repaintCounts(app, tabsSpy, treeSpy);
+    expect(after.tree - before.tree).toBe(1);
+    expect(after.upper - before.upper).toBe(1);
+    expect(after.lower - before.lower).toBe(1);
+  });
+
+  it('batch ordering: a commit changing BOTH savedQueries and dashboards[] never leaves the Library repaint on a mixed snapshot', async () => {
+    // Repo lesson: an execution-COUNT assertion alone cannot catch this — the
+    // sabotage (narrowing `applyCommittedWorkspace`'s batch to just the
+    // `.value` write) still settles the lower-pane effect exactly ONCE; the
+    // bug is that its ONE run sees the NEW `dashboards[]` next to the OLD
+    // `state.savedQueries` (a plain field the narrowed batch would have
+    // excluded), and — because plain fields notify nothing on their own —
+    // nothing ever re-runs it correctly afterward. Content, not count.
+    const owned = savedQuery({ id: 'owned', name: 'Owned', sql: 'SELECT 1' });
+    const untouchedLib = savedQuery({ id: 'lib', name: 'Standalone', sql: 'SELECT 2' });
+    const newLib = savedQuery({ id: 'new-lib', name: 'New standalone', sql: 'SELECT 3' });
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [owned, untouchedLib],
+      dashboards: [dashDoc('d1', [{ id: 't1', queryId: 'owned' }])],
+    };
+    const app = await mountedQueryApp(ws);
+    expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent)).toEqual(['Standalone']);
+
+    // One commit: `owned` loses its only tile (dashboards[] change) AND a
+    // brand-new standalone query is added (savedQueries change) — both must
+    // land in the SAME first repaint.
+    await app.mutateWorkspace(async (latest) => ({
+      candidate: {
+        ...(latest ?? ws),
+        queries: [...(latest ?? ws).queries, newLib],
+        dashboards: [{ ...dashDoc('d1'), tiles: [] }],
+      },
+    }));
+
+    expect(qsa(app.root, '.saved-row .name').map((n) => n.textContent).sort())
+      .toEqual(['New standalone', 'Owned', 'Standalone']);
+  });
+
+  // ---------------------------------------------------------------------
+  // Invariant (g)/(h) — the tree's structural key (§1.4a)
+  // ---------------------------------------------------------------------
+
+  it('invariant (g): delivery-only writes (pendingFocus/pendingScrollTop) notify nothing', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd1', mode: 'edit',
+      currentMember: { kind: 'tile', id: 't1' }, pendingFocus: null, pendingScrollTop: null,
+    };
+    const treeSpy = vi.spyOn(dashboardTreeModule, 'renderDashboardTree');
+    const before = treeSpy.mock.calls.length;
+    const key = app.treeNavigation.value;
+
+    app.mainSurface = withPendingFocus(app.mainSurface, { kind: 'tile', id: 't1' });
+    app.mainSurface = withoutPendingFocus(app.mainSurface);
+
+    expect(app.treeNavigation.value).toBe(key);
+    expect(treeSpy.mock.calls.length).toBe(before);
+    // The surface value itself IS updated for the next render (peek sees it).
+    expect(app.mainSurface).toMatchObject({ currentMember: { kind: 'tile', id: 't1' } });
+  });
+
+  it('invariant (h): adversarial ids (colon/quote/backslash) never collide in app.treeNavigation, and each navigation settles the tree', () => {
+    const app = createApp(env());
+    app.renderApp();
+    const treeSpy = vi.spyOn(dashboardTreeModule, 'renderDashboardTree');
+    const before = treeSpy.mock.calls.length;
+
+    // A naive bare `':'`-delimited join of [dashboardId, memberId] would
+    // conflate these two DISTINCT tuples: 'a:b' + ':' + 'c' === 'a' + ':' +
+    // 'b:c'. Both ids are schema-legal (dashboard/tile ids allow `:`/`"`/`\`
+    // up to 256 chars).
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'a:b', mode: 'edit',
+      currentMember: { kind: 'tile', id: 'c' }, pendingFocus: null, pendingScrollTop: null,
+    };
+    const keyA = app.treeNavigation.value;
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'a', mode: 'edit',
+      currentMember: { kind: 'tile', id: 'b:c' }, pendingFocus: null, pendingScrollTop: null,
+    };
+    const keyB = app.treeNavigation.value;
+
+    expect(keyA).not.toBe(keyB);
+    expect(treeSpy.mock.calls.length).toBe(before + 2);
+  });
+
+  // ---------------------------------------------------------------------
+  // Issue Test #4 / invariant (b) — `dashboardTreeUi` stays deliberately
+  // NON-reactive (a plain `Map`, never a `Signal<Map<...>>`). `commitUi`
+  // (dashboard-tree.ts) and the reactive tree EFFECT converge on the exact
+  // same `renderDashboardTree` function, so a DOM-content assertion alone
+  // cannot distinguish "one correct imperative repaint" from "one
+  // imperative repaint plus one erroneous reactive re-run" — both leave the
+  // same final DOM. A counting discipline is the only thing that catches a
+  // regression that made `dashboardTreeUi` reactive (e.g. wrapping it in a
+  // `Signal<Map<...>>` and having the tree effect read `.value`): the UI op
+  // below would then produce TWO tree repaints instead of one, and the
+  // direct Map mutation would produce a spurious one instead of zero.
+  // ---------------------------------------------------------------------
+
+  it('Issue Test #4 / invariant (b): a UI-driven expansion repaints the tree exactly once and nothing else; a direct dashboardTreeUi Map mutation repaints nothing', async () => {
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [dashDoc('d1')],
+    };
+    const app = await mountedQueryApp(ws);
+    // Make the Dashboards role the visible upper pane, matching how a real
+    // user reaches the chevron (not load-bearing for the click itself under
+    // happy-dom, but keeps the fixture honest about what it's driving).
+    app.state.upperRole.value = 'dashboards';
+    const chev = app.dom.dashboardTreeList!.querySelector<HTMLButtonElement>('.dash-tree-chev');
+    expect(chev).not.toBeNull();
+
+    // Counting `renderDashboardTree` itself would miss `commitUi`'s call:
+    // `commitUi` and `renderDashboardTree` live in the SAME module
+    // (dashboard-tree.ts), so that call is a local binding reference, not a
+    // call through the module's live ESM export binding — `vi.spyOn`'s
+    // namespace patch (the technique this file's other repaint-counting
+    // tests rely on for cross-module calls, e.g. from app-shell.ts) cannot
+    // intercept a same-module self-call. `deriveDashboardTree`
+    // (application/dashboard-tree-model.ts) is a genuinely CROSS-module
+    // call `renderDashboardTree` makes exactly once per invocation
+    // regardless of caller, so spying on it counts BOTH the imperative
+    // (`commitUi`) and the reactive-effect paths uniformly.
+    const deriveSpy = vi.spyOn(dashboardTreeModelModule, 'deriveDashboardTree');
+    const tabsSpy = vi.spyOn(sidePanelRegistryModule, 'renderSidePanelTabs');
+    const upperCount = (): number => (tabsSpy.mock.calls as unknown[][])
+      .filter((call) => call[0] === app.dom.upperRoleTabs).length;
+    const lowerCount = (): number => tabsSpy.mock.calls.length - upperCount();
+    const before = { tree: deriveSpy.mock.calls.length, upper: upperCount(), lower: lowerCount() };
+
+    // (i) A UI-driven op (the chevron toggle — #429's `toggleFromChevron` →
+    // `commitUi`) produces EXACTLY ONE tree repaint (`commitUi`'s own
+    // imperative call — a second one would be the reactive effect ALSO
+    // firing, which #426 already established would be wrong: expansion is
+    // deliberately not a workspace/navigation trigger) and ZERO upper-tab/
+    // lower-pane repaints (neither depends on `dashboardTreeUi`).
+    chev!.click();
+    expect(deriveSpy.mock.calls.length - before.tree).toBe(1);
+    expect(upperCount() - before.upper).toBe(0);
+    expect(lowerCount() - before.lower).toBe(0);
+
+    // (ii) A direct Map mutation with NO UI op produces zero repaints
+    // anywhere — `dashboardTreeUi` is a plain field; nothing subscribes to
+    // it, by design (#426's search-caret/scroll-thrash rationale).
+    const afterClick = { tree: deriveSpy.mock.calls.length, upper: upperCount(), lower: lowerCount() };
+    app.state.dashboardTreeUi.set('w', readTreeUi(app.state.dashboardTreeUi, 'w'));
+    expect(deriveSpy.mock.calls.length - afterClick.tree).toBe(0);
+    expect(upperCount() - afterClick.upper).toBe(0);
+    expect(lowerCount() - afterClick.lower).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------
+  // Invariant (i) — failure paths write status BEFORE the null aggregate
+  // ---------------------------------------------------------------------
+
+  it('invariant (i): no notified subscriber ever observes (currentWorkspace===null, workspaceRouteStatus==="ready")', async () => {
+    const ws: StoredWorkspaceV5 = { storageVersion: 5, id: 'w', key: 'w', name: 'W', queries: [], dashboards: [] };
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=w', hash: '', host: 'ch.example',
+    } as Location;
+    const app = createApp(env({ location }));
+    await seedActiveWorkspace(app, ws);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
+    app.renderCurrentSurface = vi.fn();
+
+    const pairs: Array<{ workspace: unknown; status: string }> = [];
+    const dispose = effect(() => {
+      pairs.push({ workspace: app.committedWorkspace.value, status: app.workspaceRouteStatus });
+    });
+    const impossible = (): boolean => pairs.some((p) => p.workspace === null && p.status === 'ready');
+
+    // (1) corrupt.
+    app.workspace.loadByKey = vi.fn(async () => ({
+      status: 'corrupt' as const, id: ws.id, key: ws.key, diagnostics: [],
+    }));
+    await app.loadWorkspaceOnBoot();
+    expect(impossible()).toBe(false);
+    expect(app.workspaceRouteStatus).toBe('error');
+
+    // (2) not-found/error (explicit key, resolves to not-found). Re-PROJECT
+    // (not re-create — the workspace already exists in the store from
+    // setup) to get back to a ready baseline.
+    app.applyCommittedWorkspace(ws);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'gone' };
+    app.workspace.loadByKey = vi.fn(async () => ({ status: 'empty' as const }));
+    await app.loadWorkspaceOnBoot();
+    expect(impossible()).toBe(false);
+    expect(app.workspaceRouteStatus).toBe('not-found');
+
+    // (3) onWorkspaceMissing (external delete during a queued refresh).
+    app.applyCommittedWorkspace(ws);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w' };
+    app.workspace.loadById = vi.fn(async () => ({ status: 'empty' as const }));
+    await app.workspaceSession.refreshWorkspaceFromStore();
+    expect(impossible()).toBe(false);
+    expect(app.workspaceRouteStatus).toBe('not-found');
+
+    dispose();
+  });
+
+  // ---------------------------------------------------------------------
+  // Invariant (j) — a live write is never hand-sequenced against shell
+  // disposal; all four production departure spans go through the funnel.
+  // Scoped to the TREE and the LOWER (Library/History) pane — the two
+  // effects `app.currentWorkspace`/`app.mainSurface` drive. The upper
+  // tab-count effect ALSO depends on `state.schema`/`state.schemaError`
+  // (unrelated to #590, and legitimately still live on sign-out —
+  // `signOut()`'s own `catalog.invalidate()` runs BEFORE `retireToLogin()`
+  // disposes, by design, same as today), so it is deliberately not asserted
+  // here — the plan's invariant is about a live currentWorkspace/mainSurface
+  // write racing disposal, not about every effect any pane happens to have.
+  //
+  // Proven by DOM identity, not `outerHTML` equality (disposal ITSELF
+  // mutates `disabled` on every control in the torn-down tree —
+  // `disposeCurrentSurface`'s own documented behavior, unrelated to whether
+  // a reactive effect repainted): (a) the container is detached
+  // (`isConnected === false`, proving disposal really ran) and (b) its
+  // `firstElementChild` is the SAME node reference as before (a repaint
+  // would have called `replaceChildren`, producing brand-new elements).
+  // ---------------------------------------------------------------------
+
+  function shellSnapshot(app: App): { container: Element; firstChild: Element | null }[] {
+    const tree = app.dom.dashboardTreeList!;
+    const lower = qs(app.root, '.saved-pane');
+    return [
+      { container: tree, firstChild: tree.firstElementChild },
+      { container: lower, firstChild: lower.firstElementChild },
+    ];
+  }
+  function expectShellNeverRepainted(snapshot: { container: Element; firstChild: Element | null }[]): void {
+    for (const { container, firstChild } of snapshot) {
+      expect(container.isConnected).toBe(false);
+      expect(container.firstElementChild).toBe(firstChild);
+    }
+  }
+
+  async function mountedDashboardOwnedApp(): Promise<App> {
+    const owned = savedQuery({ id: 'owned', name: 'Owned', sql: 'SELECT 1' });
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'w1', name: 'W1', queries: [owned],
+      dashboards: [dashDoc('d1', [{ id: 't1', queryId: 'owned' }])],
+    };
+    return mountedQueryApp(ws);
+  }
+
+  it('invariant (j) arm 1: a navigateSqlRoute workspace switch never repaints the old shell against transitional state', async () => {
+    const app = await mountedDashboardOwnedApp();
+    const other: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w2', key: 'w2', name: 'W2', queries: [], dashboards: [],
+    };
+    await app.workspace.create(other);
+    const snapshot = shellSnapshot(app);
+
+    await app.navigateSqlRoute({ surface: 'workspace', workspaceKey: other.key }, 'push');
+
+    expectShellNeverRepainted(snapshot);
+    expect(app.currentWorkspace?.key).toBe(other.key);
+  });
+
+  it('invariant (j) arm 2: the handleSqlPopState mirror never repaints the old shell against transitional state', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=w1', hash: '', host: 'ch.example',
+    } as Location;
+    const owned = savedQuery({ id: 'owned', name: 'Owned', sql: 'SELECT 1' });
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'w1', name: 'W1', queries: [owned],
+      dashboards: [dashDoc('d1', [{ id: 't1', queryId: 'owned' }])],
+    };
+    const app = createApp(env({ location }));
+    await seedActiveWorkspace(app, ws);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w1' };
+    app.renderApp();
+    await settleSchemaLoad(app);
+    const other: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w2', key: 'w2', name: 'W2', queries: [], dashboards: [],
+    };
+    await app.workspace.create(other);
+    const snapshot = shellSnapshot(app);
+
+    location.search = '?ws=w2';
+    await app.nav.handleSqlPopState();
+
+    expectShellNeverRepainted(snapshot);
+    expect(app.currentWorkspace?.key).toBe(other.key);
+  });
+
+  it('invariant (j) arm 3: onWorkspaceMissing never repaints the old shell against transitional state', async () => {
+    const app = await mountedDashboardOwnedApp();
+    const snapshot = shellSnapshot(app);
+
+    app.workspace.loadById = vi.fn(async () => ({ status: 'empty' as const }));
+    await app.workspaceSession.refreshWorkspaceFromStore();
+
+    expect(app.currentWorkspace).toBeNull();
+    expect(app.workspaceRouteStatus).toBe('not-found');
+    expectShellNeverRepainted(snapshot);
+  });
+
+  it('invariant (j) arm 4 (pass-5 sighting): sign-out from a mounted Dashboard surface never fires the tree on the surface reset', async () => {
+    const owned = savedQuery({ id: 'owned', name: 'Owned', sql: 'SELECT 1' });
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'w1', name: 'W1', queries: [owned],
+      dashboards: [dashDoc('d1', [{ id: 't1', queryId: 'owned' }])],
+    };
+    const app = createApp(env());
+    await seedActiveWorkspace(app, ws);
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w1', mode: 'edit' };
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd1', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
+    app.renderDashboard();
+    await settleSchemaLoad(app);
+    // A genuine dashboard→query structural-key change is about to happen —
+    // capture it BEFORE sign-out so a same-reference false-pass is
+    // impossible.
+    const keyBefore = app.treeNavigation.value;
+    const snapshot = shellSnapshot(app);
+
+    app.signOut();
+
+    expect(app.treeNavigation.value).not.toBe(keyBefore);
+    expect(app.mainSurface).toEqual({ kind: 'query' });
+    expectShellNeverRepainted(snapshot);
+    expect(app.root!.querySelector('.login-input')).not.toBeNull();
+  });
+
+  // ---------------------------------------------------------------------
+  // Invariant (d) — the outer batch around loadWorkspaceOnBoot's projection
+  // + route adoption (long-lived-subscriber hardening, §1.5 decision 7).
+  // ---------------------------------------------------------------------
+
+  it('invariant (d): a Query→Dashboard-deep-link switch settles a long-lived subscriber exactly once across projection + route adoption', async () => {
+    const location = {
+      origin: 'https://ch.example', pathname: '/sql', search: '?ws=w1', hash: '', host: 'ch.example',
+    } as Location;
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w1', key: 'w1', name: 'W1', queries: [], dashboards: [],
+    };
+    const app = createApp(env({ location }));
+    await seedActiveWorkspace(app, ws);
+    app.sqlRoute = { surface: 'workspace', workspaceKey: 'w1' };
+    expect(app.mainSurface.kind).toBe('query');
+
+    const other: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w2', key: 'w2', name: 'W2', queries: [], dashboards: [dashDoc('d2')],
+    };
+    await app.workspace.create(other);
+
+    const settlements: Array<{ workspace: StoredWorkspaceV5 | null; key: string }> = [];
+    const dispose = effect(() => {
+      settlements.push({ workspace: app.committedWorkspace.value, key: app.treeNavigation.value });
+    });
+    const before = settlements.length;
+
+    // A Query destination would re-write the SAME frozen `QUERY_SURFACE`
+    // reference `adoptRouteMainSurface`'s non-dashboard branch always
+    // produces — a signals-core no-op that settles once even UNBATCHED, and
+    // would mask a missing outer batch (§5's own pinning). Only a Dashboard
+    // deep link makes route adoption a genuinely distinct write.
+    await app.navigateSqlRoute({ surface: 'dashboard', workspaceKey: other.key, mode: 'edit' }, 'push');
+
+    const after = settlements.slice(before);
+    // One retirement settlement (the transitional `{loading, null}` publish
+    // — the `retireToWorkspaceLoading` funnel instance), then exactly ONE
+    // combined projection+route-adoption settlement — never a torn
+    // intermediate (a Query-kind key next to the new workspace never
+    // appears).
+    expect(after.length).toBe(2);
+    expect(after[0].workspace).toBeNull();
+    expect(after[1].workspace?.key).toBe(other.key);
+    expect(JSON.parse(after[1].key)[0]).toBe('dashboard');
+    dispose();
+  });
+
+  // ---------------------------------------------------------------------
+  // §1.6 — the post-commit Dashboard-route refresh is render-only
+  // ---------------------------------------------------------------------
+
+  it('§1.6: a real File-menu rename commit on the Dashboard route settles the aggregate exactly once and repaints each shell effect exactly once', async () => {
+    const ws: StoredWorkspaceV5 = {
+      storageVersion: 5, id: 'w', key: 'w', name: 'Original', queries: [], dashboards: [dashDoc('d1')],
+    };
+    const app = createApp(env());
+    await seedActiveWorkspace(app, ws);
+    app.sqlRoute = { surface: 'dashboard', workspaceKey: 'w', mode: 'edit' };
+    app.mainSurface = {
+      kind: 'dashboard', dashboardId: 'd1', mode: 'edit',
+      currentMember: null, pendingFocus: null, pendingScrollTop: null,
+    };
+    app.renderDashboard();
+    await settleSchemaLoad(app);
+
+    const treeSpy = vi.spyOn(dashboardTreeModule, 'renderDashboardTree');
+    const tabsSpy = vi.spyOn(sidePanelRegistryModule, 'renderSidePanelTabs');
+    const before = repaintCounts(app, tabsSpy, treeSpy);
+
+    // The real, non-navigating rename UI path (`renameWorkspaceAction`'s
+    // sole production caller) — New/Import Dashboard legitimately
+    // `revealDashboard` after their commit, which changes `treeNavigation`
+    // and fires the tree effect a SECOND time for the same user action, so
+    // this exact-once claim is pinned to a NON-navigating action.
+    buildWorkspaceTitle(app, true);
+    app.editingLibrary = true;
+    renderLibraryTitle(app);
+    const input = qs<HTMLInputElement>(app.dom.libraryTitle!, '.lib-name-input');
+    input.value = 'Renamed';
+    input.dispatchEvent(new Event('blur'));
+    await app.workspaceSession.flushWorkspaceWrites();
+
+    expect(app.state.libraryName.value).toBe('Renamed');
+    const after = repaintCounts(app, tabsSpy, treeSpy);
+    expect(after.tree - before.tree).toBe(1);
+    expect(after.upper - before.upper).toBe(1);
+    expect(after.lower - before.lower).toBe(1);
   });
 });

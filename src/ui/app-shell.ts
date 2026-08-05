@@ -384,13 +384,13 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.isMobile.value;
     renderSchema(app);
   }));
-  // #426/#587: the upper pane's tab row — now the SAME generic renderer the
-  // lower pane uses, reading label/icon/count straight from the registry
+  // #426/#587/#590: the upper pane's tab row — now the SAME generic renderer
+  // the lower pane uses, reading label/icon/count straight from the registry
   // entries rather than a second hard-coded table. Both counts are reactive —
   // the Databases count tracks the schema load (and is omitted while it is
   // pending or failed), and the Dashboards count tracks the committed
-  // collection through the tree's explicit invalidation signal, since
-  // `currentWorkspace` is not itself a signal — both live inside each entry's
+  // aggregate through `app.committedWorkspace`, the tracked read behind
+  // `app.currentWorkspace`'s peeking accessor — both live inside each entry's
   // own `tabAdornment()` (sidebar-upper.ts), read here only through the
   // generic renderer. Also exposes exactly one role host via the registry's
   // pane-scoped `showPanel` (replacing #426's own `upper.showRole`).
@@ -401,16 +401,20 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
     state.upperRole.value;
     state.schema.value;
     state.schemaError.value;
-    state.dashboardTreeRevision.value;
+    app.committedWorkspace.value;
     renderSidePanelTabs(app.dom.upperRoleTabs!, upperEntries, state.upperRole.value, selectUpperPanel);
     registry.showPanel(state.upperRole.value);
   }));
   disposers.push(effect(() => {
-    // The ONE reactive input the tree has: every trigger #426 lists (workspace
-    // projection or switch, a committed mutation, selected Dashboard/mode/member
-    // navigation, an external refresh) bumps this. Expansion/search/scroll are
-    // deliberately NOT reactive — the tree repaints itself directly for those.
-    state.dashboardTreeRevision.value;
+    // #590 — the tree's TWO reactive inputs: the committed aggregate
+    // (`app.committedWorkspace`) and the structural navigation key
+    // (`app.treeNavigation`, a computed over exactly `kind`/`dashboardId`/
+    // `currentMember` — the one-shot `pendingFocus`/`pendingScrollTop`
+    // delivery fields are excluded by construction, so consuming them
+    // notifies nothing). Expansion/search/scroll are deliberately NOT
+    // reactive — the tree repaints itself directly for those (#426).
+    app.committedWorkspace.value;
+    app.treeNavigation.value;
     state.upperRole.value;
     renderDashboardTree(app);
   }));
@@ -429,11 +433,15 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   // same events (a star/delete/rename doesn't bump any signal this effect
   // depends on).
   //
-  // #427 added the projection revision. Library membership is now a function of
-  // `dashboards[]` — a query is in the Library exactly while no Dashboard member
-  // references it — so a committed Dashboard change can move a query in or out of
-  // this list without `savedQueries` changing at all. It is the same one signal
-  // the Dashboard tree subscribes to, bumped from the single projection funnel.
+  // #427/#590 added the projection dependency. Library membership is now a
+  // function of `dashboards[]` — a query is in the Library exactly while no
+  // Dashboard member references it — so a committed Dashboard change can
+  // move a query in or out of this list without `savedQueries` changing at
+  // all. `app.committedWorkspace` is the SAME tracked signal the Dashboard
+  // tree effect subscribes to, written from the one projection funnel
+  // (`applyCommittedWorkspace`, wrapped in one `batch()` spanning the
+  // aggregate write AND the plain `state.savedQueries`/`state.dashboard`
+  // writes, so this repaint never sees a mixed old/new snapshot).
   const lowerEntries = registry.entries.filter((entry) => entry.pane === 'lower');
   const selectLowerPanel = (id: SidePanelId): void => {
     const key = sidePanelKeyFor(id as LowerPanelId);
@@ -447,7 +455,7 @@ export function mountAppShell(deps: AppShellDeps): AppShellHandle {
   };
   disposers.push(effect(() => {
     state.sidePanel.value;
-    state.dashboardTreeRevision.value;
+    app.committedWorkspace.value;
     refreshLowerPane();
   }));
   // Reactive repaint of the header library title (name + unsaved-changes dot):

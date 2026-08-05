@@ -102,8 +102,10 @@ Two roadmap tracks are current:
   `feat/nav-section-registry-487p2`/PR #573), Phase 3 #591 (fail-closed
   decoders for persisted domain records — independent early win), Phase 4
   #588 (composition-root decomposition), Phase 5 #589 (dashboard gesture/
-  repaint extraction), Phase 6 #590 (reactive workspace aggregate, retires
-  `dashboardTreeRevision`, sequenced after #588), Phase 7 #585/ADR-0005
+  repaint extraction), Phase 6 #590 (implemented on `wip/590-reactive-workspace`
+  — `app.currentWorkspace`/`app.mainSurface` are signal-backed accessor pairs,
+  `dashboardTreeRevision` is retired; see `docs/ADR-0001-reactivity.md`'s #590
+  addendum), Phase 7 #585/ADR-0005
   (`@clickhouse/client-web` transport spike — independent of the shell
   track; a "Rejected" outcome still completes the phase). #592 (extend
   `check-boundaries` to lock in the shell primitives) is a guardrail issue

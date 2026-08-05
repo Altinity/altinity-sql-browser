@@ -2080,9 +2080,11 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
   });
 
   // #291 review F4: `renderDashboard` can run more than once on the SAME
-  // window (`app.reloadDashboardRoute()` re-invokes it after an
-  // import-commit while already on /dashboard) — a stale first-render
-  // listener must not keep reacting to resize events after a second render.
+  // window (`app.renderCurrentSurface()` — #590 §1.6's render-only
+  // replacement for the deleted `app.reloadDashboardRoute()` — re-invokes
+  // it after an import-commit while already on /dashboard) — a stale
+  // first-render listener must not keep reacting to resize events after a
+  // second render.
   it('a second renderDashboard call removes the prior call\'s resize listener — only the latest render reacts', async () => {
     const { app: app1 } = dashApp({ workspace: twoTilesGrid() });
     await render(app1);
@@ -2093,7 +2095,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     Object.defineProperty(grid1, 'clientWidth', { value: 300, configurable: true });
 
     const { app: app2 } = dashApp({ workspace: twoTilesGrid() });
-    await render(app2); // simulates app.reloadDashboardRoute() re-rendering on the same window
+    await render(app2); // simulates app.renderCurrentSurface() re-rendering on the same window
     const grid2 = qs(app2.root, '.dash-gg-grid');
     Object.defineProperty(grid2, 'clientWidth', { value: 600, configurable: true }); // >=470,<720 → 4 columns
 

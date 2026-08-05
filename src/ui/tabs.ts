@@ -27,8 +27,11 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 export interface TabsApp {
   dom: Pick<AppDom, 'qtabsInner'>;
   state: AppState;
-  /** The committed aggregate is the canonical source for Dashboard ownership. */
-  currentWorkspace: StoredWorkspaceV5 | null;
+  /** The committed aggregate is the canonical source for Dashboard ownership.
+   *  #590 decision 16: no write to this field exists anywhere in this module
+   *  (grep-verified) — `readonly`, same reasoning as `DashboardApp`/
+   *  `SurfaceStatePort`. */
+  readonly currentWorkspace: StoredWorkspaceV5 | null;
   /** #447 narrowed this: `actions.setEditorMode` + `specEditor.revealOffset`
    *  were read ONLY by the removed Filter-role badge. */
   sqlEditor: Pick<EditorPort, 'focus'>;

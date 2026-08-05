@@ -22,7 +22,8 @@
 // other sibling fields.
 import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
-import { signal } from '@preact/signals-core';
+import { signal, computed } from '@preact/signals-core';
+import type { ReadonlySignal } from '@preact/signals-core';
 import { createState, activeTab, reconcileTabsWithSavedQueries } from '../../src/state.js';
 import type { MutateWorkspace } from '../../src/state.js';
 import { createNoopPort } from '../../src/editor/editor-port.js';
@@ -52,6 +53,7 @@ import type { QueryDocumentSession } from '../../src/application/query-document-
 import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
 import { resolveCompatibilityDashboard } from '../../src/workspace/workspace-dashboards.js';
 import { QUERY_SURFACE } from '../../src/application/main-surface.js';
+import type { MainSurfaceState } from '../../src/application/main-surface.js';
 import type { StoredWorkspaceV5 } from '../../src/generated/json-schema.types.js';
 import type {
   SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
@@ -440,7 +442,6 @@ const navDefaults: SurfaceNavigation = {
   currentRouteSearch: () => '',
   renderCurrentSurface: () => {},
   loadWorkspaceOnBoot: async () => null,
-  reloadDashboardRoute: () => {},
   openDashboard: () => {},
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
@@ -511,9 +512,18 @@ const appDefaults: App = {
   },
   sqlRoute: { surface: 'workspace', workspaceKey: null },
   // #425: the Query surface is the inert default; a Dashboard fixture overrides
-  // `mainSurface` with its own selection.
+  // `mainSurface` with its own selection. #590: these are PLAIN placeholder
+  // values on `appDefaults` itself — `makeApp()` installs the real
+  // signal-backed accessors (with reactivity parity to production) on the
+  // FINAL merged object, seeded from whatever value survives the three-way
+  // spread (see `makeApp`'s own footgun comment below).
   mainSurface: QUERY_SURFACE,
   currentWorkspace: null,
+  // #590 — inert module-level placeholders; never read directly (`makeApp()`
+  // always installs fresh per-call signals on the returned object). Present
+  // only so this literal satisfies `App`.
+  committedWorkspace: signal<StoredWorkspaceV5 | null>(null),
+  treeNavigation: signal(''),
   workspaceRouteStatus: 'ready',
   keyboardOwner: null,
   acquireKeyboardOwner(kind) {
@@ -550,7 +560,6 @@ const appDefaults: App = {
   restoreOAuthDocumentRecovery: () => ({ kind: 'absent' }),
   retryPendingOAuthDocumentRecovery: () => ({ kind: 'absent' }),
   consumeLegacyShared: () => false,
-  reloadDashboardRoute: () => {},
   loadWorkspaceOnBoot: async () => null,
   // Inert placeholders — `base` below overrides both with real, state-backed
   // implementations (mirroring app.ts's own #287 W5 wiring) so a file-menu
@@ -657,7 +666,6 @@ const appDefaults: App = {
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
-  invalidateDashboardTree: () => {},
   showQuerySurface: () => {},
   showDashboardSurface: () => {},
   openSavedQuery: () => {},
@@ -1018,6 +1026,50 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     },
     nav: { ...navDefaults, ...(overrides.nav ?? {}) },
   };
+  // #590 footgun: `merged` was assembled by object SPREAD above
+  // (`...appDefaults, ...base, ...overrides`), and a spread evaluates any
+  // get/set accessor pair into a PLAIN VALUE — the live accessor itself is
+  // lost, so `appDefaults`'s own `mainSurface`/`currentWorkspace` fields
+  // (plain placeholders) survive as plain values here too. Install REAL
+  // signal-backed accessors on the FINAL object — seeded from whatever value
+  // survived the three-way spread (last-spread-wins: an
+  // `overrides.currentWorkspace`/`mainSurface` still wins), so a fixture
+  // reading `app.committedWorkspace`/`.treeNavigation`, or assigning
+  // `app.currentWorkspace`/`.mainSurface` directly, observes the SAME
+  // reactivity parity `createApp` gives production code — rather than
+  // silently losing it (per-instance signals, never shared with
+  // `appDefaults`'s own module-level placeholders).
+  const fakeCommittedWorkspaceSignal = signal<StoredWorkspaceV5 | null>(
+    (merged as { currentWorkspace: StoredWorkspaceV5 | null }).currentWorkspace,
+  );
+  const fakeMainSurfaceSignal = signal<MainSurfaceState>(
+    (merged as { mainSurface: MainSurfaceState }).mainSurface,
+  );
+  const fakeTreeNavigationSignal: ReadonlySignal<string> = computed(() => {
+    const surface = fakeMainSurfaceSignal.value;
+    return surface.kind === 'dashboard'
+      ? JSON.stringify([
+        surface.kind, surface.dashboardId,
+        surface.currentMember?.kind ?? null, surface.currentMember?.id ?? null,
+      ])
+      : JSON.stringify([surface.kind, null, null, null]);
+  });
+  Object.defineProperty(merged, 'currentWorkspace', {
+    configurable: true, enumerable: true,
+    get: () => fakeCommittedWorkspaceSignal.peek(),
+    set: (workspace: StoredWorkspaceV5 | null) => { fakeCommittedWorkspaceSignal.value = workspace; },
+  });
+  Object.defineProperty(merged, 'mainSurface', {
+    configurable: true, enumerable: true,
+    get: () => fakeMainSurfaceSignal.peek(),
+    set: (surface: MainSurfaceState) => { fakeMainSurfaceSignal.value = surface; },
+  });
+  Object.defineProperty(merged, 'committedWorkspace', {
+    configurable: true, enumerable: true, value: fakeCommittedWorkspaceSignal,
+  });
+  Object.defineProperty(merged, 'treeNavigation', {
+    configurable: true, enumerable: true, value: fakeTreeNavigationSignal,
+  });
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type
   // (every field's REAL, often Mock-typed, shape) is what callers actually

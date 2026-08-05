@@ -40,7 +40,8 @@ import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab, openVariableTab } from './tabs.js';
 import { commitVariableConfig } from '../application/dashboard-variable-config.js';
-import { batch } from '@preact/signals-core';
+import { batch, computed, signal } from '@preact/signals-core';
+import type { Signal, ReadonlySignal } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { QueryResult } from './results.js';
 import { dashboardScrollTop, disposeDashboardSurface, renderDashboard } from './dashboard.js';
@@ -88,6 +89,7 @@ import { createAppPreferences } from '../application/app-preferences.js';
 import {
   QUERY_SURFACE, mainSurfaceRoute, reconcileMainSurface, selectedDashboardId, withoutPendingFocus,
 } from '../application/main-surface.js';
+import type { MainSurfaceState } from '../application/main-surface.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
 import { queryToken } from '../workspace/workspace-sync.js';
@@ -378,25 +380,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   // run; the actual mount helpers are installed further below.
   let shell: AppShellHandle | null = null;
   let disposeWorkbenchMount: (() => void) | null = null;
-  const renderLoginApp = (msg?: string): void => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    // #425: login replaces `#root` wholesale, so the persistent shell must be
-    // disposed AND forgotten here — otherwise its effects keep repainting a
-    // detached sidebar, and the next sign-in would skip re-mounting a shell that
-    // is no longer in the document, leaving a blank page.
-    //
-    // The Dashboard surface goes here too: this is the explicit end-of-session
-    // renderer, so no route-scoped listeners or generation-matching command
-    // port may remain dispatchable from the full-screen login. Involuntary auth
-    // loss does not call this path; it retains the Dashboard/document shell and
-    // exposes the inline authentication host instead.
-    disposeDashboardSurface();
-    app.nav.advanceSurfaceGeneration();
-    app.mainSurface = QUERY_SURFACE;
-    disposeShell();
-    renderLogin(app as App & { root: Element }, msg);
-  };
+  // #590 §1.9: the former `renderLoginApp` is now the surface-retirement
+  // coordinator's `retireToLogin` named op (declared further below, alongside
+  // `disposeShell`/`disposeCurrentSurface`) — a forward reference, same
+  // TDZ-safe closure pattern `app` itself uses throughout this function:
+  // nothing below CALLS it until well after `createApp` has finished wiring
+  // every closure.
   // Temporary auth loss suspends only this disposable scope. The document
   // session (tabs/editors/results/workspace/shell) stays mounted; the two UI
   // callbacks are installed once the persistent shell seam is defined below.
@@ -404,7 +393,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   let inlineLogin: InlineLoginHandle | null = null;
   const revealAuthenticationRequired = (detail?: string): void => {
     if (!shell) {
-      renderLoginApp(detail);
+      retireToLogin(detail);
       return;
     }
     inlineLogin ??= mountInlineLogin(app as App & { root: Element }, shell.authHost);
@@ -415,8 +404,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // PKCE login/refresh, Basic probing, and IdP config resolution live in
   // `application/connection-session.ts`,
   // constructible without App/AppState/DOM; this module wires it to the real
-  // browser env and to `renderLoginApp` (the one piece that IS this shell's
-  // job — the session only ever calls `onAuthLost`, never renders).
+  // browser env and to `revealAuthenticationRequired`/`retireToLogin` (the
+  // one piece that IS this shell's job — the session only ever calls
+  // `onAuthLost`, never renders).
   // #588 phase 4 wave 3: `session` (createWorkspaceSession) owns the
   // beforeunload listener + its OAuth-redirect bypass generation tokens now,
   // but it is constructed further below (it needs `applyCommittedWorkspace`,
@@ -1315,6 +1305,62 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (!disposeWorkbenchMount) disposeWorkbenchMount = renderApp(app, { startDrag }, shell.queryHost);
     return shell;
   };
+  // #590 §1.9 — the surface-retirement coordinator: exclusive mutation
+  // authority over the two reactive signals `app.currentWorkspace`/
+  // `app.mainSurface` project. The mutable `Signal` handles, `disposeShell`,
+  // `disposeCurrentSurface`, and the two shell-destroying placeholder renders
+  // below are declared ONLY between the markers below — no other code in
+  // `createApp` can even NAME them (a "Cannot find name" `tsc` error, not
+  // merely a lint convention), so a write-then-dispose bypass fails to
+  // compile. `tests/unit/surface-lifecycle-arch.test.ts` scans this file
+  // between the two marker comments and fails the build on an out-of-region
+  // write to the private signals, an out-of-region `currentWorkspace =
+  // null`, an out-of-region dispose call, either declaration moving outside
+  // the markers, or a `mainSurface`/`currentWorkspace` write lexically
+  // preceding a `retireTo*` call in one function body (the one hazard no
+  // compile-time mechanism can foreclose — the named ops below are meant to
+  // be called from OUTSIDE this region). Keep every coordinator declaration
+  // between the markers.
+  // #590-COORDINATOR-BEGIN
+  const committedWorkspaceSignal: Signal<StoredWorkspaceV5 | null> = signal(null);
+  const mainSurfaceSignal: Signal<MainSurfaceState> = signal(QUERY_SURFACE);
+  // #426/#590 — the Dashboard tree's ONE reactive dependency: a `computed`
+  // STRING key over exactly the structural fields `deriveDashboardTree`
+  // reads (`kind`/`dashboardId`/`currentMember`) — never the whole
+  // `MainSurfaceState`. The one-shot delivery fields (`pendingFocus`/
+  // `pendingScrollTop`) are deliberately excluded, so consuming them (e.g.
+  // `withoutPendingFocus`/`withPendingFocus`) notifies nothing (invariant
+  // (g)). `JSON.stringify` of the tuple, never a bare-delimiter join:
+  // dashboard/tile/variable ids may legally contain `:`/`"`/`\` up to 256
+  // chars (schema-verified), so a naive join could conflate two distinct
+  // tuples into one identical string and silently suppress a repaint
+  // (invariant (h)). Grows a field ONLY if the tree gains a new structural
+  // dependency — `mode` is deliberately excluded because the tree never
+  // reads it.
+  const treeNavigationSignal: ReadonlySignal<string> = computed(() => {
+    const surface = mainSurfaceSignal.value;
+    return surface.kind === 'dashboard'
+      ? JSON.stringify([
+        surface.kind, surface.dashboardId,
+        surface.currentMember?.kind ?? null, surface.currentMember?.id ?? null,
+      ])
+      : JSON.stringify([surface.kind, null, null, null]);
+  });
+  // The non-null commit op behind the public `currentWorkspace` setter
+  // (#590 §1.2) — every REAL projection writes here, through
+  // `app.currentWorkspace = workspace`. The setter's write TYPE excludes
+  // `null` (see app.types.ts), so this is the ONLY function that ever
+  // assigns a non-null value to the signal, and the retirement ops below are
+  // the only code that ever assigns `null` to it.
+  const commitCurrentWorkspace = (workspace: StoredWorkspaceV5): void => {
+    committedWorkspaceSignal.value = workspace;
+  };
+  // The navigation op behind the public `mainSurface` setter — always
+  // writable (ordinary navigation never tears anything down, so it needs no
+  // named-op ceremony).
+  const navigateMainSurface = (surface: MainSurfaceState): void => {
+    mainSurfaceSignal.value = surface;
+  };
   const disposeShell = (): void => {
     disposeWorkbenchMount?.();
     disposeWorkbenchMount = null;
@@ -1324,6 +1370,103 @@ export function createApp(env: CreateAppEnv = {}): App {
     shell = null;
     app.shell = null;
   };
+  const disposeCurrentSurface = (): void => {
+    app.closeShortcutDialog();
+    resetShortcutChord(app);
+    app.nav.advanceSurfaceGeneration();
+    for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
+      'button, input, select, textarea',
+    ) ?? []) control.disabled = true;
+    closeAnchoredPopovers();
+    disposeFileMenuOverlays(app);
+    disposeDashboardSurface();
+    disposeShell();
+    workbench.destroy();
+    app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
+  };
+  const renderWorkspaceNotFound = (): void => {
+    disposeCurrentSurface();
+    app.root?.replaceChildren(h('main', { class: 'workspace-not-found' },
+      h('h1', null, 'Workspace not found'),
+      h('p', null, `No local workspace exists for “${app.sqlRoute.workspaceKey ?? ''}”.`),
+      h('a', { href: conn.basePath || '/sql' }, 'Open the last-used workspace')));
+  };
+  const renderWorkspaceLoading = (): void => {
+    disposeCurrentSurface();
+    app.root?.replaceChildren(h('main', {
+      class: 'workspace-loading', 'aria-busy': 'true', 'aria-live': 'polite',
+    }, h('p', null, 'Loading workspace…')));
+  };
+  // #590 §1.9 — the FOUR named departure ops covering every live-shell
+  // teardown span the issue's whole-repo audit found, plus the zero-live-
+  // shell boot failures, and one publication-free re-render for the nav
+  // dispatch's re-entry arms. Each op that tears down a live shell publishes
+  // its transitional state and disposes inside ONE `batch()`, so a
+  // still-mounted shell's effects are unsubscribed before the batch flushes
+  // — they observe NOTHING of the transitional state (invariant (j)).
+  // Status is always written before the null aggregate (invariant (i)).
+  const retireToWorkspaceLoading = (): void => {
+    batch(() => {
+      app.workspaceRouteStatus = 'loading';
+      committedWorkspaceSignal.value = null;
+      renderWorkspaceLoading();
+    });
+  };
+  const retireToWorkspaceMissing = (): void => {
+    batch(() => {
+      app.workspaceRouteStatus = 'not-found';
+      committedWorkspaceSignal.value = null;
+      app.renderCurrentSurface();
+    });
+  };
+  // #590 §1.7/§1.9 pass-6 — the two boot-time failure branches (corrupt /
+  // not-found / error) have zero live shell effects (boot mounts no shell —
+  // every caller disposes via `renderWorkspaceLoading` first), so this op's
+  // disposal arm is empty; it still routes through the coordinator so no
+  // `currentWorkspace = null` write exists anywhere else, which is what lets
+  // the public setter's write type exclude `null` entirely.
+  const retireToWorkspaceFailure = (status: 'not-found' | 'error'): void => {
+    batch(() => {
+      app.workspaceRouteStatus = status;
+      committedWorkspaceSignal.value = null;
+    });
+  };
+  // #425/#590 — the former `renderLoginApp`: login replaces `#root`
+  // wholesale, so the persistent shell must be disposed AND forgotten here —
+  // otherwise its effects keep repainting a detached sidebar, and the next
+  // sign-in would skip re-mounting a shell that is no longer in the
+  // document, leaving a blank page. The Dashboard surface goes here too:
+  // this is the explicit end-of-session renderer, so no route-scoped
+  // listeners or generation-matching command port may remain dispatchable
+  // from the full-screen login. Involuntary auth loss does not call this
+  // path (see `revealAuthenticationRequired`'s inline-host branch above); it
+  // retains the Dashboard/document shell. The `mainSurface` reset is a
+  // GENUINE dashboard→query structural-key change when signing out from a
+  // mounted Dashboard surface (pass-5 finding) — publishing it one statement
+  // before `disposeShell()` OUTSIDE a batch would fire the still-live tree
+  // effect on the eve of login, a repaint current code never produces —
+  // hence the whole sequence lives in one `batch()`, today's order.
+  const retireToLogin = (msg?: string): void => {
+    batch(() => {
+      app.closeShortcutDialog();
+      resetShortcutChord(app);
+      disposeDashboardSurface();
+      app.nav.advanceSurfaceGeneration();
+      mainSurfaceSignal.value = QUERY_SURFACE;
+      disposeShell();
+      renderLogin(app as App & { root: Element }, msg);
+    });
+  };
+  // Re-renders the CURRENT retired status (loading / not-found / error)
+  // WITHOUT publishing anything — for the nav dispatch's re-entry paths
+  // (`renderCurrentSurface`'s status !== 'ready' branch), where the status/
+  // null pair was already published by one of the four ops above and only
+  // the DOM needs repainting (e.g. a resumed stale-generation dispatch).
+  const rerenderRetiredSurface = (): void => {
+    if (app.workspaceRouteStatus === 'loading') { renderWorkspaceLoading(); return; }
+    renderWorkspaceNotFound();
+  };
+  // #590-COORDINATOR-END
   // What the Dashboard surface renders THIS pass. `dashboardId` is `null` only
   // for the legacy empty-collection entry point, which lands on the Dashboard's
   // own "Create dashboard" state; its mode then comes from the route, since there
@@ -1373,20 +1516,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // Reference. `closeInspector` is generic over the current occupant.
     closeInspector(app);
   };
-  const disposeCurrentSurface = (): void => {
-    app.closeShortcutDialog();
-    resetShortcutChord(app);
-    app.nav.advanceSurfaceGeneration();
-    for (const control of app.root?.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
-      'button, input, select, textarea',
-    ) ?? []) control.disabled = true;
-    closeAnchoredPopovers();
-    disposeFileMenuOverlays(app);
-    disposeDashboardSurface();
-    disposeShell();
-    workbench.destroy();
-    app.onWorkspaceExternallyChanged = ignoreExternalWorkspaceChange;
-  };
 
   // Project the active StoredWorkspaceV5 onto the current application surface.
   // Persistence is now a collection; this projection identifies which record
@@ -1396,12 +1525,18 @@ export function createApp(env: CreateAppEnv = {}): App {
   // resolved through the one selection seam. Every other stored Dashboard
   // stays on `app.currentWorkspace` and is never projected, executed, or
   // rewritten by a Workbench action.
-  // #426 — the ONE writer of the Dashboard tree's explicit repaint invalidation.
-  // Declared here, above its first caller, so no path can reach it before
-  // `createApp` has finished wiring the controller.
-  const invalidateDashboardTree = (): void => { app.state.dashboardTreeRevision.value += 1; };
-
-  const applyCommittedWorkspace = (workspace: StoredWorkspaceV5): void => {
+  // #590 — the ENTIRE body is one `batch()`: the signal setters
+  // (`app.currentWorkspace`/`app.mainSurface`) run FIRST, and the lower-pane
+  // renderer computes Library membership from BOTH `currentWorkspace
+  // .dashboards` and the plain `state.savedQueries` array in one function
+  // (`saved-history.ts`'s `libraryEntries`) — a batch scoped narrowly to the
+  // `.value` writes would flush effects before `savedQueries`/`dashboard`/
+  // workspace-identity are applied, and the first repaint would see a mixed
+  // old/new snapshot (repo lesson: equal values/counts can't prove
+  // single-sourcing). This function stays the sole non-null projection
+  // funnel — the reason the #426 comment below gives stays true, only the
+  // mechanism (a signal write, not a counter bump) changed.
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV5): void => { batch(() => {
     app.currentWorkspace = workspace;
     app.workspaceRouteStatus = 'ready';
     // #425: re-validate the selected Dashboard against committed truth. A
@@ -1441,10 +1576,11 @@ export function createApp(env: CreateAppEnv = {}): App {
         if (q) tab.lastCommittedQueryToken = queryToken(q);
       }
     }
-    // #425: project the SELECTED Dashboard. `state.dashboard` is what
-    // `reloadDashboardRoute` folds back into the collection, so projecting the
-    // compatibility entry while a different one is selected would write the wrong
-    // document into the selected slot (and mint a duplicate id).
+    // #425: project the SELECTED Dashboard. `state.dashboard` is the single
+    // compatibility document a few legacy export/import paths still read
+    // (state.ts, file-menu.ts), so projecting the compatibility entry while
+    // a different one is selected would misidentify which document those
+    // paths operate on.
     const projectedId = selectedDashboardId(app.mainSurface);
     app.state.dashboard = projectedId === null
       ? resolveCompatibilityDashboard(workspace).dashboard
@@ -1461,11 +1597,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     // `recordProjection` at the point this used to assign `lastCommittedToken`
     // directly.
     app.workspaceSession.recordProjection(workspace);
-    // #426: EVERY projection funnels through here — boot, a committed mutation,
-    // an external refresh, and a workspace switch — which makes this the one place
-    // the Dashboard tree's invalidation has to fire. It is the whole reason the
-    // tree has an explicit signal rather than depending on an unrelated one
-    // happening to change.
+    // #426/#590: EVERY projection funnels through here — boot, a committed
+    // mutation, an external refresh, and a workspace switch — which makes
+    // this the one place the Dashboard tree's committed-truth input changes.
+    // The `app.currentWorkspace` setter above (inside this same batch) IS
+    // the notification now — no separate invalidation call exists.
     // #426: prune the tree's session UI state against committed truth, so a
     // deleted Dashboard's expansion (and its group entries) cannot linger for the
     // rest of the session — or, worse, make a RECREATED id render pre-expanded.
@@ -1485,7 +1621,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     // `openSavedQuery` with a dead id is now handled at the callee, which reports
     // and stays put rather than navigating nowhere.)
     cancelDashboardTreeClicks(app);
-    invalidateDashboardTree();
     // #464: Dashboard titles and ownership are presentation inputs for the
     // Query tab strip. A workspace commit can change either without changing a
     // tab signal (for example, renaming a Dashboard), so repaint explicitly
@@ -1511,7 +1646,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       }
       app.renderCurrentSurface();
     }
-  };
+  }); };
   // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
   // Import / Replace operations use to mint fresh ids (`uid('ws-')`).
 
@@ -1548,11 +1683,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     },
     hooks: {
       applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
-      onWorkspaceMissing: () => {
-        app.currentWorkspace = null;
-        app.workspaceRouteStatus = 'not-found';
-        app.renderCurrentSurface();
-      },
+      // #590 §1.9 — the coordinator's `retireToWorkspaceMissing` op: status
+      // written before the null aggregate, both inside one `batch()` with
+      // the `renderCurrentSurface()` dispatch, so the still-mounted shell
+      // (if any) is disposed before that batch flushes.
+      onWorkspaceMissing: () => { retireToWorkspaceMissing(); },
       isWorkbenchSurface: () => app.sqlRoute.surface === 'workspace',
       // Re-run the tab effect (editor doc re-sync for the active tab, parked
       // reconcile for the rest, tab strip + Save button + var strip) by
@@ -1616,28 +1751,19 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
   };
 
-  const renderWorkspaceNotFound = (): void => {
-    disposeCurrentSurface();
-    app.root?.replaceChildren(h('main', { class: 'workspace-not-found' },
-      h('h1', null, 'Workspace not found'),
-      h('p', null, `No local workspace exists for “${app.sqlRoute.workspaceKey ?? ''}”.`),
-      h('a', { href: conn.basePath || '/sql' }, 'Open the last-used workspace')));
-  };
-
-  const renderWorkspaceLoading = (): void => {
-    disposeCurrentSurface();
-    app.root?.replaceChildren(h('main', {
-      class: 'workspace-loading', 'aria-busy': 'true', 'aria-live': 'polite',
-    }, h('p', null, 'Loading workspace…')));
-  };
+  // #590: `renderWorkspaceNotFound`/`renderWorkspaceLoading` moved into the
+  // surface-retirement coordinator above (they are coordinator-PRIVATE
+  // disposing renders now — reached only through the named retirement ops
+  // and the publication-free `rerenderRetiredSurface`), so they are not
+  // redeclared here.
 
   // #588 phase 4 wave 4: the route locals + surface-generation guards,
   // `writeRoute`, `loadWorkspaceOnBoot`, the `renderCurrentSurface` dispatch,
   // `navigateSqlRoute`/`handleSqlPopState`, `syncSqlRoute`/
   // `rewriteWorkspaceRoute`, `surfaceRouteKey`/`stampDashboardHistoryEntry`/
   // `applyMainSurface`, `focusDashboardMember`, `openDashboard`/
-  // `showQuerySurface`/`showDashboardSurface`, the saved-query/panel/variable
-  // tab openers, `adoptRouteMainSurface`, and `reloadDashboardRoute` all now
+  // `showQuerySurface`/`showDashboardSurface`, and the saved-query/panel/
+  // variable tab openers/`adoptRouteMainSurface` all now
   // live in `application/surface-navigation.ts`'s `createSurfaceNavigation`
   // (a pure extraction — every line moved verbatim, only `app.*`/`win`/`loc`/
   // `doc` reads rewritten onto the `deps` thunks below). This shell supplies
@@ -1661,14 +1787,14 @@ export function createApp(env: CreateAppEnv = {}): App {
       applyCommittedWorkspace: (ws) => app.applyCommittedWorkspace(ws),
       renderApp: () => app.renderApp(),
       renderDashboard: () => app.renderDashboard(),
-      renderWorkspaceLoading: () => renderWorkspaceLoading(),
-      renderWorkspaceNotFound: () => renderWorkspaceNotFound(),
+      retireToWorkspaceLoading: () => retireToWorkspaceLoading(),
+      retireToWorkspaceFailure: (status) => retireToWorkspaceFailure(status),
+      rerenderRetiredSurface: () => rerenderRetiredSurface(),
       onCorruptWorkspace: (id) => { void resetCorruptWorkspace(id); },
       retryPendingOAuthDocumentRecovery: () => { app.retryPendingOAuthDocumentRecovery(); },
       closeShortcutDialog: () => app.closeShortcutDialog(),
       resetShortcutChord: () => app.resetShortcutChord(),
       isSignedIn: () => conn.isSignedIn(),
-      invalidateDashboardTree: () => app.invalidateDashboardTree(),
       toast: (message, opts) => flashToast(message, { document: doc, action: opts?.action }),
       revealAssignedPanel: (dashboardId, tileId) => revealAssignedPanel(app, dashboardId, tileId),
       loadIntoNewTab: (query) => { loadIntoNewTab(app, { ...query }); },
@@ -1726,7 +1852,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     saveStr: saveStr,
     workspace: workspaceRepo,
     sqlRoute: parseSqlRoute(loc.search),
-    currentWorkspace: null,
+    // #590 — signal-backed accessor pair (see app.types.ts's own doc
+    // comment): the getter peeks (untracked, live), the setter delegates to
+    // the coordinator's non-null commit op — this IS the notification, no
+    // separate call needed.
+    get currentWorkspace(): StoredWorkspaceV5 | null { return committedWorkspaceSignal.peek(); },
+    set currentWorkspace(workspace: StoredWorkspaceV5) { commitCurrentWorkspace(workspace); },
+    committedWorkspace: committedWorkspaceSignal as ReadonlySignal<StoredWorkspaceV5 | null>,
     workspaceRouteStatus: 'ready',
     keyboardOwner: null,
     resetShortcutChord: () => resetShortcutChord(app),
@@ -1752,7 +1884,13 @@ export function createApp(env: CreateAppEnv = {}): App {
       dialog?.close();
     },
     surfaceCommands: null,
-    mainSurface: QUERY_SURFACE,
+    // #590 — signal-backed accessor pair (see app.types.ts's own doc
+    // comment): the getter peeks; the setter delegates to the coordinator's
+    // navigation op. `treeNavigation` is the tracked structural-key
+    // projection the Dashboard tree effect subscribes through.
+    get mainSurface(): MainSurfaceState { return mainSurfaceSignal.peek(); },
+    set mainSurface(surface: MainSurfaceState) { navigateMainSurface(surface); },
+    treeNavigation: treeNavigationSignal,
     FileReader: (env.FileReader || win.FileReader) as typeof FileReader,
     downloadFile: downloadFile,
     // #588 phase 4 wave 5: genuinely missing before this wave -- masked by
@@ -1961,9 +2099,9 @@ export function createApp(env: CreateAppEnv = {}): App {
       conn.signOut();
       // #425: explicit logout owns Dashboard teardown, the surface-generation
       // bump, and the main-surface reset through the full-screen login renderer.
-      renderLoginApp();
+      retireToLogin();
     },
-    showLogin: (msg) => renderLoginApp(msg),
+    showLogin: (msg) => retireToLogin(msg),
     catalog: catalog,
     updateBanner: updateBanner,
     wallNow: wallNow,
@@ -2007,7 +2145,6 @@ export function createApp(env: CreateAppEnv = {}): App {
       mounted.showHost('dashboard');
       return renderDashboard(app, dashboardRenderTarget(mounted));
     },
-    invalidateDashboardTree: invalidateDashboardTree,
     applyCommittedWorkspace: applyCommittedWorkspace,
     genId: () => uid('ws-'),
     workspaceSession: session,
@@ -2019,7 +2156,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     navigateSqlRoute: nav.navigateSqlRoute,
     renderCurrentSurface: nav.renderCurrentSurface,
     loadWorkspaceOnBoot: nav.loadWorkspaceOnBoot,
-    reloadDashboardRoute: nav.reloadDashboardRoute,
     openDashboard: nav.openDashboard,
     showQuerySurface: nav.showQuerySurface,
     showDashboardSurface: nav.showDashboardSurface,

@@ -249,6 +249,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     100/95/90/100 per-file coverage floors.
 
 ### Changed
+- **The committed workspace aggregate and main-surface navigation are now
+  reactive signals; the #426 Dashboard-tree invalidation counter is retired**
+  (#590). `app.currentWorkspace`/`app.mainSurface` become signal-backed
+  accessor pairs (peeking getter, notifying setter) — a mutation is its own
+  notification, so a future write path can never again forget to invalidate
+  the tree, as #426/#427 did. `app.committedWorkspace`
+  (`ReadonlySignal<StoredWorkspaceV5 | null>`) and `app.treeNavigation`
+  (`ReadonlySignal<string>`, a `computed` structural key over exactly
+  `kind`/`dashboardId`/`currentMember`) are the two tracked reads the
+  `app-shell.ts` tab-count/tree/Library effects now subscribe through,
+  replacing `state.dashboardTreeRevision`. `app.currentWorkspace`'s setter
+  is asymmetric — it accepts no `null`; a transitional null publication
+  (workspace load failure, sign-out, an external delete) is now a named
+  departure operation owned by a new closure-private surface-retirement
+  coordinator in `app.ts`, which atomically batches the publication with the
+  disposal of any live shell so an about-to-be-torn-down surface never
+  repaints against transitional state. `app.reloadDashboardRoute()` (a
+  post-commit fold-and-reassign that would double-publish once the
+  aggregate is signal-backed) is deleted; the Dashboard-route post-commit
+  refresh is render-only. No persisted/schema change and no user-visible
+  behavior change — `tests/unit/surface-lifecycle-arch.test.ts` and
+  `tests/unit/surface-accessor-contracts.test.ts` back the structural/
+  compile-time claims with a static-source scan and `@ts-expect-error`
+  fixtures respectively.
 - **The project wiki moved in-repo, as tracked `.wiki/`.** The maintainer/agent
   knowledge base is no longer a separate `altinity-sql-browser.wiki.git`
   checkout; it is now `.wiki/` in this repository, versioned with the code and

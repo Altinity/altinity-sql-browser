@@ -399,15 +399,6 @@ export interface AppState {
    */
   upperRole: Signal<UpperPanelId>;
   /**
-   * #426 — the Dashboard tree's EXPLICIT repaint invalidation. The tree is a
-   * projection of the committed workspace aggregate plus main-surface navigation
-   * state, neither of which is a signal, so it cannot depend on incidental
-   * unrelated signal changes. Every trigger the issue lists — workspace
-   * projection or switch, a committed mutation, selected Dashboard/mode/member
-   * navigation, an external refresh — bumps this instead.
-   */
-  dashboardTreeRevision: Signal<number>;
-  /**
    * #426 — the Dashboard tree's expansion/search/scroll/keyboard state, per
    * workspace id. A plain Map, NOT a signal: see
    * `application/dashboard-tree-ui-state.ts` for why observing it would lose the
@@ -791,7 +782,6 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // id) resolves to 'saved' (Library), the documented default.
     sidePanel: signal(decodeSidePanelKey(read.loadStr(KEYS.sidePanel, 'saved'))),
     upperRole: signal<UpperPanelId>('databases'),
-    dashboardTreeRevision: signal(0),
     dashboardTreeUi: new Map(),
     // The localStorage startup ingress: v1 entries become canonical v2 in
     // memory without an eager write; future Spec versions fail closed here.
