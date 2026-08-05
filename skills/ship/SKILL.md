@@ -1,18 +1,33 @@
 ---
 name: ship
-description: Ship an altinity-sql-browser roadmap issue or phase end-to-end — resolve scope, plan against an invariant map, implement code and tests, run a budgeted readiness review, open a PR, obtain one clean exact-head ChatGPT review, and merge after approval (attended) or after strict certification (unattended). Invoke as `/ship ISSUE`, `/ship ISSUE.PHASE`, `/ship ISSUE unattended`, or `/ship ISSUE1,ISSUE2 unattended`.
+description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope, spawn a fresh worker per unit, iterate each unit's plan through a ChatGPT review loop to approval (max 5 passes), implement code and tests, open one PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds. Stops for a human only when a review loop exhausts its passes or a merge proof fails. Invoke as `/ship ISSUE`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
 ---
 
-# /ship — deliver an altinity-sql-browser issue
+# /ship — deliver altinity-sql-browser issues autonomously
 
 Use only in the `altinity-sql-browser` repository. Otherwise stop and say so.
 
-Follow `CLAUDE.md` (hard rules 1–5 and Working discipline) throughout. In attended mode,
-act as coordinator and implementer. In unattended mode, act only as coordinator and use
-fresh workers for implementation units.
+Follow `CLAUDE.md` (hard rules 1–5 and Working discipline) throughout.
 
-Proceed autonomously except at points marked `STOP`. Unattended mode has no approval
-stops, but it must skip ambiguous or blocked work rather than invent decisions.
+You are the **coordinator**. You do not implement units yourself. You plan waves, spawn
+workers and reviewers, verify their output with your own commands, run every ChatGPT
+review loop, integrate commits, and own everything git-remote-facing. A **unit** is a
+phase or a whole issue; units run in dependency order.
+
+**Why workers are mandatory:** there is no human to `/clear` between units, so the
+context bound comes from structure — every unit's implementation runs inside a fresh
+subagent with its own context window, and only a summary returns. Your context grows by
+~1–2k per unit, not by a full transcript. Never inline a unit's implementation into your
+own turn to save a spawn.
+
+Proceed autonomously. There are exactly two human stops, both failure stops:
+
+1. a unit's plan is not approved after **5** review passes (step 2.2);
+2. a merge proof condition fails at the gate — including no certified head after **3**
+   code review passes (step 3.6).
+
+Everywhere else, an ambiguous or blocked unit is **skipped and reported**, never guessed
+at — this is a settled-architecture project; don't invent decisions.
 
 ## Operating rules
 
@@ -23,10 +38,9 @@ stops, but it must skip ambiguous or blocked work rather than invent decisions.
 - Bare `gh issue view` and `gh pr edit` error on this repo: read with `--json`, and edit
   PR/issue bodies with `gh api -X PATCH` and `-F body=@<file>`. Never build a body with
   `$(cat …)` inside a quoted heredoc — write it to a file.
-- Never force-push or mutate `main` unless explicitly authorized.
+- Never force-push or mutate `main` directly.
 - One `/ship` run owns one working directory. Parallel runs require separate worktrees
-  (`claude --worktree <name>`); parallelize only dependency-independent units with
-  disjoint expected file footprints.
+  (`claude --worktree <name>`).
 - After any agent batch returns, verify actual state with `git diff`, `git log`, and
   `gh pr list` — never trust a self-report.
 
@@ -38,13 +52,26 @@ State the boundary in every prompt:
 - no Edit or Write
 - no git or gh mutation
 - no task or memory mutation
+- no `chatgpt-review` invocation
 - return analysis only
 
-Use fresh, non-forked agents for independent review (a fork inherits this in-progress
-mutating workflow). Pick the model per subtask: inherited model for planning/review and
-high-risk work, a cheaper capable model for mechanical searches and edits. The
-coordinator alone owns remote GitHub mutations, reconciliation, PR creation,
-review-session coordination, approval handling, and merge.
+Use fresh, non-forked agents (a fork inherits this in-progress mutating workflow). Pick
+the model per subtask: inherited model for high-risk work, `sonnet` for ordinary units
+and reviews. The coordinator alone owns remote GitHub mutations, reconciliation, PR
+creation, every `chatgpt-review` invocation, and the merge.
+
+### ChatGPT review loops
+
+- Agent Chrome is a **single session**: the coordinator runs every `chatgpt-review`
+  invocation itself and serializes them — workers and reviewers never invoke the skill,
+  and parallel units take their review passes one at a time.
+- Both loops use a **verdict protocol**: the question file instructs the reviewer to end
+  with exactly one line — `VERDICT: APPROVED` or `VERDICT: REVISE` for a plan,
+  `VERDICT: SHIP` or `VERDICT: REVISE` for a PR. A missing or malformed verdict counts
+  as REVISE (fail-closed), and the pass still counts against the cap.
+- **Verify every substantive finding against the real repository before trusting it** —
+  a second opinion, not a source of truth. Every finding ends in exactly one state:
+  accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop one.
 
 ### Output capture
 
@@ -55,34 +82,33 @@ accidental context sink in a run.
 
 ## 0 — Resolve invocation
 
-| Invocation | Mode | Scope |
-|---|---|---|
-| `/ship 447` | attended | next unshipped phase, or whole issue if unphased |
-| `/ship 447.2` | attended | phase 2 of #447, forced |
-| `/ship 447 unattended` | unattended | all remaining phases of #447 |
-| `/ship 424,425 unattended` | unattended | several whole issues |
+| Invocation | Scope |
+|---|---|
+| `/ship 447` | all remaining phases of #447, or the whole issue if unphased |
+| `/ship 447.2` | phase 2 of #447 only, forced |
+| `/ship 424,425` | several whole issues |
 
-Attended is the default. **Unattended requires the literal word** — never infer it.
+The legacy word `unattended` is accepted and ignored — this is the only mode.
 
-For unattended, Read `references/unattended.md` now and follow it; it replaces steps 1,
-6, 7 and 8 below and reuses steps 2–5 as the worker contract.
+## 1 — Orient and assemble the delivery contracts
 
-## 1 — Orient and assemble the delivery contract
+**Read `references/repo-footguns.md` and `references/per-issue-cycle.md` now.** The
+footguns apply across every step; the cycle is the worker contract you will hold every
+unit to — one source of truth, quoted, never paraphrased.
 
-**Read `references/repo-footguns.md` now** — repo-specific operational knowledge that
-applies across steps 2–8.
-
-Load the issue body to a file, not into context:
+Load each issue body to a file, not into context:
 
 ```sh
 gh issue view <ISSUE> --json body -q .body > "$TMPDIR/issue-<ISSUE>.md"
 ```
 
+The bodies are the spec and are deliberately self-contained; never rely on chat history.
+
 Detect phases in this order of precedence:
 
 1. a `## Phases` checklist of `- [ ] N — title` rows;
 2. `### Phase N` headings (typically under `## Delivery phases`);
-3. neither → single-phase; ship the issue whole.
+3. neither → single-phase; the issue is one unit.
 
 Find the authoritative `<!-- ship-log -->` comment — never infer phase state from PR
 titles (they go stale when phase counts are re-scoped mid-flight):
@@ -92,149 +118,197 @@ gh api repos/{owner}/{repo}/issues/<ISSUE>/comments --paginate \
   --jq '.[] | select(.body | startswith("<!-- ship-log -->")) | .id' > "$TMPDIR/logid"
 ```
 
-The target is the first phase not marked `shipped`, unless the invocation forces one.
-If no log exists, the target is phase 1.
+The units are every phase not marked `shipped` (or the one phase the invocation forces).
+If no log exists, start at phase 1.
 
-**Read only what this unit needs** from the issue file: the header (depends-on /
+**Read only what each unit needs** from the issue file: the header (depends-on /
 supersedes / owner decisions), the phase list, the target phase's own section, its
 matching `### Phase N` subsection under `## Tests` if the issue splits tests that way,
 the global `## Acceptance criteria`, and `## Non-goals`. Skip other phases' detail.
 
 **The delivery contract** is the union of: the phase's implement list, its per-phase
 `## Tests` subsection, any acceptance-gate blockquote in the phase section, the subset
-of global acceptance criteria this phase claims (name that subset explicitly, so the
+of global acceptance criteria the phase claims (name that subset explicitly, so the
 remainder is visibly deferred rather than silently dropped), and `## Non-goals`.
 Missing the per-phase `## Tests` subsection because it lives outside the phase heading
 is the most likely way to under-deliver a phase — check every time.
 
-`STOP` — check dependencies for *this unit*, not just the issue: the `Depends on:`
-header and anything the target phase's own section references. Blocked → say what
-blocks it and offer the highest unblocked unit instead.
+**Dependencies:** check the `Depends on:` header and anything each unit's own section
+references. A blocked unit → skip it (leave its commits out), continue the rest, and
+list it in the final report — the same policy as for units needing an unrecorded
+decision.
 
-### Branch model (once per issue, recorded in the ship log)
+### Wave plan and integration branch
 
-> Can each phase land on `main` green **and** self-consistent — additive, behind a
-> flag, or pure-logic-then-wire?
+- Sequence the dependency spine. Parallelize only units whose planned file footprints
+  are disjoint — when in doubt, serialize; a merge conflict costs more than lost
+  parallelism. Phases of one issue are almost always a spine, not a wave.
+- **One integration branch for the whole run, one PR at the end**, off the remote
+  default: `git fetch origin && git checkout -b <type>/<slug> origin/main`. Push
+  immediately so CI runs from the start. (In a worktree, local `main` is stale — see
+  footguns.)
+- Run `npm ci` when dependencies may have changed or `node_modules` is absent.
 
-- **Yes → one branch and PR per phase off fresh `main`** (the default):
-  `git fetch origin && git checkout main && git pull && git checkout -b <type>/<slug>-<ISSUE>p<N>`
-- **No → one integration branch for the whole issue** off `origin/main`, one PR at the
-  end. Say so explicitly and record it in the ship log.
+## 2 — Per unit (repeat per wave)
 
-Single-phase issue: branch `<type>/<slug>-<ISSUE>` off `main` — or off the dependency
-branch if it builds on unmerged work. When a phase is subtractive, call out the revert
-cost (backing a deletion out of `main` alone is expensive) — a reason to raise it, not
-to silently switch models.
+### 2.1 Spawn the worker — plan first, no code
 
-Run `npm ci` after updating `main` when dependencies may have changed or `node_modules`
-is absent.
+Fresh agent (`subagent_type: "general-purpose"`, **never `fork`** — a fork inherits
+this in-progress mutating workflow and can conclude it should finish the whole job).
+`model: "sonnet"` unless the wave plan marks the unit high-risk, in which case omit
+`model` to inherit yours. Parallel workers get `isolation: "worktree"`; a solo worker
+may use the main tree on `wip/<unit>-<slug>` off the current integration HEAD.
 
-## 2–5 — The per-issue cycle
+The worker prompt must contain, explicitly:
 
-**Read `references/per-issue-cycle.md` now**, before writing any plan or code, and
-follow it. It holds plan → implement → readiness review → reconcile, including the risk
-classification, the invariant map, the review budgets, and the exact local gate. It is
-the same contract unattended workers are held to — one source of truth, so the two
-paths cannot drift.
+- the issue number, the phase (if any), and the instruction to load the body with
+  `gh issue view <n> --json body -q .body` and treat the **assembled delivery
+  contract** as the definition of done — implement list + `## Tests` subsection +
+  acceptance gate + named subset of global criteria;
+- **the mutation boundary**: Edit/Write + local `git commit` on its own branch only —
+  no push, no PR, no `gh` mutations, no issue edits, no ship-log writes, no memory
+  writes, no `CHANGELOG.md` beyond its own entry, no TaskCreate/TaskUpdate, and never
+  invoke `chatgpt-review` (the coordinator owns all review sessions);
+- the instruction to follow `skills/ship/references/per-issue-cycle.md` steps 1–3 and
+  the CHANGELOG part of step 4 — **the ship log is yours, not the worker's** — plus
+  `references/repo-footguns.md`;
+- **its first deliverable is the plan only**: write the plan (cycle step 1) to the
+  exact path `$TMPDIR/plan-<ISSUE>p<N>.md` (or `$TMPDIR/plan-<ISSUE>.md` unphased),
+  return the plan summary and that path **without writing any code**, then wait for
+  plan approval via `SendMessage`;
+- commit message `<type>(#<ISSUE>): <summary>` + the repo footer convention;
+- what to return after implementing: invariant map, files touched, gate/e2e output
+  tail, sabotage-case results, and the contract checklist with each item ticked or
+  explained.
 
-## 6 — Create the PR
+A worker that reports the unit ambiguous or dependent on an unrecorded decision →
+skip the unit, report the missing decision in the final report, move on.
 
-Performed by **this session only** — never delegate commit/push/PR-create.
+### 2.2 Plan review loop — coordinator-run, every unit, max 5 passes
 
-- Commit with the repo footer convention (Co-Authored-By + Claude-Session), then
-  `git push -u origin <branch>`.
-- `gh pr create --base main`, title + body per `.github/PULL_REQUEST_TEMPLATE.md`.
-- Title: `<type>(#<ISSUE>): <summary>`; append ` (phase <N>)` for phased work. Never a
-  running count like `(2/3)` — the ship log owns the count and totals change.
-- `Closes #<ISSUE>` only when this PR completes the whole issue; earlier phases use
-  `Part of #<ISSUE>`.
-- Body covers: contract coverage, invariant verification, sabotage cases, tests, build,
-  and e2e results. Tick the template checklist. Report the PR URL.
+The plan file **path** is the review-session identity — the worker revises the same
+file in place; never move or rename it mid-loop (footguns).
 
-## 7 — ChatGPT exact-head review
+1. Write a context file to `$TMPDIR`: the unit contract and acceptance subset, focused
+   questions, and the verdict protocol — "End your review with exactly one line:
+   `VERDICT: APPROVED` or `VERDICT: REVISE`."
+2. Run (plan mode never publishes):
 
-Performed by this session only. Read `skills/chatgpt-review/SKILL.md`, write a focused
-question file to the approved temporary directory containing: the unit contract and
-acceptance subset, the invariant map, compatibility requirements, tests and sabotage
-cases, and the behaviors that need adversarial review. Then:
+   ```sh
+   node skills/chatgpt-review/scripts/chatgpt-review.mjs plan <plan-file> --question-file <context-file>
+   ```
 
-```sh
-node skills/chatgpt-review/scripts/chatgpt-review.mjs pr <PR-URL> --question-file <FILE>
-```
+   Later passes: the same command plus `--session <handle>` so the reviewer reassesses
+   in the same conversation.
+3. `VERDICT: REVISE` → verify each finding against the repo; send the accepted ones to
+   the worker (`SendMessage` — **check out its branch first**, footguns); the worker
+   revises the plan file in place; rerun.
+4. `VERDICT: APPROVED` → record the pass count and conversation URL for the ship log;
+   proceed to 2.3.
 
-Retain the returned JSON: status, opaque `session` handle, reviewed SHA, and public
-comment URL. **Verify every substantive finding against the real repository before
-trusting it** — a second opinion, not a source of truth. Every finding ends in exactly
-one state: accepted-and-fixed, rejected-with-reason, or unresolved. Never silently drop
-one.
+**Cap: 5 total passes per unit** (skill-enforced; the script caps only `pr` mode).
+Not approved after 5 → **FULL STOP — human decision needed.** Present the latest plan,
+the contested points, and the conversation URL, and ask the human: approve the latest
+plan, redirect, or skip the unit. Write no code for this unit before that decision.
 
-Fix pass: apply accepted findings, run the full local gate, commit, push, wait for
-green CI at the new head, then rerun with `--session <SESSION_HANDLE>` so ChatGPT
-reassesses every earlier finding in the same conversation. Each accepted-and-fixed pass
-gets its own pushed commit and separately labelled public review comment.
+### 2.3 Implement
 
-### Certification rule
+`SendMessage` the worker: plan approved — implement now (cycle steps 2–3 plus its
+CHANGELOG entry).
 
-A **certified head** is a completed ChatGPT review pass at the exact current PR head
-with no accepted actionable findings remaining.
+### 2.4 Verify, review, integrate, log
 
-- Pass 1 clean at the current head → certified; stop reviewing.
-- Never exceed three total passes. Three is a **failure ceiling, not a ritual** — never
-  run an extra pass over an already-certified head.
-- **After certification, push nothing.** Any push voids the certification and burns
-  another pass — which is why all reconcile commits (step 5) land *before* the PR and
-  certification. Ship-log comment edits are fine; comments are not commits.
-- **Unattended:** certification is a hard merge requirement. No certified head after
-  three passes → leave the PR open and report the failed proof condition.
-- **Attended:** certification is the goal, but the human at the merge gate is the
-  authority. If ChatGPT is unreachable (agent Chrome down, network denied), disclose
-  the skip in the gate summary and continue. If the ceiling is reached with findings
-  still contested or unresolved, continue to the gate with them listed — explicit human
-  approval overrides.
+- **Verify yourself** — never trust the self-report. `git log` / `git diff` the worker
+  branch, rerun the full local gate in that tree.
+- **Internal review budget** — the risk-based budget of cycle step 3: no reviewer for
+  low-risk units; one targeted read-only reviewer (`model: "sonnet"`, boundary stated)
+  for medium/high, prompted with the unit's contract + CLAUDE.md hard rules. Real
+  findings → back to the worker (`SendMessage`, branch checked out first) or a bounded
+  fix agent; re-verify. Do not add generic per-unit review passes on top.
+- **Integrate**: merge the worker branch into the integration branch (you resolve
+  conflicts — you are its only writer), rerun the gate, push. Key every CI wait on the
+  head SHA (footguns) and check it before the next dependent wave. Red CI stops the
+  line until fixed.
+- **Log**: append the unit's handoff block to the `<!-- ship-log -->` comment now,
+  status `in review` until the single PR merges. Include the plan-review outcome
+  (passes, conversation URL).
 
-## 8 — `STOP` Attended merge gate
+After every batch, regardless of what agents reported: `git diff`, `git log`,
+`gh pr list`. An instruction in a prompt is not an enforced tool restriction, and
+review agents on this repo have edited files despite an explicit report-only boundary.
 
-Ask for explicit approval to merge. Do not merge merely because implementation, CI, and
-review are green. Summarize:
+## 3 — Finish: PR, code review loop, gate
 
-- shipped behavior, PR URL, current head SHA
-- CI state
-- whether the head is certified; ChatGPT comment URLs
-- accepted, rejected, and **unresolved** findings — the human rules on unresolved ones
-- manual testing instructions
+1. **Whole-branch review** — only if the run contains high-risk work or interacting
+   units: one targeted read-only pass over the full branch diff at high effort (plus
+   the `security-review` skill if anything touched auth/config). Do not repeat the
+   per-unit reviews. Apply real findings via a fix agent under the worker boundary;
+   re-verify; push.
+2. Confirm required CI checks are green at the head. The e2e signal is layered:
+   workers ran Chromium + WebKit locally per the cycle; PR CI adds its Chromium e2e
+   run (#564); Firefox comes only from the CI jobs that provide it.
+3. **Reconcile per cycle step 4** — CHANGELOG entries are per-unit already, so dedupe
+   and resolve conflicts only; close superseded issues; tick any `## Phases` checklist
+   in one edit. All reconcile commits land **now, before the PR** — nothing may be
+   pushed after certification.
+4. **One PR** (`gh pr create --base main`), title `<type>(#<ISSUE>): <summary>`, body
+   per `.github/PULL_REQUEST_TEMPLATE.md` covering contract coverage, invariant
+   verification, sabotage cases, tests, build, and e2e results; a per-unit summary
+   table; `Closes #<n>` per fully completed issue (`Part of #<n>` for partial or
+   skipped); the repo PR footer.
+5. **Code review loop — max 3 passes.** Write a question file to `$TMPDIR`: the unit
+   contracts and acceptance subsets, the invariant maps, compatibility requirements,
+   tests and sabotage cases, the behaviors that need adversarial review, and the
+   verdict protocol — "End your review with exactly one line: `VERDICT: SHIP` or
+   `VERDICT: REVISE`." Then:
 
-Serve the app with `npm run local` for manual verification (see footguns for port/PID
-discipline). If approval is withheld, leave the PR open and report the exact
-outstanding condition.
+   ```sh
+   node skills/chatgpt-review/scripts/chatgpt-review.mjs pr <PR-URL> --question-file <FILE>
+   ```
 
-After approval:
+   Retain the returned JSON: status, opaque `session` handle, reviewed SHA, and public
+   comment URL.
 
-1. Re-read the PR head SHA — approval must not race a new push.
-2. Confirm the certified SHA still matches, or restate the disclosed skip/override.
-3. Confirm required checks are green at that head.
-4. `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit convention).
-5. Verify the PR reports `MERGED` and `origin/main` contains the merge.
-6. Update the ship-log row to `shipped`.
+   Fix pass: apply accepted findings, run the full local gate, commit, push, wait for
+   green CI at the new head, then rerun with `--session <handle>` so ChatGPT reassesses
+   every earlier finding in the same conversation. Each fix pass gets its own pushed
+   commit and separately labelled public review comment.
 
-If phases remain, end with this instruction in substance:
+   A **certified head** is a completed pass whose reviewed SHA equals the current PR
+   head, verdict `SHIP`, and no accepted actionable findings remaining.
 
-> Phase `<N>` was merged as PR `<url>`. Start a **fresh session** — `/clear`, then
-> `/ship <ISSUE>` — for phase `<N+1>`. Don't resume this one with `--continue`/
-> `--resume`; that restores this context instead of clearing it.
+   - First clean pass at the current head → certified; stop reviewing. Never re-review
+     an already-certified head — three is a failure ceiling, not a ritual (and the
+     script enforces the cap for `pr` mode).
+   - **After certification, push nothing.** Any push voids the certification and burns
+     another pass — which is why all reconcile commits landed in step 3.3. Ship-log
+     comment edits are fine; comments are not commits.
+6. **The gate.** Merge automatically — no prompt — only when ALL hold at one exact head:
 
-Context does not reset on its own; running `/ship` again in this session stacks a
-second phase's plan, tests, and reviews on top of this one, which auto-compaction then
-eats unpredictably. The fresh session is safe only because step 5 wrote the handoff to
-the issue first — this conversation is not the record.
+   - certified head (step 3.5);
+   - reviewed SHA equals the current PR head;
+   - required CI checks green at that head;
+   - branch protection permits the merge.
 
-## 9 — Final report
+   Then `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit
+   convention), verify the PR reports `MERGED`, fetch `origin/main` and verify the
+   merge, and flip every included ship-log row to `shipped`.
 
-Report: unit status, PR and merge URLs, final SHA, CI state, tests/build/e2e results,
-sabotage verification, ChatGPT comment URLs with accepted/rejected/unresolved findings,
-skipped units, and ship-log updates.
+   **Any condition fails** — no certified head after 3 passes, ChatGPT unreachable or
+   a pass incomplete, SHA drift, CI red or pending, branch protection refusal —
+   → **FULL STOP — human decision needed.** Do not merge. Summarize the PR URL, head
+   SHA, CI state, certification state, and every accepted, rejected, and **unresolved**
+   finding with its comment URL, then ask the human to rule: merge anyway, leave the
+   PR open, or direct further work. Their decision governs.
 
-## 10 — Friction → memory
+## 4 — Final report
+
+Report: PR and merge URLs, per-unit shipped/skipped status and why, plan-loop pass
+counts, every ChatGPT conversation/comment link, findings
+accepted/rejected/unresolved, final head SHA, CI state, and ship-log updates.
+
+## 5 — Friction → memory
 
 If anything needed retries or surprised you (test / env / scope), save a concise memory
 so the next `/ship` doesn't repeat it. Record stable process knowledge, not transient
-review chronology. This session does the saving, never a subagent.
+review chronology. The coordinator writes it, never a subagent.

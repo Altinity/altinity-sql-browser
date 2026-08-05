@@ -8,7 +8,7 @@ repo; when one bites anyway, update this file in the same change.
 - **`ignore-scripts=true` is set in this environment's `.npmrc`** — `pretest` and
   `prebuild` never run, so a green `npm test` proves nothing about tsc, architecture
   boundaries, or schema freshness. The full gate is the explicit chain in
-  `per-issue-cycle.md` step 3.
+  `per-issue-cycle.md` step 2.
 - `npm test` sets `TZ=America/New_York`; a raw `npx vitest` fails ~14 relative-time
   tests. For a single spec file use
   `npx vitest run <file> --config tests/vitest.config.ts` (without `--config` it
@@ -63,6 +63,17 @@ repo; when one bites anyway, update this file in the same change.
   `git checkout --` (it deletes the uncommitted fix).
 - Never `git stash` mid-merge — it silently deletes `MERGE_HEAD` and the next commit
   stops being a merge.
+
+## ChatGPT review (`chatgpt-review`)
+
+- Agent Chrome is **one session**: the coordinator runs every `chatgpt-review`
+  invocation itself and serializes them. Parallel workers must never invoke the skill —
+  two concurrent runs corrupt each other's conversation.
+- A plan review session's identity is the plan file's **absolute path**
+  (`plan:<path>`). Revise the same file in place across passes; a moved or renamed
+  plan file silently starts a new conversation and loses the reviewer's history.
+- The 3-pass cap is script-enforced for `pr` mode only; the 5-pass plan cap exists
+  only in the skill text — count passes yourself.
 
 ## Local server (`npm run local`)
 

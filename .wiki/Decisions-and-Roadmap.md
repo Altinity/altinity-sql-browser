@@ -95,7 +95,8 @@ Two roadmap tracks are current:
 - **Refactor/umbrella track — #593** ("Umbrella: V2 architecture refactor —
   shell primitives, composition root, state reactivity, transport adapter")
   sequences the ADR-0004 follow-through into one ordered `/ship` execution
-  plan, one PR per phase with a human merge gate between phases: Phase 1
+  plan, phase by phase (shipped under the pre-2026-08-05 per-phase-PR flow;
+  `/ship` now integrates units onto one branch/PR per run): Phase 1
   #586 (`SurfaceLifecycle` + docked right-inspector slot, unblocks #488),
   Phase 2 #587 (side-panel registry, unblocks #487, salvages
   `feat/nav-section-registry-487p2`/PR #573), Phase 3 #591 (fail-closed
