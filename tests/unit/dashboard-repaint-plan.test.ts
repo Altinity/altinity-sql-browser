@@ -202,6 +202,58 @@ describe('dashboardRepaintPlan — republishFlow (mobile breakpoint flip)', () =
     expect(sigs.persistSig).toBe(memo.persistSig);
     expect(sigs.structuralSig).toBe(memo.layoutSig); // flow active → the flow slot, untouched
   });
+
+  it('never computes the real persist bag on this branch — `sigs.persistBag` is the cheap placeholder, not `dashboardPersistBag(view.variableStates)`', () => {
+    const view = baseView({
+      variableStates: [variable({ id: 'n', value: '9', active: true })],
+      layout: { engine: 'flow', preset: 'report', columns: 2, mobile: false, rows: [], order: [] },
+    });
+    const memo = seedRepaintMemo({ mobileNow: false, view: baseView() });
+    const { sigs } = dashboardRepaintPlan(memo, { view, mobileNow: true, gridInvalidationRev: 0 });
+    expect(sigs.persistBag).toEqual({});
+  });
+});
+
+// #589 ChatGPT review finding 1(b): `sigs` on the `republishFlow` branch is
+// entirely discarded by the caller (`dashboard.ts` returns immediately after
+// `republishFlow` without ever reading `sigs.persistBag` — the only consumer
+// is the `plan.persistVars` block, and `persistVars` is always `false` here),
+// so computing the real persist bag on this branch was pure waste plus
+// unnecessary throw exposure: `dashboardPersistBag` calls `String()` on every
+// variable's `unknown` value, which can throw for a pathological value. These
+// two tests are a matched pair over the SAME poisoned value: the first proves
+// the poisoned value is never reached when `republishFlow` is true (a real
+// proof, not vacuous, only because the second test proves that exact value
+// WOULD throw if the persist bag were computed for real on a publish that
+// actually needs it).
+describe('dashboardRepaintPlan — the persist bag is never computed on the republishFlow branch (finding 1b, #589 ChatGPT review)', () => {
+  const poisoned = { toString(): string { throw new Error('boom'); } };
+
+  it('does not throw when republishFlow is true, even though the variable value would throw if stringified', () => {
+    const view = baseView({
+      variableStates: [variable({ id: 'n', value: poisoned, active: true })],
+      layout: { engine: 'flow', preset: 'report', columns: 2, mobile: false, rows: [], order: [] },
+    });
+    const memo = seedRepaintMemo({ mobileNow: false, view: baseView() }); // seeded against an unrelated, unpoisoned view
+    expect(() => dashboardRepaintPlan(memo, { view, mobileNow: true, gridInvalidationRev: 0 })).not.toThrow();
+  });
+
+  it('DOES throw on the exact same poisoned value once republishFlow is false — proving the assertion above is a real proof', () => {
+    const view = baseView({
+      variableStates: [variable({ id: 'n', value: poisoned, active: true })],
+      // grafana-grid can never take the republishFlow branch (it has no
+      // `mobile` concept of its own — see the guard in dashboardRepaintPlan),
+      // so this publish reaches the unconditional `dashboardPersistBag` call
+      // below regardless of the mobile inputs.
+      layout: {
+        engine: 'grafana-grid',
+        grid: { engine: 'grafana-grid', columns: 12, style: 'grid', tiles: [] },
+        renderMode: 'tiles',
+      },
+    });
+    const memo = seedRepaintMemo({ mobileNow: false, view: baseView() });
+    expect(() => dashboardRepaintPlan(memo, { view, mobileNow: true, gridInvalidationRev: 0 })).toThrow('boom');
+  });
 });
 
 describe('dashboardRepaintPlan — rebuildBar', () => {

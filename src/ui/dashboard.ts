@@ -2341,6 +2341,22 @@ export async function renderDashboard(
   const disposeDashboardEffect = effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
+    // #589 ChatGPT review: commit `memo.mobile` FIRST, unconditionally, as the
+    // literal first statement of this effect body (right after reading
+    // `sview`/`mobileNow`) — matching pre-extraction exactly (`lastMobile =
+    // mobileNow` was the absolute first statement in BOTH branches there,
+    // before `barSig`/`optionsSig`/the persist bag were ever computed).
+    // `priorMobile` is captured before the commit and handed to
+    // `dashboardRepaintPlan` in place of the (now-already-advanced)
+    // `memo.mobile`, so the planner's OWN `republishFlow` comparison still
+    // sees the value mobile held BEFORE this publish — exactly what it read
+    // when the commit happened later. This way a throw anywhere later in this
+    // effect (e.g. `dashboardPersistBag`'s `String()` over a pathological
+    // variable value, inside the planner) can never leave `memo.mobile`
+    // stale, the same class of partial-failure bug already fixed for engine
+    // switches.
+    const priorMobile = memo.mobile;
+    memo.mobile = mobileNow;
     // Snapshotted once here — the exact value `dashboardRepaintPlan`'s input
     // carried this publish — and threaded through to `reconcileGrafanaGrid`'s
     // own commit below, rather than that commit re-reading the live
@@ -2350,7 +2366,7 @@ export async function renderDashboard(
     // whatever the live counter happens to hold by the time the reconciler
     // runs) is the defensively-correct value regardless.
     const consumedGridInvalidationRev = gridStructureInvalidationRev;
-    const { plan, sigs } = dashboardRepaintPlan(memo, {
+    const { plan, sigs } = dashboardRepaintPlan({ ...memo, mobile: priorMobile }, {
       view: sview, mobileNow, gridInvalidationRev: consumedGridInvalidationRev,
     });
     // A breakpoint flip after the last publish needs a fresh flow model —
@@ -2358,11 +2374,9 @@ export async function renderDashboard(
     // grafana-grid has no `mobile` concept of its own (its responsive
     // behavior is the `containerWidth`-driven effective-columns clamp below).
     if (plan.republishFlow) {
-      memo.mobile = mobileNow;
       syncSessionDocument(currentDoc);
       return;
     }
-    memo.mobile = mobileNow;
     // Rebuild the shared variable bar only on a STRUCTURAL change (activation or
     // committed value) — not on a bare status flip, not on tile progress ticks,
     // and (#447 phase 2) NOT when an option list arrives. `status` and

@@ -153,6 +153,16 @@ export function dashboardRepaintPlan(
     // `sigs` below intentionally echo `memo` unchanged (never a freshly
     // computed value) so a caller mistake that consumed them anyway would be
     // a harmless no-op rather than a silent behavior change.
+    //
+    // #589 ChatGPT review: `sigs` as a WHOLE is discarded by the caller on
+    // this branch — `dashboard.ts` returns immediately after `republishFlow`
+    // without ever reading `sigs.persistBag` (the only consumer is the
+    // `plan.persistVars` block, and `persistVars` is always `false` here).
+    // Computing the real persist bag would still call `valueString`/
+    // `String()` over every variable's `unknown` value for nothing, and
+    // exposes a throw (a pathological variable value) that this branch's own
+    // caller can never observe — so a cheap placeholder stands in for it
+    // instead of `dashboardPersistBag(view.variableStates)`.
     return {
       plan: {
         republishFlow: true,
@@ -167,7 +177,7 @@ export function dashboardRepaintPlan(
         barSig: memo.barSig,
         optionsSig: memo.optionsSig,
         labelWaveNowMs: memo.labelWaveNowMs,
-        persistBag: dashboardPersistBag(view.variableStates),
+        persistBag: {},
         persistSig: memo.persistSig,
         // `republishFlow` can only be true while `view.layout.engine ===
         // 'flow'` (see the guard above) — always the flow slot here, never
