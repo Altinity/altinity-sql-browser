@@ -25,6 +25,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   consistent comment/blank-stripped metric). Production ClickHouse transport
   behavior is unchanged — `src/net/ch-client.ts` remains authoritative, and
   no production cutover occurred.
+- **#585 Phase 1: internal transport seam, no behavior change.** Defined a
+  narrow SQL Browser ClickHouse-transport contract
+  (`src/net/clickhouse-transport.types.ts`: `ClickHouseTransport`,
+  `TransportDeps`, `TransportRequest`, `StreamCallbacks`) and put the current
+  custom HTTP implementation behind it
+  (`src/net/clickhouse-http-transport.ts`: `createHttpTransport`, plus
+  `chUrl`/`ChUrlOpts` moved verbatim from `ch-client.ts` and re-exported
+  unchanged). `ch-client.ts`'s auth/epoch/retry policy, product operations,
+  and `ChCtx` are otherwise untouched — no new `ChCtx` field, no runtime
+  transport switch. `authedFetch` is the one exported-signature change (its
+  only importers are `ch-client.ts` internals and its own unit test): it now
+  takes a structured request instead of a prebuilt URL string, and snapshots
+  the caller's `settings`/`params` synchronously at entry (before its first
+  await) as a single centralized aliasing defense. Added a reusable
+  contract-test-suite factory (`tests/unit/clickhouse-transport-contract.ts`),
+  registered against the current implementation only — Phases 2–4 (an
+  official-client cutover) remain out of scope and do not proceed without a
+  new decision, per ADR-0005 (Rejected). `build/check-boundaries.mjs` gains a
+  bare-specifier ban on `@clickhouse/client-web` anywhere under `src/**`
+  (mirrored as a coverage-gated unit test) and twin rules keeping the
+  transport implementation and its type-only contract from reaching
+  auth/application policy or UI, even type-only. No user-visible or
+  production-behavior change; bundle size delta ≈ 0 (pure code movement).
 - **Opt-in ChatGPT-authored `/ship` planning.** `/ship <scope> --planner chatgpt`
   keeps the existing Fable-authored workflow as the default, but lets ChatGPT own
   complete plan drafts and revisions while Fable/high performs repository-grounded

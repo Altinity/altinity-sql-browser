@@ -51,7 +51,11 @@ module mocking.
 ## Query path
 
 1. The editor/controller prepares SQL and typed parameters.
-2. `src/net/ch-client.js` sends the HTTP request with injected auth/fetch context.
+2. `src/net/ch-client.js` sends the HTTP request with injected auth/fetch context,
+   delegating generic request construction and stream mechanics through a narrow
+   transport contract (`src/net/clickhouse-transport.types.js` +
+   `src/net/clickhouse-http-transport.js`, #585 Phase 1) — auth/epoch/retry policy
+   stays in `ch-client.js`.
 3. `JSONStringsEachRowWithProgress` is folded line by line by pure stream logic.
 4. Results resolve through the panel registry to table, chart, logs, KPI, filter,
    text, or graph-oriented renderers.

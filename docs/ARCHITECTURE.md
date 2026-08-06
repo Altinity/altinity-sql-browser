@@ -199,6 +199,28 @@ folded via the pure `applyStreamLine`; a single automatic token refresh on
 401/403/`token_verification_exception` (before `authConfirmed` flips, an auth
 failure signs out; after, it is a query error).
 
+### Transport seam (#585 Phase 1)
+
+Generic request construction and stream mechanics are split out behind a
+narrow contract: `net/clickhouse-transport.types.ts` declares
+`ClickHouseTransport` (`send`/`streamLines`), `TransportDeps` (`fetch`/
+`origin` accessors — read live per request, never snapshotted, since the
+live `chCtx.origin` is mutated in place on sign-in), and `TransportRequest`.
+`net/clickhouse-http-transport.ts`'s `createHttpTransport` is the current
+custom HTTP implementation of that contract — `chUrl`/`ChUrlOpts` live there
+now, re-exported unchanged from `ch-client.ts`. `ch-client.ts` keeps every
+auth/epoch/retry/lifecycle policy (`authedFetch`), product operation, and
+`ChCtx` exactly as before; a module-private `transportFor(ctx)` delegates
+unconditionally to `createHttpTransport` — `ChCtx` gained no field and there
+is no runtime transport switch. `authedFetch` snapshots the caller's
+`settings`/`params` synchronously at entry, before its first await, as one
+centralized defense against a caller mutating those objects while a
+token/refresh await is pending. A reusable contract-test-suite factory
+(`tests/unit/clickhouse-transport-contract.ts`) registers against this one
+implementation; a future official-client implementation (ADR-0005 is
+Rejected; Phases 2–4 do not proceed without a new decision) would satisfy the
+same contract and reuse the same suite.
+
 ## Build
 
 `build/build.mjs` runs esbuild (bundle + minify, IIFE), inlines the script and
