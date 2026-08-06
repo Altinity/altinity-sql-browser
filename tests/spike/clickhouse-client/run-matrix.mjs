@@ -194,6 +194,26 @@ function countNonBlankLines(src) {
   return src.split('\n').filter((l) => l.trim().length > 0).length;
 }
 
+/** THE single "physical LOC" metric every deletion-estimate term is measured
+ * with — comments and blank lines stripped, then non-blank lines counted.
+ * `measureLoc()` (whole file) and `classifyFunctionRangesFromSource()` (one
+ * symbol's line range) both call this SAME function so the numbers
+ * `computeDeletionEstimate()` combines are one consistent figure end to end.
+ *
+ * A P3 review finding (issue #585 Phase 0) caught the previous shape of this:
+ * `classifyFunctionRanges` summed the RAW `starts[i+1].line - starts[i].line`
+ * line-range diff (every comment and blank line inside the range included),
+ * while `measureLoc`'s `physical` field was already comment/blank-stripped —
+ * two different "physical LOC" definitions combined as one "executable LOC"
+ * formula in `computeDeletionEstimate`. The inflation was concentrated in
+ * comment-heavy functions (verified: `runOfficial`'s raw range is ~34% larger
+ * than its comment/blank-stripped count), so it materially skewed exactly the
+ * figures (`ch-client.ts` buckets, `official-adapter.ts`'s core) the ADR's
+ * deletion estimate leans on hardest. */
+function physicalLineCount(src) {
+  return countNonBlankLines(stripComments(src));
+}
+
 /** Physical source lines excluding blanks/comments, and "transformed
  * executable lines" (esbuild's own TS type-erasure — interfaces/type
  * annotations removed, no minification — then the same blank/comment strip).
@@ -201,23 +221,28 @@ function countNonBlankLines(src) {
  * reading the file, both are reproducible and cheap. */
 async function measureLoc(absPath) {
   const src = await readFile(absPath, 'utf8');
-  const physical = countNonBlankLines(stripComments(src));
+  const physical = physicalLineCount(src);
   const { transform } = await import('esbuild');
   const erased = await transform(src, { loader: 'ts', format: 'esm', minify: false });
-  const transformedExecutable = countNonBlankLines(stripComments(erased.code));
+  const transformedExecutable = physicalLineCount(erased.code);
   return { physical, transformedExecutable };
 }
 
 /** Regex-detect top-level `export function`/`export async function`/
- * `export const` symbol boundaries in a TS source file and sum physical line
- * counts per caller-supplied bucket. Throws on any detected symbol absent
- * from `classification` — the deletion estimate must fail loudly on drift
- * (a renamed/added/removed function), never silently miscount (memory:
- * "Comments asserting invariants drift silently"). `classification` maps
- * symbol name -> bucket key; `ignore` lists symbols deliberately excluded
- * (e.g. a type-only interface) without being counted in any bucket. */
-async function classifyFunctionRanges(absPath, classification, ignore = []) {
-  const src = await readFile(absPath, 'utf8');
+ * `export const` symbol boundaries in an in-memory TS source string and sum
+ * `physicalLineCount()` — the SAME comment/blank-stripped metric
+ * `measureLoc()` uses — per caller-supplied bucket, over each symbol's own
+ * line range. Throws on any detected symbol absent from `classification` —
+ * the deletion estimate must fail loudly on drift (a renamed/added/removed
+ * function), never silently miscount (memory: "Comments asserting invariants
+ * drift silently"). `classification` maps symbol name -> bucket key;
+ * `ignore` lists symbols deliberately excluded (e.g. a type-only interface)
+ * without being counted in any bucket. Pure (no file I/O) so a review-fix
+ * regression test can exercise the counting logic directly against a literal
+ * fixture string; `classifyFunctionRanges` below is the thin file-reading
+ * wrapper the orchestrator actually calls. `sourceLabel` is only used to name
+ * the source in the unclassified-symbol error message. */
+export function classifyFunctionRangesFromSource(src, classification, ignore = [], sourceLabel = '<source>') {
   const lines = src.split('\n');
   const starts = [];
   const re = /^export\s+(?:async\s+)?function\s+(\w+)|^export\s+const\s+(\w+)/;
@@ -230,16 +255,22 @@ async function classifyFunctionRanges(absPath, classification, ignore = []) {
   const unclassified = [];
   for (let i = 0; i < starts.length - 1; i += 1) {
     const { name } = starts[i];
-    const count = starts[i + 1].line - starts[i].line;
+    const rangeSrc = lines.slice(starts[i].line - 1, starts[i + 1].line - 1).join('\n');
+    const count = physicalLineCount(rangeSrc);
     if (ignore.includes(name)) continue;
     const bucket = classification[name];
     if (!bucket) { unclassified.push(name); continue; }
     byBucket[bucket] = (byBucket[bucket] || 0) + count;
   }
   if (unclassified.length) {
-    throw new Error(`run-matrix: classifyFunctionRanges(${absPath}) found unclassified top-level symbol(s): ${unclassified.join(', ')} — the deletion-estimate manifest in run-matrix.mjs must classify every one (plan §28)`);
+    throw new Error(`run-matrix: classifyFunctionRanges(${sourceLabel}) found unclassified top-level symbol(s): ${unclassified.join(', ')} — the deletion-estimate manifest in run-matrix.mjs must classify every one (plan §28)`);
   }
   return byBucket;
+}
+
+async function classifyFunctionRanges(absPath, classification, ignore = []) {
+  const src = await readFile(absPath, 'utf8');
+  return classifyFunctionRangesFromSource(src, classification, ignore, absPath);
 }
 
 // ── esbuild reporter invocation (build/size-report.mjs CLI) ────────────────
@@ -768,14 +799,21 @@ export function renderDeletionEstimateMd(d) {
   L.push('');
   L.push('## Formula (plan §28)');
   L.push('');
+  L.push('Every term below is the SAME comment/blank-stripped "physical LOC" metric');
+  L.push('(`physicalLineCount()` in `run-matrix.mjs`) — a P3 review finding (issue #585 Phase 0)');
+  L.push('caught an earlier version of this formula mixing that metric for the bridge/guard terms');
+  L.push('with a raw, comment-and-blank-INCLUSIVE line-range count for the ch-client.ts/');
+  L.push('official-adapter.ts terms, which inflated those two terms (concentrated in');
+  L.push('comment-heavy functions like `runOfficial`) relative to the bridge/guard terms.');
+  L.push('');
   L.push('```text');
-  L.push('current generic executable LOC eligible for deletion');
+  L.push('current generic physical LOC eligible for deletion');
   L.push(`  = ${d.currentGenericLocEligibleForDeletion}   (ch-client.ts "delete-after-cutover" bucket)`);
-  L.push('- estimated official adapter executable LOC');
+  L.push('- estimated official adapter physical LOC');
   L.push(`  = ${d.estimatedOfficialAdapterLoc}   (official-adapter.ts production-shaped core)`);
-  L.push('- accepted narrow bridge/guard executable LOC');
-  L.push(`  = ${d.acceptedBridgeGuardLoc}   (progress-bridge.ts + guarded-fetch.ts, physical)`);
-  L.push('= estimated net executable LOC deletion');
+  L.push('- accepted narrow bridge/guard physical LOC');
+  L.push(`  = ${d.acceptedBridgeGuardLoc}   (progress-bridge.ts + guarded-fetch.ts)`);
+  L.push('= estimated net physical LOC deletion');
   L.push(`  = ${d.netExecutableDeletion}`);
   L.push('```');
   L.push('');
@@ -784,7 +822,7 @@ export function renderDeletionEstimateMd(d) {
   if (!d.positiveNetDeletion) {
     L.push('**Caveat on this specific measurement**: the `delete-after-cutover` bucket above is computed');
     L.push('at WHOLE-FUNCTION granularity (a function is classified in full, never split). `authedFetch`');
-    L.push('(89 physical lines) is classified entirely as `rewrite-narrow-adapter` because it currently');
+    L.push('(56 physical lines) is classified entirely as `rewrite-narrow-adapter` because it currently');
     L.push('interleaves generic fetch/response mechanics with the narrow credential-epoch guard — a finer,');
     L.push('sub-function split (out of scope for this mechanical pass) would likely move a meaningful');
     L.push('fraction of those lines into `delete-after-cutover` instead, which would make the net figure');
@@ -1204,6 +1242,15 @@ async function main() {
       normalized: { js: candidateNormalized.report.js, artifact: candidateNormalized.report.artifact, unminifiedJs: candidateNormalized.report.unminifiedJs },
       officialClientAttributedBytes: officialClientPkg?.bytes ?? 0,
       selfContained: true, // both reports assemble a single dist/sql.html-shaped artifact via the shared buildArtifact() path
+      // Machine-readable candidate build provenance (P3 review finding,
+      // issue #585 Phase 0): a prior evidence-only regeneration of this
+      // section (review pass 2) left no committed record of WHICH commit the
+      // regenerated bundle/metafile actually came from, forcing a reader to
+      // infer it from a commit message. `candidateSha`/`candidateDirty` are
+      // the exact values `createWorktreeAt` above built the candidate
+      // worktree from, in every run — never hand-typed after the fact.
+      sha: candidateSha,
+      dirty: candidateDirty,
     };
 
     results.bundleDelta = {

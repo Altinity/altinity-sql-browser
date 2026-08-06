@@ -21,9 +21,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   GitHub PR #74181, affecting current production code equally), the browser
   matrix records one isolated but unclassified WebKit failure (not asserted
   as a confirmed root cause), and estimated net production-code deletion is
-  **-121 LOC** (not positive). Production ClickHouse transport behavior is
-  unchanged — `src/net/ch-client.ts` remains
-  authoritative, and no production cutover occurred.
+  **-157 physical LOC** (not positive; every term measured by one
+  consistent comment/blank-stripped metric). Production ClickHouse transport
+  behavior is unchanged — `src/net/ch-client.ts` remains authoritative, and
+  no production cutover occurred.
 - **Opt-in ChatGPT-authored `/ship` planning.** `/ship <scope> --planner chatgpt`
   keeps the existing Fable-authored workflow as the default, but lets ChatGPT own
   complete plan drafts and revisions while Fable/high performs repository-grounded

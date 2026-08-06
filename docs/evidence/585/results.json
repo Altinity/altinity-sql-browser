@@ -104,7 +104,9 @@
       }
     },
     "officialClientAttributedBytes": 53846,
-    "selfContained": true
+    "selfContained": true,
+    "sha": "3dc49c5fa1c61aec3782d64e2ab34bdc1c1743b4",
+    "dirty": false
   },
   "bundleDelta": {
     "gzip": {
@@ -502,19 +504,19 @@
     }
   },
   "deletionEstimate": {
-    "currentGenericLocEligibleForDeletion": 240,
-    "estimatedOfficialAdapterLoc": 266,
+    "currentGenericLocEligibleForDeletion": 120,
+    "estimatedOfficialAdapterLoc": 182,
     "acceptedBridgeGuardLoc": 95,
-    "netExecutableDeletion": -121,
+    "netExecutableDeletion": -157,
     "manifest": {
       "ch-client.ts": {
-        "delete-after-cutover": 240,
-        "rewrite-narrow-adapter": 89,
-        "retain-temporary-bridge": 27,
-        "unrelated-product-operation": 626
+        "delete-after-cutover": 120,
+        "rewrite-narrow-adapter": 56,
+        "retain-temporary-bridge": 20,
+        "unrelated-product-operation": 364
       },
       "official-adapter.ts (test-only harness excluded)": {
-        "official-adapter-core": 266
+        "official-adapter-core": 182
       },
       "progress-bridge.ts (physical)": 40,
       "guarded-fetch.ts (physical)": 55,
@@ -2995,22 +2997,22 @@
     },
     {
       "title": "Can per-request auth work without mutation or reconstruction?",
-      "answer": "Evidence recorded per the alternating-credentials/constructor-count test in parity.test.ts.",
-      "evidence": "tests/spike/clickhouse-client/parity.test.ts \"alternating Basic user A / user B / invalid / valid\""
+      "answer": "Yes — proven by the alternating-credentials test: each of four requests (Basic user A / user B / an invalid credential / user A again) is observed server-side using ONLY its own supplied credential, and the official client's constructor-call count stays at 1 throughout (official-adapter.ts's `constructorCalls` is a real, mechanically-enforced count backed by every `.client` assignment — never a hardcoded literal — so a future reconstruction would be caught, not silently passed).",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts \"alternating Basic user A / user B / invalid / valid\"; tests/spike/clickhouse-client/official-adapter.ts constructorCalls"
     },
     {
       "title": "Can epoch fencing occur immediately before fetch?",
-      "answer": "Evidence recorded per the deliberate epoch-flip race test in parity.test.ts (guarded-fetch.ts).",
+      "answer": "Yes — proven by the deliberate epoch-flip race test at the ACTUAL injected-fetch boundary (guarded-fetch.ts's guardedFetch, wired as the real official client's own fetch): a request whose epoch turns after preparation but before the delegate fetch fires is rejected with zero delegated calls; a current-epoch request delegates exactly once.",
       "evidence": "tests/spike/clickhouse-client/parity.test.ts credential-epoch fencing block; tests/spike/clickhouse-client/guarded-fetch.ts"
     },
     {
       "title": "How are abort, timeout, and ClickHouse errors distinguished?",
-      "answer": "Evidence recorded per the four-way taxonomy tests (cancel/timeout/offline/HTTP-error).",
+      "answer": "Recorded per the four-way taxonomy tests: cancel/timeout/offline/HTTP-error each produce a distinct, non-overlapping classification on the official adapter (see the cited tests for the exact shape each one receives).",
       "evidence": "tests/spike/clickhouse-client/parity.test.ts cancellation + timeout/offline blocks"
     },
     {
       "title": "Are code and message retained for current policy?",
-      "answer": "Evidence recorded per the 401/403/SESSION_IS_LOCKED/reset error-taxonomy tests.",
+      "answer": "Yes — proven by the 401/403/SESSION_IS_LOCKED/reset error-taxonomy tests: ClickHouse code AND message survive intact for HTTP-level errors (401 -> chCode 516, 403 -> chCode 497, both with the server's own message text preserved), and the retry-safety layer's message is preserved for the ambiguous-write/reset cases the same policy already produces today.",
       "evidence": "tests/spike/clickhouse-client/parity.test.ts retry-safety block"
     },
     {
@@ -3020,7 +3022,7 @@
     },
     {
       "title": "What production code would be deleted?",
-      "answer": "Estimated net executable LOC deletion: -121 (240 eligible - 266 adapter - 95 bridge/guard).",
+      "answer": "Estimated net executable LOC deletion: -157 (120 eligible - 182 adapter - 95 bridge/guard).",
       "evidence": "docs/evidence/585/deletion-estimate.md"
     }
   ]

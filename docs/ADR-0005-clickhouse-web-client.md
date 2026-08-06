@@ -6,10 +6,19 @@ Phases 1–4 do not proceed without a new decision
 - **Decision date**: 2026-08-06
 - **Context tracking**: roadmap #68; #593 (refactor umbrella, Phase 7); #585
   (this validation-spike issue)
-- **Tested source / baseline SHAs**: candidate (tested, evidence-generation
-  commit) `49b9955` on `wip/585-phase0-clickhouse-web-client-spike`; baseline
-  `origin/main` at `d5c9e38` (clean worktree under `$TMPDIR`, per plan §9
-  "Baseline worktree self-check")
+- **Tested source / baseline SHAs**: candidate Docker/browser-matrix/live
+  evidence (`results.json.matrixRows`/`.browserMatrix`/`.scenarios`)
+  generated at `49b9955` on
+  `wip/585-phase0-clickhouse-web-client-spike`; the committed candidate
+  bundle/metafile (`docs/evidence/585/candidate/**`, backing the
+  single-file-build/bundle-delta gates) was regenerated at a later commit,
+  `3dc49c5` (review pass 2, no source change to `official-adapter.ts`/
+  `candidate-entry.ts` since) — recorded machine-readably as
+  `results.json.candidate.sha`/`.dirty` (a P3 review finding: this ADR
+  previously cited only `49b9955` as "the tested, evidence-generation
+  commit" for the whole evidence set, when the bundle/metafile snapshot
+  specifically was built later); baseline `origin/main` at `d5c9e38` (clean
+  worktree under `$TMPDIR`, per plan §9 "Baseline worktree self-check")
 - **Package**: `@clickhouse/client-web@1.23.1`, exact `devDependency` only
   (never promoted to `dependencies`) — resolved
   `https://registry.npmjs.org/@clickhouse/client-web/-/client-web-1.23.1.tgz`,
@@ -86,12 +95,16 @@ evidence:
    not reinterpret an unknown, skipped, or partly observed hard gate as a
    pass") applies to flakes and unclassified failures alike, so this
    uncertainty changes nothing about the Rejected decision below.
-3. **Net production-code deletion is not positive.** Mechanically computed
-   as **-121 estimated executable LOC** (240 eligible for deletion from
-   `ch-client.ts`'s `delete-after-cutover` bucket, minus 266 for the
-   official-adapter production-shaped core, minus 95 for the accepted narrow
-   bridge/guard) — see `docs/evidence/585/deletion-estimate.md` for the full
-   bucket breakdown and its own caveat that whole-function-granularity
+3. **Net production-code deletion is not positive.** Mechanically computed,
+   with every term measured by the SAME comment/blank-stripped "physical
+   LOC" metric (a P3 review finding caught an earlier pass mixing that
+   metric for the bridge/guard terms with a raw, comment-inclusive count for
+   the other two terms, which inflated them by 32-50%), as **-157 physical
+   LOC** (120 eligible for deletion from `ch-client.ts`'s
+   `delete-after-cutover` bucket, minus 182 for the official-adapter
+   production-shaped core, minus 95 for the accepted narrow bridge/guard) —
+   see `docs/evidence/585/deletion-estimate.md` for the full bucket
+   breakdown and its own caveat that whole-function-granularity
    classification (required by this pass) likely understates the truly
    deletable portion of `authedFetch`, which mixes generic fetch mechanics
    with the narrow epoch guard.
@@ -116,7 +129,7 @@ symptoms a narrower `exec()`-based bridge (already the accepted design,
 - The deletion-estimate failure is a **structural** consequence of this
   package's guaranteed floor (24.8+) forcing a bridge (`progress-bridge.ts` +
   `guarded-fetch.ts`, 95 physical lines) that, combined with a
-  production-shaped official adapter (266 lines) exceeding the 240
+  production-shaped official adapter (182 lines) exceeding the 120
   deletable lines it would replace, produces negative net deletion. A
   smaller bridge would still need to reproduce authentication, epoch
   fencing, and the progress-format parsing that `authedFetch` +
@@ -356,8 +369,8 @@ Quoted verbatim from `docs/evidence/585/critical-questions.md` (plan §27):
 > `docs/evidence/585/support-minimum-analysis.md` and
 > `results.json.matrixRows` for the executed oldest-row corroboration.
 >
-> **What production code would be deleted?** Estimated net executable LOC
-> deletion: **-121** (240 eligible - 266 adapter - 95 bridge/guard).
+> **What production code would be deleted?** Estimated net physical LOC
+> deletion: **-157** (120 eligible - 182 adapter - 95 bridge/guard).
 
 ## `JSONStringsEachRowWithProgress` disposition
 
@@ -515,28 +528,32 @@ summaries exactly.
 
 Computed mechanically from `src/net/ch-client.ts`'s own top-level symbol
 boundaries (`docs/evidence/585/deletion-estimate.md`), not a hand-typed
-guess:
+guess. Every term is the same comment/blank-stripped "physical LOC" metric
+(a P3 review finding caught an earlier pass mixing that metric for the
+bridge/guard terms with a raw, comment-inclusive line-range count for the
+other two terms, which inflated them 32-50%, concentrated in comment-heavy
+functions like `runOfficial`):
 
 ```text
-current generic executable LOC eligible for deletion   =  240
-- estimated official adapter executable LOC             =  266
-- accepted narrow bridge/guard executable LOC            =   95
-= estimated net executable LOC deletion                 = -121
+current generic physical LOC eligible for deletion    =  120
+- estimated official adapter physical LOC              =  182
+- accepted narrow bridge/guard physical LOC             =   95
+= estimated net physical LOC deletion                  = -157
 ```
 
 Net deletion is **not positive** — an Accepted ADR requires positive net
 deletion. Buckets not counted toward deletion each have exactly one final
-owner (no permanent dual generic transport): `rewrite-narrow-adapter` (89
+owner (no permanent dual generic transport): `rewrite-narrow-adapter` (56
 lines, credential-epoch fencing folding into the official adapter's own
-request construction), `retain-temporary-bridge` (27 lines, `KILL QUERY` +
-the frozen cancellation lease), `unrelated-product-operation` (626 lines,
+request construction), `retain-temporary-bridge` (20 lines, `KILL QUERY` +
+the frozen cancellation lease), `unrelated-product-operation` (364 lines,
 schema/lineage/reference-data/doc-browsing SQL — never generic transport),
 and `retain-as-sql-browser-policy` (`src/core/stream.ts`, 222 lines;
 `src/application/query-execution-service.ts`, 291 lines — both already
 isolated from `ch-client.ts` and unaffected by transport choice, direct
 evidence for Phase 1's independent value, above).
 
-The estimate's own documented caveat: `authedFetch` (89 physical lines) is
+The estimate's own documented caveat: `authedFetch` (56 physical lines) is
 classified entirely as `rewrite-narrow-adapter` at whole-function
 granularity because it interleaves generic fetch/response mechanics with the
 narrow epoch guard; a finer sub-function split (out of scope for this
@@ -566,7 +583,7 @@ this specific caveat without needing to redo the rest of the spike.
   re-evaluation that lands `@clickhouse/client-web`'s guaranteed minimum on a
   version line where the meta-line gap and any newer server requirement no
   longer separate; or a smaller sub-function deletion-estimate split that
-  turns the -121 LOC figure positive.
+  turns the -157 LOC figure positive.
 
 ## Alternatives considered
 

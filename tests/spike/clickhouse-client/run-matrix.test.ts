@@ -17,6 +17,8 @@ import {
   collectBrowserFailureDetail as collectBrowserFailureDetailUntyped,
   compareClickHouseVersions,
   classifyBrowserMatrixCell as classifyBrowserMatrixCellUntyped,
+  classifyFunctionRangesFromSource as classifyFunctionRangesFromSourceUntyped,
+  computeDeletionEstimate,
 } from './run-matrix.mjs';
 
 // `run-matrix.mjs` is a deliberately untyped `.mjs` orchestration module (plan
@@ -44,6 +46,13 @@ const classifyBrowserMatrixCell = classifyBrowserMatrixCellUntyped as (args: {
   allPassed: boolean;
   failureDetailByRowOrigin: Record<string, BrowserFailureRecord[]>;
 }) => BrowserMatrixCell;
+
+const classifyFunctionRangesFromSource = classifyFunctionRangesFromSourceUntyped as (
+  src: string,
+  classification: Record<string, string>,
+  ignore?: string[],
+  sourceLabel?: string,
+) => Record<string, number>;
 
 describe('selectEarliestPassingVersion (P1 review finding: derive only after the browser matrix runs)', () => {
   const matrixJson = {
@@ -364,5 +373,60 @@ describe('classifyBrowserMatrixCell (P2 review finding: a missing suite must nev
     });
     expect(cell).toEqual({ executed: true, status: 'failed' });
     expect(cell.failureDetail).toBeUndefined();
+  });
+});
+
+describe('classifyFunctionRangesFromSource (P3 review finding: one consistent comment/blank-stripped metric for every deletion-estimate term)', () => {
+  it('excludes a symbol range\'s own comments and blank lines the same way measureLoc excludes them from a whole file', () => {
+    // `foo`'s raw line range (its declaration line through the line before
+    // `bar`'s declaration) is 8 lines, 4 of which are a line comment, a
+    // blank line, and a two-line block comment — none of which are
+    // "executable" by any definition. Before the fix, this function summed
+    // the raw 8; the fix sums the comment/blank-stripped 4, matching
+    // measureLoc()'s own `physical` field's definition exactly.
+    const src = [
+      'export function foo() {',
+      '  // a comment line',
+      '',
+      '  const x = 1; // trailing',
+      '  /* block',
+      '     comment */',
+      '  return x;',
+      '}',
+      'export function bar() {',
+      '  return 2;',
+      '}',
+    ].join('\n');
+
+    const buckets = classifyFunctionRangesFromSource(src, { foo: 'commentHeavy', bar: 'commentLight' });
+
+    expect(buckets.commentHeavy).toBe(4); // NOT 8 (the raw range size)
+    expect(buckets.commentLight).toBe(3); // unaffected — bar has no comments/blanks to strip
+  });
+
+  it('still throws on an unclassified top-level symbol (drift protection unaffected by the metric change)', () => {
+    const src = 'export function unclassifiedOne() {\n  return 1;\n}\n';
+    expect(() => classifyFunctionRangesFromSource(src, {}, [], 'fixture.ts'))
+      .toThrow(/unclassified top-level symbol.*unclassifiedOne/);
+  });
+
+  it('still honors the ignore list without counting the ignored symbol into any bucket', () => {
+    const src = 'export const ignoredOne = 1;\nexport function counted() {\n  return 2;\n}\n';
+    const buckets = classifyFunctionRangesFromSource(src, { counted: 'bucketA' }, ['ignoredOne']);
+    expect(buckets).toEqual({ bucketA: 3 });
+  });
+});
+
+describe('computeDeletionEstimate (P3 review finding: the whole-formula regression — every term consistent end to end)', () => {
+  it('produces internally self-consistent buckets: the formula computed by hand from the manifest matches netExecutableDeletion exactly', async () => {
+    const d = await computeDeletionEstimate();
+    const handComputed = d.currentGenericLocEligibleForDeletion - d.estimatedOfficialAdapterLoc - d.acceptedBridgeGuardLoc;
+    expect(d.netExecutableDeletion).toBe(handComputed);
+    // acceptedBridgeGuardLoc is bridgeLoc.physical + guardLoc.physical, and
+    // both bridgeLoc/guardLoc come from measureLoc() — same physicalLineCount
+    // helper classifyFunctionRangesFromSource now uses for the other two
+    // terms, so this is genuinely one metric throughout, not two that
+    // happen to agree on this particular file pair.
+    expect(d.acceptedBridgeGuardLoc).toBe(d.bridgeLoc.physical + d.guardLoc.physical);
   });
 });

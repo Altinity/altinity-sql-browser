@@ -10,16 +10,16 @@ silently under/over-counting.
 
 | Bucket | Physical LOC |
 |---|---|
-| `delete-after-cutover` | 240 |
-| `rewrite-narrow-adapter` | 89 |
-| `retain-temporary-bridge` | 27 |
-| `unrelated-product-operation` | 626 |
+| `delete-after-cutover` | 120 |
+| `rewrite-narrow-adapter` | 56 |
+| `retain-temporary-bridge` | 20 |
+| `unrelated-product-operation` | 364 |
 
 ## Other named responsibilities
 
 | Responsibility | Final owner / bucket | Physical LOC |
 |---|---|---|
-| `tests/spike/clickhouse-client/official-adapter.ts` production-shaped core (`OfficialConnection`/`createOfficialConnection`/`officialAuthFor`/`runOfficial`; spike-test-only harness excluded) | estimated official adapter | 266 |
+| `tests/spike/clickhouse-client/official-adapter.ts` production-shaped core (`OfficialConnection`/`createOfficialConnection`/`officialAuthFor`/`runOfficial`; spike-test-only harness excluded) | estimated official adapter | 182 |
 | `tests/spike/clickhouse-client/progress-bridge.ts` | accepted narrow bridge | 40 (34 transformed executable) |
 | `tests/spike/clickhouse-client/guarded-fetch.ts` | accepted narrow guard | 55 (58 transformed executable) |
 | `src/core/stream.ts` (whole file) | retain as SQL Browser policy — normalized meta/row/progress/error representation, unaffected by transport choice | 222 |
@@ -27,22 +27,29 @@ silently under/over-counting.
 
 ## Formula (plan §28)
 
+Every term below is the SAME comment/blank-stripped "physical LOC" metric
+(`physicalLineCount()` in `run-matrix.mjs`) — a P3 review finding (issue #585 Phase 0)
+caught an earlier version of this formula mixing that metric for the bridge/guard terms
+with a raw, comment-and-blank-INCLUSIVE line-range count for the ch-client.ts/
+official-adapter.ts terms, which inflated those two terms (concentrated in
+comment-heavy functions like `runOfficial`) relative to the bridge/guard terms.
+
 ```text
-current generic executable LOC eligible for deletion
-  = 240   (ch-client.ts "delete-after-cutover" bucket)
-- estimated official adapter executable LOC
-  = 266   (official-adapter.ts production-shaped core)
-- accepted narrow bridge/guard executable LOC
-  = 95   (progress-bridge.ts + guarded-fetch.ts, physical)
-= estimated net executable LOC deletion
-  = -121
+current generic physical LOC eligible for deletion
+  = 120   (ch-client.ts "delete-after-cutover" bucket)
+- estimated official adapter physical LOC
+  = 182   (official-adapter.ts production-shaped core)
+- accepted narrow bridge/guard physical LOC
+  = 95   (progress-bridge.ts + guarded-fetch.ts)
+= estimated net physical LOC deletion
+  = -157
 ```
 
 Net deletion is NOT positive — an Accepted ADR requires positive net deletion (plan §30 "Mark Accepted only if ... future net deletion is positive").
 
 **Caveat on this specific measurement**: the `delete-after-cutover` bucket above is computed
 at WHOLE-FUNCTION granularity (a function is classified in full, never split). `authedFetch`
-(89 physical lines) is classified entirely as `rewrite-narrow-adapter` because it currently
+(56 physical lines) is classified entirely as `rewrite-narrow-adapter` because it currently
 interleaves generic fetch/response mechanics with the narrow credential-epoch guard — a finer,
 sub-function split (out of scope for this mechanical pass) would likely move a meaningful
 fraction of those lines into `delete-after-cutover` instead, which would make the net figure
