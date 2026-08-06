@@ -4,8 +4,8 @@ description: Helm chart for the Altinity SQL Browser (static Caddy-served SPA)
 type: application
 # version/appVersion are overwritten from the git tag at publish time by
 # .github/workflows/release.yml.
-version: 0.7.2
-appVersion: "0.7.2"
+version: 0.7.3
+appVersion: "0.7.3"
 home: https://github.com/Altinity/altinity-sql-browser
 sources:
   - https://github.com/Altinity/altinity-sql-browser

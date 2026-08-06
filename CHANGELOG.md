@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-06
+
 ### Added
 - **ADR-0005: `@clickhouse/client-web` validation spike — Rejected**
   (`docs/ADR-0005-clickhouse-web-client.md`; #585, Phase 7 of the #593
