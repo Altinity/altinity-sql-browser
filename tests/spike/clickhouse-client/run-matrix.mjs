@@ -525,14 +525,28 @@ function computeBrowserRowOriginResults(pw) {
   return out;
 }
 
+/** Strip ANSI escape sequences (e.g. Playwright/Node's own colorized error
+ * output, `\x1b[2m...\x1b[22m`) from captured text, at CAPTURE time
+ * (`collectBrowserFailureDetail` below), not just when rendering — a raw
+ * escape code committed into `docs/evidence/585/compatibility-matrix.md`
+ * would corrupt the markdown for any viewer/diff tool that doesn't itself
+ * interpret ANSI (verified live: a captured `lastError` retained a literal
+ * `\x1b[2m` sequence before this fix). */
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex -- deliberately matching the ESC control character.
+  return String(str).replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+}
+
 /** Walk the SAME Playwright JSON reporter tree `computeBrowserRowOriginResults`
- * walks and, for every `row=<rowKey> origin=<mode>` suite that did NOT pass
- * cleanly, collect a COMPACT failure record per non-`ok` spec: its title, how
- * many attempts ran (`results.length` — retries included), the last attempt's
- * status, and the last attempt's error message (truncated to 500 chars — this
- * is durable evidence, not a full debugging transcript). Returns
+ * walks and, for every `row=<rowKey> origin=<mode>` suite, collect a COMPACT
+ * record per spec/test that did NOT pass on its very first attempt: its
+ * title, how many attempts ran (`results.length` — retries included), the
+ * last attempt's status, and the last attempt's error message (ANSI-stripped,
+ * truncated to 500 chars — this is durable evidence, not a full debugging
+ * transcript). A spec whose first attempt already passed is skipped
+ * entirely — no record is fabricated for a genuinely clean pass. Returns
  * `{ "<rowKey>/<mode>": [{ title, attempts, lastStatus, lastError }, ...] }`,
- * omitting any row/origin whose specs all passed.
+ * omitting any row/origin whose specs all passed cleanly on attempt 1.
  *
  * A P2 review finding (issue #585 Phase 0) found the evidence generator
  * reduced every browser-matrix cell to a bare pass/fail boolean plus browser
@@ -542,7 +556,20 @@ function computeBrowserRowOriginResults(pw) {
  * `docs/evidence/585/**` backing that attribution. This does not itself PROVE
  * a root cause — it preserves what actually failed (and how many times it was
  * retried) so a future root-cause claim has a committed, machine-checked
- * record to point at instead of prose in a commit message. */
+ * record to point at instead of prose in a commit message.
+ *
+ * Extended for that same finding's follow-up (issue #585, the
+ * `playwright.config.js` `retries: 2` fix that made this sandbox's isolated
+ * Docker-contention flakes retryable instead of hard browser-matrix
+ * failures): before retries existed, `spec.ok !== true` was the only signal
+ * this function used — a spec that failed once and then passed on retry ends
+ * up with `spec.ok === true`, and the old `if (spec.ok === true) continue`
+ * guard discarded the fact it ever failed at all, rendering a truly flaky
+ * cell as a clean, silent pass. That is laundering, not reporting. This
+ * function now keys off each TEST's own attempt count/final status instead
+ * of the spec-level `ok` boolean, so a spec that needed a retry to pass still
+ * produces a record here; `classifyBrowserMatrixCell` is what turns that
+ * into a distinct `'flaky'` cell status rather than a bare `'passed'`. */
 export function collectBrowserFailureDetail(pw) {
   const out = {};
   const rowOriginRe = /^row=(.+) origin=(.+)$/;
@@ -551,22 +578,24 @@ export function collectBrowserFailureDetail(pw) {
       const m = rowOriginRe.exec(s.title || '');
       if (m) {
         const [, rowKey, mode] = m;
-        const failing = [];
+        const notable = [];
         for (const spec of s.specs || []) {
-          if (spec.ok === true) continue;
           for (const test of spec.tests || []) {
             const results = test.results || [];
             const last = results[results.length - 1] || {};
+            // A single, first-attempt pass has nothing to report — skip it
+            // rather than fabricate a record for a genuinely clean result.
+            if (results.length <= 1 && last.status === 'passed') continue;
             const lastError = last.error?.message || last.errors?.[0]?.message || '';
-            failing.push({
+            notable.push({
               title: spec.title,
               attempts: results.length,
               lastStatus: last.status || 'unknown',
-              lastError: lastError.slice(0, 500),
+              lastError: stripAnsi(lastError).slice(0, 500),
             });
           }
         }
-        if (failing.length) out[`${rowKey}/${mode}`] = failing;
+        if (notable.length) out[`${rowKey}/${mode}`] = notable;
       }
       if (s.suites) walk(s.suites);
     }
@@ -581,7 +610,10 @@ export function collectBrowserFailureDetail(pw) {
  *  1. `reportAvailable` is false — the JSON report itself never came into
  *     existence (e.g. the webServer never came up and Playwright wrote
  *     nothing). The blanket per-project `allPassed` boolean is the only
- *     information that exists, so the cell inherits it directly.
+ *     information that exists, so the cell inherits it directly. `pwErrors`
+ *     is threaded in anyway (see below) for the rare case the caller DOES
+ *     have something (e.g. the runner's own captured stderr) even without a
+ *     report — normally empty here, since no report means no `pw.errors[]`.
  *  2. The report exists AND contains a suite matching this exact
  *     `rowOriginKey` (`rowOriginResults` has an own entry for it) — per-cell
  *     granularity from the report is authoritative.
@@ -601,28 +633,51 @@ export function collectBrowserFailureDetail(pw) {
  * `'no-matching-suite-in-report'` status, which `validate-evidence.mjs`'s
  * existing "has not executed" check already treats as missing evidence
  * (never a pass), and which `selectEarliestPassingVersion`'s
- * `v.executed && v.status === 'passed'` gate already excludes. */
+ * `v.executed && (v.status === 'passed' || v.status === 'flaky')` gate
+ * already excludes.
+ *
+ * Two follow-up fixes (issue #585, Docker-contention flake investigation):
+ *
+ *  - Case 2 now distinguishes a CLEAN pass from a FLAKY one. `passed` here
+ *    means every spec's FINAL attempt in this row/origin passed
+ *    (`computeBrowserRowOriginResults`'s `spec.ok` check, unchanged); but
+ *    `collectBrowserFailureDetail` now also records a spec that needed a
+ *    retry to get there. When that per-row/origin detail is non-empty, this
+ *    is reported as its own `'flaky'` status (never silently folded into
+ *    `'passed'`, which would launder the retry, and never `'failed'`, which
+ *    it isn't — it DID pass) — with the SAME `failureDetail` shape a genuine
+ *    failure gets, so the evidence is never blank for a real flaky result.
+ *  - Cases 1 and 3 (a whole-project/webServer-level failure) now accept an
+ *    optional `pwErrors` array — pre-extracted, ANSI-stripped strings from
+ *    Playwright's own top-level `pw.errors[]` — and attach it as
+ *    `projectErrors` whenever non-empty, so a boot-level failure is no
+ *    longer as blank as a per-test one used to be before the fix above. */
 export function classifyBrowserMatrixCell({
-  reportAvailable, rowOriginResults, rowOriginKey, allPassed, failureDetailByRowOrigin,
+  reportAvailable, rowOriginResults, rowOriginKey, allPassed, failureDetailByRowOrigin, pwErrors = [],
 }) {
   if (!reportAvailable) {
-    return { executed: true, status: allPassed ? 'passed' : 'failed' };
+    const cell = { executed: true, status: allPassed ? 'passed' : 'failed' };
+    if (pwErrors.length) cell.projectErrors = pwErrors;
+    return cell;
   }
   if (rowOriginResults && rowOriginKey in rowOriginResults) {
     const passed = rowOriginResults[rowOriginKey];
-    const cell = { executed: true, status: passed ? 'passed' : 'failed' };
-    // Compact, durable failure record (plan §29's evidence-must-not-discard-
-    // detail rule) — present only for a genuine failure with per-row/origin
-    // detail available; absent (never a misleading empty array) otherwise.
-    if (!passed && failureDetailByRowOrigin?.[rowOriginKey]) {
-      cell.failureDetail = failureDetailByRowOrigin[rowOriginKey];
-    }
+    const detail = failureDetailByRowOrigin?.[rowOriginKey];
+    const status = passed ? (detail?.length ? 'flaky' : 'passed') : 'failed';
+    const cell = { executed: true, status };
+    // Compact, durable detail record (plan §29's evidence-must-not-discard-
+    // detail rule) — present for a genuine failure OR a flaky pass, both of
+    // which have per-row/origin detail available; absent (never a
+    // misleading empty array) for a clean pass.
+    if (detail?.length) cell.failureDetail = detail;
     return cell;
   }
   // The report exists, but no suite matched this exact row/origin — this
   // cell cannot be corroborated per-cell; it must NEVER inherit the
   // project-wide blanket boolean (that is the exact P2 review finding).
-  return { executed: false, status: 'no-matching-suite-in-report' };
+  const cell = { executed: false, status: 'no-matching-suite-in-report' };
+  if (pwErrors.length) cell.projectErrors = pwErrors;
+  return cell;
 }
 
 /** Live-only scenario ids (no fault-server fixture — need a real server;
@@ -917,7 +972,12 @@ export function selectEarliestPassingVersion(results, matrixJson) {
     // browser hard gate cannot be corroborated for it, so it cannot be named
     // as having passed EVERY required hard gate.
     if (requiredBrowserEntries.length === 0) continue;
-    const browserGatePassed = requiredBrowserEntries.every((v) => v.executed && v.status === 'passed');
+    // 'flaky' (a spec that passed only after a retry — issue #585
+    // Docker-contention flake fix) still counts as a cleared gate: it DID
+    // pass, just not on the first attempt, and `playwright.config.js`'s
+    // `retries: 2` is exactly the mechanism that makes this a legitimate
+    // pass rather than a masked failure.
+    const browserGatePassed = requiredBrowserEntries.every((v) => v.executed && (v.status === 'passed' || v.status === 'flaky'));
     if (!browserGatePassed) continue;
 
     if (!earliest || compareClickHouseVersions(rowVersion, earliest) < 0) earliest = rowVersion;
@@ -1005,12 +1065,24 @@ export function renderCompatibilityMatrixMd(matrixJson, matrixRows, browserMatri
   L.push('| Row | Origin | Browser | Executed | Status | Failure detail |');
   L.push('|---|---|---|---|---|---|');
   for (const [key, v] of Object.entries(browserMatrix)) {
-    // Compact, in-line failure evidence (plan §29's evidence-must-not-discard-
-    // detail rule) — never asserts a root cause, only what the report itself
-    // recorded: which spec(s) failed, how many attempts, and the last error.
-    const failureNote = v.failureDetail && v.failureDetail.length
-      ? v.failureDetail.map((f) => `"${f.title}" (${f.attempts} attempt(s), last=${f.lastStatus}${f.lastError ? `: ${f.lastError.replace(/\|/g, '\\|').replace(/\n/g, ' ')}` : ''})`).join('; ')
-      : '—';
+    // Compact, in-line evidence (plan §29's evidence-must-not-discard-detail
+    // rule) — never asserts a root cause, only what the report itself
+    // recorded: which spec(s) failed or needed a retry, how many attempts,
+    // and the last status/error. `status` itself already distinguishes a
+    // clean 'passed' from a 'flaky' one (a spec that passed only after
+    // retry — issue #585 Docker-contention flake fix); this column shows the
+    // SAME per-spec detail for both a flaky cell and a failed one, so
+    // neither renders blank. `projectErrors` (a whole-project/webServer-level
+    // failure with no matching per-cell suite at all) is appended too when
+    // present.
+    const parts = [];
+    if (v.failureDetail && v.failureDetail.length) {
+      parts.push(v.failureDetail.map((f) => `"${f.title}" (${f.attempts} attempt(s), last=${f.lastStatus}${f.lastError ? `: ${f.lastError.replace(/\|/g, '\\|').replace(/\n/g, ' ')}` : ''})`).join('; '));
+    }
+    if (v.projectErrors && v.projectErrors.length) {
+      parts.push(v.projectErrors.map((e) => e.replace(/\|/g, '\\|').replace(/\n/g, ' ')).join('; '));
+    }
+    const failureNote = parts.length ? parts.join(' ; ') : '—';
     L.push(`| ${v.row} | ${v.origin} | ${v.browser} | ${v.executed ? 'yes' : 'no'} | ${v.status} | ${failureNote} |`);
   }
   L.push('');
@@ -1053,7 +1125,10 @@ function computeGates(r) {
 
   const browserVals = Object.values(r.browserMatrix || {});
   const browserRequired = browserVals.filter((v) => v.requested);
-  gates['browser matrix'] = browserRequired.length === 0 ? 'inconclusive' : (browserRequired.every((v) => v.executed && v.status === 'passed') ? 'pass' : 'fail');
+  // 'flaky' (passed only after a retry — issue #585 Docker-contention flake
+  // fix, see classifyBrowserMatrixCell) still clears this gate: it DID pass,
+  // it just needed playwright.config.js's retries to get there.
+  gates['browser matrix'] = browserRequired.length === 0 ? 'inconclusive' : (browserRequired.every((v) => v.executed && (v.status === 'passed' || v.status === 'flaky')) ? 'pass' : 'fail');
 
   gates['single-file build'] = r.candidate?.selfContained === true ? 'pass' : (r.candidate?.selfContained === false ? 'fail' : 'inconclusive');
 
@@ -1488,6 +1563,14 @@ async function main() {
       let allPassed = pwResult.ok;
       let rowOriginResults = null;
       let failureDetailByRowOrigin = {};
+      // Playwright's own top-level `errors[]` (global-setup/webServer-level
+      // failures Playwright records outside any per-suite result) — wired
+      // into `classifyBrowserMatrixCell`'s cases 1/3 below so a whole-project
+      // boot failure carries real detail instead of rendering as blank as a
+      // per-test failure used to (issue #585 observability-gap fix).
+      // ANSI-stripped and truncated at capture time, same as
+      // `collectBrowserFailureDetail`'s per-spec records.
+      let pwErrors = [];
       if (existsSync(jsonOutFile)) {
         const pw = await readJson(jsonOutFile);
         const versionMatch = /asb585 browser matrix: \S+ (.+)/.exec(pwResult.stdout);
@@ -1495,13 +1578,14 @@ async function main() {
         allPassed = pw.stats ? pw.stats.unexpected === 0 : pwResult.ok;
         rowOriginResults = computeBrowserRowOriginResults(pw);
         failureDetailByRowOrigin = collectBrowserFailureDetail(pw);
+        pwErrors = (pw.errors || []).map((e) => stripAnsi(String(e?.message ?? e)).slice(0, 500));
       }
       for (const key of Object.keys(results.browserMatrix)) {
         if (results.browserMatrix[key].browser === browser) {
           const { row, origin } = results.browserMatrix[key];
           const rowOriginKey = `${row}/${origin}`;
           const cell = classifyBrowserMatrixCell({
-            reportAvailable: rowOriginResults !== null, rowOriginResults, rowOriginKey, allPassed, failureDetailByRowOrigin,
+            reportAvailable: rowOriginResults !== null, rowOriginResults, rowOriginKey, allPassed, failureDetailByRowOrigin, pwErrors,
           });
           Object.assign(results.browserMatrix[key], cell, { browserVersion });
         }
