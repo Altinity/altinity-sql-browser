@@ -105,45 +105,64 @@ Two roadmap tracks are current:
   repaint extraction), Phase 6 #590 (implemented on `wip/590-reactive-workspace`
   — `app.currentWorkspace`/`app.mainSurface` are signal-backed accessor pairs,
   `dashboardTreeRevision` is retired; see `docs/ADR-0001-reactivity.md`'s #590
-  addendum), Phase 7 #585/ADR-0005 — **decided 2026-08-06: Rejected, amended
-  2026-08-07: Accepted** (the `@clickhouse/client-web` transport spike;
-  independent of the shell track; Phase 0 completed, Phase 1 landed, Phase
-  2/3 now authorized — see below). #592 (extend `check-boundaries` to lock in
-  the shell primitives) is a guardrail issue alongside the phases. All are
-  labeled `refactor`; re-check `gh issue list --label refactor` for the
-  current phase status before planning shell work.
-- **#585 / ADR-0005 — Accepted (2026-08-06, amended 2026-08-07).** The
-  Phase 0 validation spike (`docs/ADR-0005-clickhouse-web-client.md`)
-  compared `@clickhouse/client-web@1.23.1` against the current custom
-  transport over a reusable parity/precision harness
-  (`tests/spike/clickhouse-client/`). The original 2026-08-06 run reached
-  Rejected on two of ten hard gates (a third, the browser matrix, was a
-  WebKit flake — root-caused as this sandbox's Docker-contention flakiness,
-  fixed via retries + honest flaky-cell recording (PR #624), and re-verified
-  clean 16/16): the supported-server matrix (both proposed-oldest ClickHouse
-  24.8.x rows fail — a genuine, version-specific meta-line gap in
-  ClickHouse's own streaming JSON formats, predating ClickHouse GitHub PR
-  #74181, that affects the *current* production code identically, not an
-  official-client defect — tracked as its own general compatibility bug,
-  independent of this ADR, by #627), and net production-code deletion
-  (mechanically estimated at -154 physical LOC). A 2026-08-07
-  decision-methodology amendment reclassified both as non-blocking — the
-  first because it fails identically for the current transport and the
-  candidate (not evidence against the candidate specifically), the second
-  because LOC delta alone is a narrow proxy for maintenance cost — and the
-  decision now computes as **Accepted** from the same underlying evidence
-  (see the ADR's "Decision-methodology amendment addendum"). `src/net/ch-client.ts`
-  (the current custom transport) **remains authoritative until Phase 3
-  cutover completes**. Phase 1 (separating application policy from the
-  concrete transport implementation) — **landed** on
+  addendum), Phase 7 #585/ADR-0005 — **decided 2026-08-06: Rejected; briefly
+  amended 2026-08-07 to "Accepted"; reverted the same day to Rejected** after a
+  Phase 2 implementation attempt surfaced a disqualifying cancellation-model
+  incompatibility (the `@clickhouse/client-web` transport spike; independent
+  of the shell track; Phase 0 completed, Phase 1 landed, Phase 2 attempted
+  and blocked, Phases 2-4 do not proceed without a new decision — see below).
+  #592 (extend `check-boundaries` to lock in the shell primitives) is a
+  guardrail issue alongside the phases. All are labeled `refactor`; re-check
+  `gh issue list --label refactor` for the current phase status before
+  planning shell work.
+- **#585 / ADR-0005 — Rejected (2026-08-06; briefly "Accepted" 2026-08-07;
+  reverted to Rejected the same day).** The Phase 0 validation spike
+  (`docs/ADR-0005-clickhouse-web-client.md`) compared
+  `@clickhouse/client-web@1.23.1` against the current custom transport over a
+  reusable parity/precision harness (`tests/spike/clickhouse-client/`). The
+  original 2026-08-06 run reached Rejected on two of ten hard gates (a third,
+  the browser matrix, was a WebKit flake — root-caused as this sandbox's
+  Docker-contention flakiness, fixed via retries + honest flaky-cell
+  recording (PR #624), and re-verified clean 16/16): the supported-server
+  matrix (both proposed-oldest ClickHouse 24.8.x rows fail — a genuine,
+  version-specific meta-line gap in ClickHouse's own streaming JSON formats,
+  predating ClickHouse GitHub PR #74181, that affects the *current*
+  production code identically, not an official-client defect — tracked as
+  its own general compatibility bug, independent of this ADR, by #627), and
+  net production-code deletion (mechanically estimated at -154 physical
+  LOC). A 2026-08-07 decision-methodology amendment reclassified both as
+  non-blocking and moved the decision to **"Accepted"**, authorizing a Phase 2
+  implementation attempt. That attempt's plan review (5 rounds, 23 verified
+  findings) surfaced an eleventh, disqualifying consideration Phase 0 never
+  measured: `@clickhouse/client-web`'s abort/cancellation model ties the
+  real network request exclusively to its own internal `AbortController`,
+  never to the caller's own `AbortSignal` — structurally incompatible with
+  the already-shipped Phase 1 transport contract's requirement that the
+  caller's signal control cancellation for the whole response lifetime
+  (including body streaming; breaks mid-stream Cancel for progressive
+  queries/exports). Two independent architecture reviews (ChatGPT and a
+  separate Fable/high reviewer) confirmed this and additionally found that,
+  once every other required correction is applied (byte-exact SQL/auth
+  restoration, a hand-written query-string serializer replacing the
+  vendor's incompatible one), the official client contributes no bytes or
+  behavior to the actual wire request. ADR-0005 reverted to **Rejected** the
+  same day — see the ADR's "Phase 2 cancellation-incompatibility addendum"
+  for the full mechanics. `src/net/ch-client.ts` (the current custom
+  transport) **remains authoritative — no production code changed at any
+  point across either amendment**. Phase 1 (separating application policy
+  from the concrete transport implementation) — **landed** on
   `wip/585-phase1-transport-seam`: `src/net/clickhouse-transport.types.ts`
   (the `ClickHouseTransport` contract) + `src/net/clickhouse-http-transport.ts`
   (`createHttpTransport`, the current implementation behind it) put the
   existing transport behind a narrow seam with zero behavior change;
-  `ch-client.ts` keeps every auth/epoch/retry policy and product operation.
-  Phase 2 (production official-client implementation) and Phase 3
-  (production cutover) **may now proceed**; Phase 4 (custom-transport
-  deletion) after Phase 3's own acceptance criteria are met.
+  `ch-client.ts` keeps every auth/epoch/retry policy and product operation —
+  this remains valuable independent of the ADR's final decision. Phases 2-4
+  (production official-client implementation, cutover, custom-transport
+  deletion) **do not proceed without a new decision** — re-evaluation would
+  need either an upstream client API returning the native
+  `Response`/rejection while the caller's `AbortSignal` controls the real
+  fetch, or a deliberate renegotiation of the transport contract's
+  cancellation semantics themselves.
 
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).
