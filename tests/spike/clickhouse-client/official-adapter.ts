@@ -39,6 +39,7 @@ import { isProgressRow, isRow } from '@clickhouse/client-web';
 import type { AdapterRunResult, SpikeCredential, SpikeRequest, SpikeOutcome } from './types.js';
 import { emptyOutcome, IncrementalSha256 } from './normalize.js';
 import { bridgeNdjsonProgress } from './progress-bridge.js';
+import { withTrailingFormat } from '../../../src/core/format.js';
 
 export interface OfficialConnection {
   client: ClickHouseClient;
@@ -161,9 +162,20 @@ export async function runOfficial(conn: OfficialConnection, request: SpikeReques
       // Raw/explicit-format path: exec() with the fully-authored SQL
       // (including its own FORMAT clause), byte-hashed straight off .stream —
       // never .text()/TextDecoder/JSON-parsed (plan §24's raw-decoding ban).
-      const fullSql = /\bFORMAT\s+\S+\s*;?\s*$/i.test(request.sql)
-        ? request.sql
-        : `${request.sql}\nFORMAT ${request.format}`;
+      // Existing-FORMAT-clause detection reuses the SAME comment/string-aware
+      // scanner production's own export path uses (`prepareExportSql` calls
+      // this identical function — src/application/export-service.ts), rather
+      // than reimplementing a terminal regex here (plan §7 "do not
+      // reimplement current behavior"): a prior ad hoc
+      // `/\bFORMAT\s+\S+\s*;?\s*$/i` terminal regex missed an existing
+      // trailing FORMAT clause followed by a line/block comment (the regex
+      // requires the clause to be the literal string end), silently
+      // double-appending a second FORMAT clause on any such SQL — found by
+      // review during issue #585 Phase 0 (see docs/evidence/585 review
+      // notes). `withTrailingFormat` also correctly does NOT treat FORMAT-
+      // shaped text inside a string literal or comment as an existing
+      // clause, so the real format is still appended in that case.
+      const fullSql = withTrailingFormat(request.sql, request.format).sql;
       const res = await conn.client.exec({
         query: fullSql,
         query_id: request.queryId,

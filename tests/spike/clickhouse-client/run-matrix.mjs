@@ -494,6 +494,56 @@ function computeBrowserRowOriginResults(pw) {
   return out;
 }
 
+/** Walk the SAME Playwright JSON reporter tree `computeBrowserRowOriginResults`
+ * walks and, for every `row=<rowKey> origin=<mode>` suite that did NOT pass
+ * cleanly, collect a COMPACT failure record per non-`ok` spec: its title, how
+ * many attempts ran (`results.length` — retries included), the last attempt's
+ * status, and the last attempt's error message (truncated to 500 chars — this
+ * is durable evidence, not a full debugging transcript). Returns
+ * `{ "<rowKey>/<mode>": [{ title, attempts, lastStatus, lastError }, ...] }`,
+ * omitting any row/origin whose specs all passed.
+ *
+ * A P2 review finding (issue #585 Phase 0) found the evidence generator
+ * reduced every browser-matrix cell to a bare pass/fail boolean plus browser
+ * version, discarding failing-test names, error output, and retry counts —
+ * while the ADR/PR text separately attributed the one observed failure to a
+ * specific root cause (Docker resource contention) with nothing durable in
+ * `docs/evidence/585/**` backing that attribution. This does not itself PROVE
+ * a root cause — it preserves what actually failed (and how many times it was
+ * retried) so a future root-cause claim has a committed, machine-checked
+ * record to point at instead of prose in a commit message. */
+export function collectBrowserFailureDetail(pw) {
+  const out = {};
+  const rowOriginRe = /^row=(.+) origin=(.+)$/;
+  const walk = (suites) => {
+    for (const s of suites) {
+      const m = rowOriginRe.exec(s.title || '');
+      if (m) {
+        const [, rowKey, mode] = m;
+        const failing = [];
+        for (const spec of s.specs || []) {
+          if (spec.ok === true) continue;
+          for (const test of spec.tests || []) {
+            const results = test.results || [];
+            const last = results[results.length - 1] || {};
+            const lastError = last.error?.message || last.errors?.[0]?.message || '';
+            failing.push({
+              title: spec.title,
+              attempts: results.length,
+              lastStatus: last.status || 'unknown',
+              lastError: lastError.slice(0, 500),
+            });
+          }
+        }
+        if (failing.length) out[`${rowKey}/${mode}`] = failing;
+      }
+      if (s.suites) walk(s.suites);
+    }
+  };
+  walk(pw.suites || []);
+  return out;
+}
+
 /** Live-only scenario ids (no fault-server fixture — need a real server;
  * plan §17/§22/§23) mapped the same way, against `live-parity.test.ts` /
  * `live-sessions.test.ts`'s full titles. These are NOT in scenarios.ts
@@ -705,6 +755,50 @@ function renderDeletionEstimateMd(d) {
 // import and call it directly without importing this whole orchestrator
 // (which runs its `main()` unconditionally on import).
 
+/** Select the "earliest version that passed every required hard gate" floor
+ * (plan §5 step 5) — MUST be called only after BOTH `results.matrixRows`
+ * (live-suite + precision corpus, per row) AND `results.browserMatrix`
+ * (per row/origin/browser) are fully populated for this invocation, never
+ * from inside the per-row live-matrix loop.
+ *
+ * A P1 review finding (issue #585 Phase 0) caught the earlier shape of this
+ * derivation: it picked the earliest row whose live-suite + precision corpus
+ * passed WHILE the browser matrix for that exact row had not run yet (the
+ * browser-matrix section runs strictly later in `main()`), so a row could be
+ * — and, in the run that surfaced the finding, actually was — reported as
+ * having "passed every required hard gate" while its own same-origin WebKit
+ * result had already failed. This function is the single place that floor is
+ * now derived, and it re-validates the row's OWN browser/origin results
+ * before naming it, rather than trusting an earlier, narrower pass.
+ *
+ * A row this invocation never ran through the browser matrix at all (not in
+ * `browserRowKeys` — e.g. `--browsers none`, or `--rows` narrowed to rows the
+ * browser section didn't cover) has zero `requested` browser-matrix entries
+ * and is therefore excluded, never assumed to have passed a gate that simply
+ * never ran for it. */
+export function selectEarliestPassingVersion(results, matrixJson) {
+  let earliest = null;
+  for (const [rowKey, rowResult] of Object.entries(results.matrixRows || {})) {
+    if (!rowResult || rowResult.status !== 'passed') continue;
+    const kind = matrixJson.rows?.[rowKey]?.kind;
+    if (kind !== 'oss' && kind !== 'altinity-stable') continue;
+    const rowVersion = rowResult.serverVersion;
+    if (!rowVersion) continue;
+
+    const browserEntriesForRow = Object.values(results.browserMatrix || {}).filter((v) => v.row === rowKey);
+    const requiredBrowserEntries = browserEntriesForRow.filter((v) => v.requested);
+    // The browser matrix never covered this row this invocation — the
+    // browser hard gate cannot be corroborated for it, so it cannot be named
+    // as having passed EVERY required hard gate.
+    if (requiredBrowserEntries.length === 0) continue;
+    const browserGatePassed = requiredBrowserEntries.every((v) => v.executed && v.status === 'passed');
+    if (!browserGatePassed) continue;
+
+    if (!earliest || rowVersion < earliest) earliest = rowVersion;
+  }
+  return earliest;
+}
+
 // ── critical-questions.md (plan §27) ────────────────────────────────────────
 
 export function renderCriticalQuestionsMd(r) {
@@ -782,10 +876,16 @@ function renderCompatibilityMatrixMd(matrixJson, matrixRows, browserMatrix) {
   L.push('');
   L.push('## Browser / origin matrix');
   L.push('');
-  L.push('| Row | Origin | Browser | Executed | Status |');
-  L.push('|---|---|---|---|---|');
+  L.push('| Row | Origin | Browser | Executed | Status | Failure detail |');
+  L.push('|---|---|---|---|---|---|');
   for (const [key, v] of Object.entries(browserMatrix)) {
-    L.push(`| ${v.row} | ${v.origin} | ${v.browser} | ${v.executed ? 'yes' : 'no'} | ${v.status} |`);
+    // Compact, in-line failure evidence (plan §29's evidence-must-not-discard-
+    // detail rule) — never asserts a root cause, only what the report itself
+    // recorded: which spec(s) failed, how many attempts, and the last error.
+    const failureNote = v.failureDetail && v.failureDetail.length
+      ? v.failureDetail.map((f) => `"${f.title}" (${f.attempts} attempt(s), last=${f.lastStatus}${f.lastError ? `: ${f.lastError.replace(/\|/g, '\\|').replace(/\n/g, ' ')}` : ''})`).join('; ')
+      : '—';
+    L.push(`| ${v.row} | ${v.origin} | ${v.browser} | ${v.executed ? 'yes' : 'no'} | ${v.status} | ${failureNote} |`);
   }
   L.push('');
   return L.join('\n');
@@ -1116,7 +1216,6 @@ async function main() {
       }
     }
 
-    let earliestPassingVersion = null;
     for (const rowKey of requestedRows) {
       console.log(`run-matrix: booting matrix row "${rowKey}"...`);
       let handle;
@@ -1156,24 +1255,25 @@ async function main() {
           }
         }
 
+        // NOTE: the row's server version is recorded here as a candidate for
+        // "earliest passing version" only once it ALSO clears the browser
+        // matrix, further below (`selectEarliestPassingVersion`) — this live
+        // suite + precision-corpus result alone is NOT "every required hard
+        // gate" (plan §5 step 5's own phrasing), it is only two of
+        // HARD_GATE_KEYS. Selecting the minimum here, before the browser
+        // matrix has even run, was a P1 review finding (issue #585 Phase 0):
+        // it let a row whose OWN browser-matrix result later failed still be
+        // reported as having "passed every required hard gate".
         const rowStatus = liveResult.success && precisionPass ? 'passed' : 'failed';
         results.matrixRows[rowKey] = {
           requested: true, executed: true, status: rowStatus,
           imageRef: handle.imageRef, digest: handle.digest, tag: handle.tag, serverVersion: handle.serverVersion,
           liveSuite: { success: liveResult.success, numTotalTests: liveResult.numTotalTests },
         };
-        if (rowStatus === 'passed' && (matrixJson.rows[rowKey].kind === 'oss' || matrixJson.rows[rowKey].kind === 'altinity-stable')) {
-          const rowVersion = handle.serverVersion;
-          if (!earliestPassingVersion || rowVersion < earliestPassingVersion) earliestPassingVersion = rowVersion;
-        }
       } finally {
         await handle.stop();
         cleanups.splice(cleanups.indexOf(handle.stop), 1);
       }
-    }
-    if (earliestPassingVersion) {
-      results.supportMinimum = deriveProposedMinimum({ repoRoot, earliestPassingVersion });
-      await writeText(join(outRoot, 'support-minimum-analysis.md'), renderSupportMinimumMd(results.supportMinimum));
     }
 
     // ── first-row-timing.json / export-hashes.json (deterministic values
@@ -1250,12 +1350,14 @@ async function main() {
       // is authoritative and this blanket boolean is never used.
       let allPassed = pwResult.ok;
       let rowOriginResults = null;
+      let failureDetailByRowOrigin = {};
       if (existsSync(jsonOutFile)) {
         const pw = await readJson(jsonOutFile);
         const versionMatch = /asb585 browser matrix: \S+ (.+)/.exec(pwResult.stdout);
         if (versionMatch) browserVersion = versionMatch[1].trim();
         allPassed = pw.stats ? pw.stats.unexpected === 0 : pwResult.ok;
         rowOriginResults = computeBrowserRowOriginResults(pw);
+        failureDetailByRowOrigin = collectBrowserFailureDetail(pw);
       }
       for (const key of Object.keys(results.browserMatrix)) {
         if (results.browserMatrix[key].browser === browser) {
@@ -1267,6 +1369,13 @@ async function main() {
           results.browserMatrix[key].executed = true;
           results.browserMatrix[key].status = passed ? 'passed' : 'failed';
           results.browserMatrix[key].browserVersion = browserVersion;
+          // Compact, durable failure record (plan §29's evidence-must-not-
+          // discard-detail rule, extended per the P2 review finding above) —
+          // present only for a genuine failure with per-row/origin detail
+          // available; absent (never a misleading empty array) otherwise.
+          if (!passed && failureDetailByRowOrigin[rowOriginKey]) {
+            results.browserMatrix[key].failureDetail = failureDetailByRowOrigin[rowOriginKey];
+          }
         }
       }
       if (browserVersion !== 'unknown') {
@@ -1275,6 +1384,18 @@ async function main() {
     }
     await writeJson(join(outRoot, 'environment.json'), results.environment);
     await writeText(join(outRoot, 'compatibility-matrix.md'), renderCompatibilityMatrixMd(matrixJson, results.matrixRows, results.browserMatrix));
+
+    // ── support-minimum "earliest passing version" — RE-derived here, now
+    // that results.matrixRows AND results.browserMatrix are both fully
+    // populated for this invocation (see selectEarliestPassingVersion's own
+    // docstring for the P1 finding this fixes). Overwrites the steps-1-4-only
+    // analysis written earlier (before the live/browser matrices ran) with
+    // the fully-corroborated one — always, even when no row cleared every
+    // gate (earliestPassingVersion === null), so the written file never
+    // claims a live-gate corroboration this run did not actually prove. ────
+    const earliestPassingVersion = selectEarliestPassingVersion(results, matrixJson);
+    results.supportMinimum = deriveProposedMinimum({ repoRoot, earliestPassingVersion });
+    await writeText(join(outRoot, 'support-minimum-analysis.md'), renderSupportMinimumMd(results.supportMinimum));
 
     // ── gates / decision / critical-questions / decision-table ─────────────
     results.gates = computeGates(results);

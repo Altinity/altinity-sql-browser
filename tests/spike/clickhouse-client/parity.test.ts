@@ -754,6 +754,68 @@ describe('explicit FORMAT and raw TSV/CSV/JSON exact output (plan §18/§24)', (
     expect(occurrences).toBe(1);
   });
 
+  // Regression coverage for a P1 review finding (issue #585 Phase 0): a
+  // prior ad hoc terminal regex (`/\bFORMAT\s+\S+\s*;?\s*$/i`) recognized an
+  // existing trailing FORMAT clause only when it was the literal end of the
+  // string (optionally plus a trailing `;`) — so a FORMAT clause followed by
+  // a comment was invisible to it, and a second, duplicate FORMAT clause got
+  // appended. `withTrailingFormat` (src/core/format.ts, the same function
+  // production's own export path uses) is comment/string-aware via its
+  // shared span scanner, so each of these must still see exactly ONE
+  // existing FORMAT occurrence.
+  it.each([
+    ['a trailing line comment (--)', 'SELECT 1\nFORMAT TabSeparatedWithNames -- trailing note'],
+    ['a trailing line comment (#)', 'SELECT 1\nFORMAT TabSeparatedWithNames # trailing note'],
+    ['a semicolon followed by a trailing comment', 'SELECT 1\nFORMAT TabSeparatedWithNames;  -- trailing note'],
+    ['a trailing block comment', 'SELECT 1\nFORMAT TabSeparatedWithNames /* trailing note */'],
+    ['mixed-case FORMAT keyword', 'SELECT 1\nformat TabSeparatedWithNames'],
+    ['mixed-case FORMAT keyword plus a trailing comment', 'SELECT 1\nFoRmAt TabSeparatedWithNames -- note'],
+  ])('explicit FORMAT followed by %s: still exactly one FORMAT occurrence', async (_label, sql) => {
+    const req = baseReq('raw-tsv-fixed', { sql, format: 'TabSeparatedWithNames', consume: 'raw' });
+    fault.requestsLog.length = 0;
+    const conn = createOfficialConnection(fault.baseUrl, fetch);
+    await runOfficial(conn, req);
+    const body = fault.requestsLog.at(-1)!.body;
+    const occurrences = (body.match(/FORMAT/gi) || []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('FORMAT-shaped text inside a string literal is never mistaken for a trailing clause: the real FORMAT is still appended exactly once, after it', async () => {
+    const req = baseReq('raw-tsv-fixed', {
+      sql: "SELECT 'this text says FORMAT TabSeparatedWithNames but is just a string' AS note",
+      format: 'TabSeparatedWithNames',
+      consume: 'raw',
+    });
+    fault.requestsLog.length = 0;
+    const conn = createOfficialConnection(fault.baseUrl, fetch);
+    await runOfficial(conn, req);
+    const body = fault.requestsLog.at(-1)!.body;
+    const occurrences = (body.match(/FORMAT/gi) || []).length;
+    // One inside the string literal (never a real clause) + one genuinely
+    // appended trailing clause = two occurrences, and the real clause must
+    // be the one actually trailing the query.
+    expect(occurrences).toBe(2);
+    expect(body.trim().endsWith('FORMAT TabSeparatedWithNames')).toBe(true);
+  });
+
+  it('FORMAT-shaped text inside a line comment is never mistaken for a trailing clause: the real FORMAT is still appended exactly once, after it', async () => {
+    const req = baseReq('raw-tsv-fixed', {
+      sql: 'SELECT 1 -- FORMAT TabSeparatedWithNames (not real, just a comment)',
+      format: 'TabSeparatedWithNames',
+      consume: 'raw',
+    });
+    fault.requestsLog.length = 0;
+    const conn = createOfficialConnection(fault.baseUrl, fetch);
+    await runOfficial(conn, req);
+    const body = fault.requestsLog.at(-1)!.body;
+    const occurrences = (body.match(/FORMAT/gi) || []).length;
+    // The comment (and the FORMAT-shaped text inside it) is peeled by
+    // `withTrailingFormat` before the real clause is appended, so exactly one
+    // occurrence remains — the genuinely appended one.
+    expect(occurrences).toBe(1);
+    expect(body.trim().endsWith('FORMAT TabSeparatedWithNames')).toBe(true);
+  });
+
   it('raw TSV: exact byte-for-byte output on both adapters', async () => {
     const expected = 'a\tb\n1\tx\n2\ty\n';
     const req = baseReq('raw-tsv-fixed', { format: 'TabSeparatedWithNames', consume: 'raw' });

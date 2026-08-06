@@ -278,6 +278,14 @@ export function checkCompleteness(results, deterministicIds, precisionCases) {
           missing(`missing browser-matrix row: "${key}" has not executed (results.browserMatrix["${key}"] is ${entry ? `present but executed=${entry.executed}` : 'absent'})`);
         } else if (entry.status !== 'passed') {
           addFinding(findings, `browser-matrix row "${key}" executed but did not pass (status=${entry.status})`);
+          // P2 review finding (issue #585 Phase 0): a failed browser-matrix
+          // cell with no compact failure record (failing spec/error/attempt
+          // count) is evidence a root-cause claim about it cannot lean on —
+          // require one whenever a genuine failure is reported, so a future
+          // root-cause narrative always has something durable to point at.
+          if (!Array.isArray(entry.failureDetail) || entry.failureDetail.length === 0) {
+            addFinding(findings, `browser-matrix row "${key}" failed with no compact failureDetail record (plan §29 "evidence must not discard failure detail") — any root-cause claim about this failure (e.g. "isolated flake") is not backed by a committed, machine-checked artifact`);
+          }
         }
       }
     }

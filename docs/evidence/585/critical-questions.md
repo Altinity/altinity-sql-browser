@@ -50,7 +50,7 @@ Evidence: tests/spike/clickhouse-client/parity.test.ts retry-safety block
 
 ## Does the client support the proposed minimum?
 
-> Proposed minimum ClickHouse 26.3.16.10001.altinitystable — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.
+> Proposed minimum ClickHouse 26.6.2.160 — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.
 
 Evidence: docs/evidence/585/support-minimum-analysis.md; results.json.matrixRows
 

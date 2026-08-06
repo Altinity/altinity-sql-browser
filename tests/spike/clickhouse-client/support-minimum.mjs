@@ -484,7 +484,14 @@ export function deriveProposedMinimum({ repoRoot = DEFAULT_REPO_ROOT, earliestPa
     floors.push({ source: 'application feature/fallback minimum', value: applicationFeatureMinimum });
   }
   if (earliestPassingVersion) {
-    floors.push({ source: 'earliest version that passed every required hard gate (live matrix)', value: earliestPassingVersion });
+    // Label matches what `run-matrix.mjs`'s `selectEarliestPassingVersion`
+    // actually validated before feeding this value back: the row's live
+    // suite, its precision corpus, AND every one of its own requested
+    // browser/origin combinations in the SAME invocation's browser matrix —
+    // never the live matrix alone (a prior, narrower label here mismatched
+    // an even narrower — and, in one real run, factually wrong — derivation;
+    // issue #585 Phase 0 review).
+    floors.push({ source: 'earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)', value: earliestPassingVersion });
   }
 
   let proposedMinimum = officialFloor.clickhouseVersionFloor;
