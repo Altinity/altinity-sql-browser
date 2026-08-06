@@ -24,7 +24,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, relative, resolve } from 'node:path';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
 import {
@@ -175,6 +175,63 @@ describe('no CDN or remote-URL import in spike sources', () => {
       const text = await readFile(file, 'utf8');
       for (const pattern of CDN_IMPORT_PATTERNS) {
         if (pattern.test(text)) offenders.push(`${relative(projectRoot, file)}: ${pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// Issue #585 Phase 1 — mirrors build/check-boundaries.mjs's bare-specifier
+// ban on `@clickhouse/client-web` under `src/**`. This environment's npm
+// config sets `ignore-scripts=true`, so a bare `npm test` never runs
+// `pretest`/`check:arch` (CLAUDE.md hard rule 4) — mirroring the ban here
+// means the coverage-gated suite enforces it too. This is an INDEPENDENTLY
+// implemented scanner, not a shared one: `check-boundaries.mjs` exports
+// nothing today, so unifying the two behind one exported scanner would be a
+// real improvement but is a cross-cutting tooling change out of scope for
+// this pure-refactor PR (tracked separately, `inbox`-labeled, per CLAUDE.md
+// "Working discipline") — the two scanners can drift, the same accepted risk
+// tests/unit/dashboard-boundaries.test.js already documents for its own
+// mirror of the same script. Belt and braces: metafile (build-graph truth,
+// tested above), source scan (this — fast, IDE-time), `check:arch` (gate/CI).
+const SRC_DIR = resolve(projectRoot, 'src');
+const CLIENT_WEB_IMPORT_PATTERNS = [
+  /\bimport\s+[\w*{}\s,]+\s+from\s*['"](@clickhouse\/client-web(?:\/[^'"]*)?)['"]/g,
+  /\bexport\s+[\w*{}\s,]+\s+from\s*['"](@clickhouse\/client-web(?:\/[^'"]*)?)['"]/g,
+  /\bimport\s*['"](@clickhouse\/client-web(?:\/[^'"]*)?)['"]/g,
+  /\bimport\s*\(\s*['"](@clickhouse\/client-web(?:\/[^'"]*)?)['"]/g,
+];
+// Names the FUTURE official transport file (does not exist yet) — activates
+// correctly the moment it is born, same as build/check-boundaries.mjs's own
+// allowlist.
+const CLIENT_WEB_ALLOWLIST = new Set(['src/net/clickhouse-web-transport.ts']);
+
+async function collectSrcSourceFiles(dir) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await collectSrcSourceFiles(full));
+    } else if (['.ts', '.tsx', '.js', '.mjs'].includes(extname(entry.name))) {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+describe('no @clickhouse/client-web import anywhere under src/ (mirrors build/check-boundaries.mjs)', () => {
+  it('scans every src/** source file for a bare @clickhouse/client-web import, outside the not-yet-existing official-transport allowlist', async () => {
+    const files = await collectSrcSourceFiles(SRC_DIR);
+    expect(files.length).toBeGreaterThan(0);
+    const offenders = [];
+    for (const file of files) {
+      const relFile = relative(projectRoot, file).split(sep).join('/');
+      if (CLIENT_WEB_ALLOWLIST.has(relFile)) continue;
+      const text = await readFile(file, 'utf8');
+      for (const pattern of CLIENT_WEB_IMPORT_PATTERNS) {
+        pattern.lastIndex = 0;
+        if (pattern.test(text)) offenders.push(relFile);
       }
     }
     expect(offenders).toEqual([]);

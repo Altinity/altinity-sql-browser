@@ -502,11 +502,38 @@ describe('queryJson — invocation-time settings/params capture (authedFetch\'s 
 // authoritative through `ch-client.ts`'s own `transportFor` wiring, not just
 // in `createHttpTransport`'s isolated unit tests.
 describe('transportFor — live origin authority through production wiring (Adaptation A5)', () => {
-  it('reads ctx.origin live per request; mutating it between two calls changes the next request\'s origin, never a stale snapshot', async () => {
+  it('reads ctx.origin live per request across two independent authedFetch calls', async () => {
     const ctx = ctxWith(async () => jsonResp({ data: [] }));
     await queryJson(ctx, 'SELECT 1');
     ctx.origin = 'https://new-cluster.example';
     await queryJson(ctx, 'SELECT 1');
+    expect(ctx.fetchMock.mock.calls[0][0]).toContain('https://ch.example');
+    expect(ctx.fetchMock.mock.calls[1][0]).toContain('https://new-cluster.example');
+  });
+
+  // The case above reconstructs a transport per authedFetch call, so it can't
+  // by itself distinguish a live-read `deps.origin()` from one snapshotted at
+  // `createHttpTransport` construction time (sabotage case 2). This one uses
+  // the SAME transport instance across authedFetch's one-refresh retry loop
+  // (transportFor(ctx) is called once per authedFetch invocation, before the
+  // retry loop) to prove the origin read is live per SEND, not per
+  // construction.
+  it('reads ctx.origin live per send within one authedFetch retry cycle, not once at transport construction', async () => {
+    let n = 0;
+    const refreshStarted = deferred<void>();
+    const refresh = deferred<boolean>();
+    const ctx = ctxWith(async () => (n++ === 0 ? jsonResp({}, false, 401) : jsonResp({ data: [] })), {
+      refresh: vi.fn(async () => {
+        refreshStarted.resolve();
+        return refresh.promise;
+      }),
+    });
+    const pending = queryJson(ctx, 'SELECT 1');
+    await refreshStarted.promise;
+    ctx.origin = 'https://new-cluster.example';
+    refresh.resolve(true);
+    await pending;
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
     expect(ctx.fetchMock.mock.calls[0][0]).toContain('https://ch.example');
     expect(ctx.fetchMock.mock.calls[1][0]).toContain('https://new-cluster.example');
   });
