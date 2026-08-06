@@ -1,15 +1,24 @@
-# ADR-0005: `@clickhouse/client-web` validation spike — Accepted
+# ADR-0005: `@clickhouse/client-web` validation spike — Rejected
 
-Status: Accepted — Phase 0 completed; Phase 1 landed; a 2026-08-07
-decision-methodology amendment (see "Decision-methodology amendment
-addendum" below) reclassified the two originally-blocking gates; Phase 2
-(production official-client implementation) and Phase 3 (production
-cutover) may proceed; Phase 4 (custom-transport deletion) after cutover
-completes its own acceptance criteria
+Status: Rejected — Phase 0 completed; Phase 1 landed; a 2026-08-07
+decision-methodology amendment briefly reclassified two Phase 0 gates and
+moved the decision to Accepted; a Phase 2 implementation attempt then
+surfaced a new, disqualifying defect outside Phase 0's original gate list —
+the official client's abort/cancellation model is structurally incompatible
+with the Phase 1 transport contract's cancellation semantics — and the
+decision reverted to **Rejected** the same day (see "Phase 2
+cancellation-incompatibility addendum" below). This is exactly the
+revert condition the 2026-08-07 amendment itself named in advance ("Phase
+2/3 reveals the narrow `exec()` bridge... can't actually stay narrow in
+production"). Phase 1's transport-seam separation remains landed and
+useful regardless; Phases 2–4 do not proceed without a new decision — this
+reversion is itself that new decision, and it points away from adoption,
+not merely back to "re-evaluate later."
 
-- **Decision date**: 2026-08-06 (original Rejected verdict); **amended
-  2026-08-07** to Accepted — see the "Decision-methodology amendment
-  addendum" below
+- **Decision date**: 2026-08-06 (original Rejected verdict); amended
+  2026-08-07 to Accepted (decision-methodology amendment); **reverted
+  2026-08-07** to Rejected after a Phase 2 implementation attempt — see
+  the "Phase 2 cancellation-incompatibility addendum" below
 - **Context tracking**: roadmap #68; #593 (refactor umbrella, Phase 7); #585
   (this validation-spike issue)
 - **Tested source / baseline SHAs**: candidate Docker/browser-matrix/live
@@ -59,16 +68,35 @@ throughout: the normal production graph never imported it, and only a
 spike-only candidate entry (`tests/spike/clickhouse-client/candidate-entry.ts`)
 bundled it for measurement.
 
-## Decision: Accepted
+## Decision: Rejected
 
-**`@clickhouse/client-web` is accepted for production adoption.** The
-original Phase 0 evidence run (2026-08-06) reached **Rejected** on two
-gates. A 2026-08-07 decision-methodology amendment reclassified both as
-non-blocking; the decision now computes as **Accepted** from the exact same
-underlying facts — nothing about the evidence itself changed, only how two
-of the ten gates are judged. Full mechanics, rationale, and the original
-Rejected reasoning are preserved in the "Decision-methodology amendment
-addendum" below. In short:
+**`@clickhouse/client-web` is rejected for production adoption.** This ADR
+has now reached three decision points from the same Phase 0 evidence base:
+Rejected (2026-08-06, original two-gate evidence) → Accepted (2026-08-07,
+decision-methodology amendment reclassified those two gates) → **Rejected
+(2026-08-07, this addendum)**, after a Phase 2 implementation attempt
+surfaced a disqualifying defect the 2026-08-07 amendment itself had already
+named as a revert condition ("Phase 2/3 reveals the narrow `exec()` bridge
+... can't actually stay narrow in production"). Full mechanics are in the
+"Phase 2 cancellation-incompatibility addendum" below; in short: the
+official client ties real-fetch cancellation exclusively to its own
+internal `AbortController`, never to the caller's `AbortSignal`, and no
+design intercepting only at the injected-`fetch` seam can reconcile that
+with the Phase 1 transport contract's requirement that the caller's own
+signal control the real fetch for the response's whole lifetime (including
+body streaming) without either leaking a forwarding listener indefinitely
+or silently breaking mid-stream Cancel for every progressive query and
+export. Two independent architecture reviews (ChatGPT and a separate
+Fable/high read-only reviewer, neither aware of the other's answer)
+reached this same conclusion independently.
+
+Phase 0's original two-gate evidence and the 2026-08-07 methodology
+amendment's reasoning about it are preserved below and remain factually
+correct as far as they go — nothing about the evidence in this section was
+wrong or has changed. What changed is that Phase 2 discovered a **third,
+disqualifying consideration Phase 0's own gate list never covered at all**
+(cancellation-model ownership), which supersedes both of them. For that
+reason:
 
 1. **Supported-server matrix — now scoped to current-generation rows
    only.** Both proposed-oldest rows (ClickHouse 24.8.14.39 OSS and
@@ -107,11 +135,17 @@ addendum" below. In short:
    Demoted to the same `measured` status `bundle delta` already had —
    informational, not blocking.
 
-All eight other gates pass or are measured, unaffected by either amendment:
-exact-value parity, progressive first-row parity, mid-stream error parity,
-auth/epoch parity, raw/export bytes, browser matrix (already `pass` since a
-2026-08-06 flake fix, PR #624 — see "Evidence correction addendum" below),
-single-file build, and bundle delta. See the decision table below.
+All eight other Phase 0 gates pass or are measured, unaffected by any of
+this: exact-value parity, progressive first-row parity, mid-stream error
+parity, auth/epoch parity, raw/export bytes, browser matrix (already `pass`
+since a 2026-08-06 flake fix, PR #624 — see "Evidence correction addendum"
+below), single-file build, and bundle delta. See the decision table below.
+**None of Phase 0's ten gates measured cancellation-model ownership at
+all** — that consideration only became visible once Phase 2 attempted a
+real implementation against the Phase 1 transport contract's cancellation
+semantics. This ADR's final Rejected decision rests on that new finding,
+not on either of the two gates above (both remain exactly as characterized
+by the 2026-08-07 methodology amendment).
 
 **This does not mean ClickHouse 24.8 is newly supported.** #627 is
 unaffected by this decision either way — the current transport and the
@@ -119,21 +153,30 @@ candidate share the identical meta-line defect, and fixing it is
 independent, ongoing work tracked on its own.
 
 **The current custom transport (`src/net/ch-client.ts`) remains
-authoritative until Phase 3 cutover completes.** This Accepted decision
-authorizes Phase 2 (production official-client implementation) and Phase 3
-(production cutover) to begin; it does not itself perform them. No
-production behavior has changed as a result of this decision: the normal
-build (`src/main.ts → dist/sql.html`) still does not import the official
-client or the spike harness.
+authoritative — no cutover was ever attempted or is now authorized.** No
+production behavior changed at any point in this ADR's history: the normal
+build (`src/main.ts → dist/sql.html`) never imported the official client or
+the spike harness, and still doesn't. The Phase 2 branch cut to attempt the
+official-client implementation
+(`feat/585-phase2-official-transport-impl`) was abandoned with zero commits
+once the plan-review loop's findings and the two independent design
+reviews converged — nothing under `src/**` changed in that attempt.
 
-**Phase 1 remains landed and useful regardless of which way this decision
-went**: `src/net/clickhouse-transport.types.ts` +
+**Phase 1 remains landed and useful regardless of any of this ADR's
+decision points**: `src/net/clickhouse-transport.types.ts` +
 `src/net/clickhouse-http-transport.ts` (already landed — see the "Phase 1
-addendum" below) put the current transport behind the narrow seam Phase 2
-now targets.
+addendum" below) put the current transport behind a narrow, testable seam
+— valuable on its own terms, independent of whether an official client
+ever sits behind it.
 
-**Phase 4** (deletion of the generic custom-transport code) proceeds only
-after Phase 3's cutover is complete and meets its own acceptance criteria —
+**Phases 2–4 do not proceed without a new decision** (this Rejected
+verdict is that decision, and it points away from adoption). Re-evaluation
+would require either an upstream `@clickhouse/client-web` API that hands
+back the native, untouched `Response`/rejection while the caller's own
+`AbortSignal` drives the real fetch for the whole response lifetime (no
+private interception layer needed), or a deliberate, separately-reviewed
+renegotiation of the Phase 1 transport contract's cancellation semantics
+themselves — not a further patch to the interception design reviewed here.
 it is not authorized by this ADR alone.
 
 ## Hard invariants maintained throughout the spike
@@ -315,6 +358,18 @@ tests/spike/clickhouse-client/recompute-decision.mjs` from the same
 `results.json` facts the original 2026-08-06 run recorded — no live
 Docker/browser matrix was re-run, because none of those underlying facts
 changed.
+
+**This table's "Decision: Accepted" line is the literal, unedited output of
+`computeGates()`/`renderDecisionTableMd()` over Phase 0's ten gates — it is
+reproduced here byte-identically on purpose, not corrected, because
+correcting a mechanically-generated artifact by hand is exactly the failure
+mode this evidence pipeline is built to prevent.** None of Phase 0's ten
+gates measure cancellation-model ownership; that consideration doesn't
+exist in `computeGates()` and was never meant to be scored by this table.
+The ADR's actual, final decision — **Rejected** — is stated in the
+"Decision" section above and rests on the "Phase 2 cancellation-
+incompatibility addendum" below, a finding this table cannot represent
+because it falls outside what Phase 0 was scoped to measure.
 
 ## Critical-question evidence
 
@@ -575,43 +630,62 @@ this specific caveat without needing to redo the rest of the spike.
 
 ## Consequences
 
-- `@clickhouse/client-web` is **accepted for production adoption**, as of
-  the 2026-08-07 decision-methodology amendment. As of this ADR text edit,
-  `src/net/ch-client.ts` is still unchanged and production transport
-  composition has not yet changed — this ADR authorizes Phase 2/3 to
-  perform that work, it does not perform it itself.
-- The dependency graduates from a spike-only `devDependency` to a real
-  production dependency once Phase 2 lands; until then it remains isolated
-  to `tests/spike/clickhouse-client/` exactly as it was during Phase 0/1.
+- `@clickhouse/client-web` is **rejected for production adoption**. It
+  remains a spike-only `devDependency`, exact `1.23.1`, isolated to
+  `tests/spike/clickhouse-client/` — it never graduated to `dependencies`,
+  because the 2026-08-07 Accepted window closed the same day, before Phase 2
+  produced any implementation commit. `src/net/ch-client.ts` is unchanged;
+  production transport composition has never changed at any point in this
+  ADR's history.
 - Phase 1 (separating application policy from the concrete transport
-  implementation) — already landed, independent of this decision either way
-  — remains the seam Phase 2 targets. See "Phase 1 addendum" below.
+  implementation) — already landed, independent of every decision point this
+  ADR has reached — remains valuable on its own terms. See "Phase 1
+  addendum" below.
 - Phases 2–4 (production official-client implementation, cutover, and
-  custom-transport deletion) **may now proceed**: Phase 2 and Phase 3 are
-  authorized by this decision; Phase 4 additionally requires Phase 3's own
-  cutover-completion acceptance criteria. #593's Phase 7 (this ADR) is
-  Accepted, not Rejected.
-- **What would revert this decision:** discovering that the 2026-08-07
-  amendment's reasoning doesn't hold up in practice — e.g. Phase 2/3 reveals
-  the narrow `exec()` bridge (`progress-bridge.ts` + `guarded-fetch.ts`)
-  can't actually stay narrow in production, or that the claimed upstream
-  maintenance-burden reduction doesn't materialize and the -154 LOC figure
-  turns out to matter after all. Fixing #627 (the meta-line gap) does
-  **not** revert this decision either way — it was already priced in as
-  "not evidence against the candidate" precisely because it affects the
-  status quo equally.
+  custom-transport deletion) **do not proceed without a new decision** —
+  this Rejected verdict is that decision, and it points away from adoption
+  rather than merely deferring re-evaluation. #593's Phase 7 (this ADR) is
+  Rejected.
+- **What was different this time, and why it's final rather than another
+  amendment round:** the 2026-08-07 methodology amendment itself named its
+  own revert condition — "Phase 2/3 reveals the narrow `exec()` bridge ...
+  can't actually stay narrow in production, or ... the claimed upstream
+  maintenance-burden reduction doesn't materialize." Both happened. Five
+  rounds of plan review grew the bridge from a request-shaping wrapper into
+  a private sentinel/correlation-map/fail-closed-guard subsystem, and two
+  independent architecture reviews confirmed the vendor's `exec()` call
+  contributes zero wire-level bytes or behavior after the required
+  corrections — so there is no remaining maintenance-burden transfer to
+  weigh against the LOC cost. See the "Phase 2 cancellation-incompatibility
+  addendum" below for the full mechanics.
+- Fixing #627 (the meta-line gap) still does **not** revert or otherwise
+  touch this decision either way — it was already priced in as "not
+  evidence against the candidate" precisely because it affects the status
+  quo equally, and that reasoning is unrelated to why this decision reverted.
 
 ## Alternatives considered
 
 - **Accept with a narrow `exec()` bridge, raising the supported minimum to
   26.3.16.10001.altinitystable (originally recorded as 26.6.2.160).** This
   is the path the 2026-08-06 evidence run considered and rejected at the
-  time (net deletion was still negative and treated as a hard blocker) —
-  and, following the 2026-08-07 decision-methodology amendment, is now the
-  ADR's own **Accepted** decision (see "Decision" above and the
-  "`JSONStringsEachRowWithProgress` disposition" section's already-selected
-  narrow-bridge design). Retained here as a record of the path this ADR
-  took two different verdicts on, not as a rejected alternative.
+  time (net deletion was still negative and treated as a hard blocker), then
+  the path the 2026-08-07 decision-methodology amendment accepted, then the
+  path Phase 2's implementation attempt actually tried to build. Rejected
+  for the third and final time, same day: the "narrow bridge" could not
+  stay narrow once real implementation and review exposed the
+  cancellation-ownership conflict (see "Phase 2 cancellation-incompatibility
+  addendum" below) — retained here as the record of the one path this ADR
+  reached three different verdicts on.
+- **Implement a corrected variant of the interception design — the wrapper
+  builds its own request/response handling and never hands the vendor an
+  `AbortSignal` at all, so the vendor contributes only URL origin/path
+  normalization and inert lifecycle sequencing.** Both independent reviews
+  raised this as technically buildable. Rejected as not worth building: at
+  that point the vendor contributes nothing verifiable to the wire request
+  (confirmed independently by both reviewers), so the adoption would be
+  nominal only — paying an exact-version pin, a private-internals
+  maintenance obligation, and bundle weight for zero real transfer of
+  ownership. See the addendum below for the full tally.
 - **Lower the proposed minimum to the client's raw documented floor (24.8+)
   without the application-inventory correction.** Rejected: this was the
   spike's own first-pass error (corrected in commit `49b9955`) — it would
@@ -643,10 +717,15 @@ scope was validation evidence only:
   boundaries for the official client; shared contract tests for production
   transport implementations. **Landed** (see "Phase 1 addendum" below),
   independent of this ADR's eventual verdict either way.
-- Phase 2 — production official-client implementation. **Now proceeds**,
-  per the Accepted decision above (as of the 2026-08-07 amendment).
+- Phase 2 — production official-client implementation. **Attempted, then
+  blocked.** Briefly authorized by the 2026-08-07 Accepted window; a plan
+  was authored and went through 5 rounds of review (23 verified findings,
+  all folded in) before that same review surfaced the disqualifying
+  cancellation-ownership conflict. No implementation commit was ever made —
+  see "Phase 2 cancellation-incompatibility addendum" below. Does not
+  proceed without a new decision, per the Rejected verdict above.
 - Phase 3 — production cutover and production-path behavior acceptance.
-  **Now proceeds**, per the Accepted decision above.
+  **Blocked** — was never reached; does not proceed without a new decision.
 - Phase 4 — removal of obsolete custom generic transport code; actual
   post-cutover bundle/LOC comparison against this Phase 0 baseline.
   Proceeds only once Phase 3's cutover completes its own acceptance
@@ -834,7 +913,164 @@ zero `fail` gates and **Decision: Accepted** — see "Decision" above and the
 "Decision table" section. This does not fix, worsen, or otherwise touch
 #627 (the meta-line gap) or the documented ClickHouse-version support
 matrix (#71): both remain exactly as they were, tracked independently of
-this ADR's outcome.
+this ADR's outcome. **Superseded by the addendum immediately below** — the
+Accepted window this amendment opened closed the same day, 2026-08-07, once
+Phase 2 surfaced a disqualifying finding outside the ten gates this
+amendment reasons about.
+
+### Phase 2 cancellation-incompatibility addendum (2026-08-07)
+
+**What happened.** Authorized by the Accepted decision above, a Phase 2
+plan (`ClickHouseTransport` implemented with `@clickhouse/client-web`,
+registered against the shared Phase 1 contract-test suite, no production
+cutover) went through the standard `/ship` plan-review loop: 5 rounds,
+each an independent ChatGPT review followed by parallel Sonnet fact-checks
+against the actual installed `1.23.1` package sources, not just the plan's
+own citations. All 5 rounds returned `REVISE`; all 23 accepted findings
+across those rounds were folded into the plan and verified real, not
+review noise. **No implementation commit was ever made** — the branch cut
+for this work (`feat/585-phase2-official-transport-impl`) was deleted with
+zero commits once the pattern below was recognized and confirmed.
+
+**The pattern.** Every round's real findings clustered around one
+mechanism: the plan's design ("D1", a fetch-boundary "response handoff")
+injects a `fetch` into the vendor client that always throws a private,
+non-`Error` sentinel object carrying either the settled `Response` or the
+original rejection, so the vendor's own `catch` (which only special-cases
+`isAborted`/`isTimedOut`/`instanceof Error` before rethrowing) passes it
+through untouched — the only way to recover the Phase 1 contract's
+required native, untouched `Response` from a client whose normal result
+path consumes the body and throws a parsed vendor error on any non-2xx.
+That base idea survived all 5 rounds. What did not survive is the
+abort/cancellation wiring built around it ("D9"): to reconcile the
+caller's own `AbortSignal` with the vendor's *internal*
+`AbortController` (which is the only thing the vendor's real `fetch` call
+ever receives — `web_connection.js`'s `request()` creates its own
+controller and only assigns the caller's signal an `.onabort` callback,
+never passing the caller's signal itself to the real fetch), the plan
+forwarded caller aborts to the derived controller via a listener torn down
+"when `send()` settles." Two by-construction defects fell out of that one
+decision, one per round-5 finding, both independently reproduced against
+the real vendor source:
+
+1. **Mid-stream cancellation silently breaks.** `send()` settles at
+   response headers, before the body finishes streaming (progressive
+   query rows, export bytes). Tearing the forwarding listener down at that
+   point means a caller `Cancel` pressed *after* headers arrive — the
+   common case for a long progressive query or export — can no longer
+   reach the real, still-streaming fetch at all: the underlying request
+   silently keeps running. The current, shipped transport does not have
+   this defect — it passes the caller's own signal directly into the real
+   `fetch` call for the connection's entire lifetime
+   (`src/net/clickhouse-http-transport.ts`), so this would have been a
+   genuine regression at cutover, not a like-for-like swap.
+2. **A late abort can retroactively destroy an already-settled outcome.**
+   The vendor's `isAborted`/`isTimedOut` flags are flipped by
+   side-effecting callbacks that race the sentinel's arrival at the
+   vendor's `catch` by 1–2 microtask hops; a caller abort landing in that
+   window causes the vendor to discard an already-thrown sentinel —
+   silently losing either a successful `Response` (fixed mid-loop, round
+   3–4) or, unresolved as of round 5, a genuine network rejection
+   (misreported as `AbortError`, losing the original error and skipping
+   `onTransportOffline`).
+
+Neither is a bug in one implementation of the idea — every attempt to fix
+either one within the existing shape (keep the listener alive longer,
+reconnect it, add another guard) either reopens the other defect or grows
+the "narrow bridge" further: by round 5 the design carried two sentinel
+classes, a marker-header correlation map, consumed/pending state, a
+response-side settlement slot, slot-first winner rules, and a fail-closed
+replay guard — the "narrow `exec()` bridge" the 2026-08-07 amendment
+above described was, by this point, not narrow.
+
+**Independent verification, not a single reviewer's opinion.** Given that
+pattern, the plan-review loop's own 5-pass cap was hit without a clean
+approval — the `/ship` skill's protocol for exactly this situation is a
+full stop for a human decision, not a further, uncapped review round. Two
+independent architecture opinions were then sought in parallel on the
+narrow question of whether the design should be patched again or replaced:
+
+- **ChatGPT**, given the full plan and round-5 findings, verified the
+  vendor's abort-plumbing source directly and recommended: do not
+  implement this design; retain the current transport; amend this ADR to
+  record that `@clickhouse/client-web@1.23.1` lacks a raw-request
+  primitive that returns the native `Response`/rejection while leaving the
+  caller's own `AbortSignal` in control of the real fetch for the
+  response's whole lifetime; re-evaluate only if such an API is released,
+  or if the Phase 1 transport contract's cancellation semantics are
+  themselves deliberately renegotiated. (Conversation:
+  https://chatgpt.com/c/6a74df51-3054-83eb-bb5b-d7d4aead1eda.)
+- **A separate, independent Fable/high read-only reviewer** — given the
+  same brief but no visibility into ChatGPT's answer — verified the same
+  vendor sources from scratch and reached the same structural conclusion:
+  the sentinel-at-the-fetch-seam extraction itself is sound and has never
+  produced a race in 5 rounds; the defect is specifically routing the
+  caller's `AbortSignal` through the vendor's own abort plumbing, and no
+  variant of "tear down the forwarding listener at some point" can be
+  simultaneously correct, because the transport contract deliberately
+  makes body-consumption timing a caller decision the transport cannot
+  observe. It proposed a corrected variant (the wrapper builds its own
+  fetch `init` and never hands the vendor an `AbortSignal` at all) as
+  *technically* viable, but reached the same tally as ChatGPT on whether
+  it's worth building (below).
+
+**What the vendor actually contributes, once every required correction is
+applied.** Both reviews independently tallied this, converging exactly:
+after D1 (response handoff), D2 (the caller's exact SQL bytes must be
+restored — the vendor's own public `ClickHouseClient.exec()` trims and
+strips a trailing semicolon before the connection layer ever sees the
+query), D6 (the caller's exact `Authorization` header must be restored —
+the vendor overwrites it unconditionally), and D8 (the vendor's own
+query-string serializer had to be discarded wholesale and replaced with a
+hand-written one, because the vendor's serializer reorders `query_id`
+ahead of settings, silently drops falsy `session_id`/non-string `role`,
+generates a UUID for an absent `query_id`, and collapses duplicate
+settings/params keys the current wire contract keeps distinct) — the
+vendor's `exec()` call contributes **no bytes and no behavior that reaches
+the wire**. What would remain, even under the corrected abort design, is
+URL origin/path normalization (already trivially available without the
+vendor) and inert request-lifecycle sequencing. Both reviews concluded
+adoption at that point would be nominal only: an exact-version pin, a
+private-internals maintenance obligation tracking every vendor release,
+and measured bundle weight (+20,776 B gzip / +3.33%, from the "Normal and
+stamp-normalized bundle measurements" section above), in exchange for zero
+real transfer of protocol ownership — which also means Phase 4's eventual
+deletion payoff (removing duplicated protocol code) shrinks to almost
+nothing, since the plan already conceded Authorization emission,
+query-string serialization, and ClickHouse error parsing would remain
+permanently SQL-Browser-owned even before this addendum, and the
+corrected abort design concedes cancellation plumbing too.
+
+**Why this reverts the decision rather than opening a third amendment
+round.** The 2026-08-07 decision-methodology amendment above explicitly
+named its own revert condition: "discovering that the ... amendment's
+reasoning doesn't hold up in practice — e.g. Phase 2/3 reveals the narrow
+`exec()` bridge ... can't actually stay narrow in production, or that the
+claimed upstream maintenance-burden reduction doesn't materialize." Both
+half of that sentence are now independently confirmed true. This is not a
+new methodology dispute over how to score Phase 0's ten gates (those
+stand exactly as that amendment described them); it is a new, eleventh
+consideration Phase 0 never measured, surfaced only by attempting a real
+implementation against the Phase 1 contract, that independently defeats
+the decision regardless of how the original two gates are scored.
+
+**What does not revert.** #627 (the meta-line gap) and the general
+ClickHouse-version support matrix (#71) are unaffected either way — both
+remain exactly as tracked, independent of this ADR's final outcome. Phase
+1 (`src/net/clickhouse-transport.types.ts` +
+`src/net/clickhouse-http-transport.ts`) remains landed and useful on its
+own terms; nothing about this addendum implicates it.
+
+**What would need to be true to reopen this again.** Either an upstream
+`@clickhouse/client-web` release that exposes a raw-request primitive
+returning the native `Response`/rejection while the caller's own
+`AbortSignal` controls the real fetch for the response's whole
+lifetime — no private interception layer required — or a deliberate,
+separately-reviewed decision to renegotiate the Phase 1 transport
+contract's cancellation semantics themselves. Absent either, further
+review passes patching the same interception design are not expected to
+produce a different outcome; this addendum is the record of why the
+`/ship` run stopped attempting them.
 
 ## Reproduction commands
 

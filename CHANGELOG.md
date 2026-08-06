@@ -10,26 +10,33 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
-- **ADR-0005 amended: `@clickhouse/client-web` now Accepted (was Rejected).**
-  Clarified that the meta-line gap the original 2026-08-06 evidence run
+- **ADR-0005 reverted to Rejected (`@clickhouse/client-web` not adopted);
+  briefly Accepted for part of one day.** A 2026-08-07 decision-methodology
+  amendment had reclassified two originally-blocking Phase 0 gates as
+  non-blocking — the meta-line gap the original 2026-08-06 evidence run
   counted as a failing gate is a general SQL Browser compatibility bug
   (`src/core/stream.ts`'s missing meta-less fallback for ClickHouse servers
   predating ClickHouse GitHub PR #74181), not a `@clickhouse/client-web`
-  defect — it fails identically for the current production transport, so it
-  isn't evidence against the candidate; tracked independently as #627.
-  Separately, a 2026-08-07 decision-methodology amendment demoted "net
-  production-code deletion" from a hard pass/fail gate to a measured metric
-  (LOC delta alone is a narrow proxy for maintenance cost) and narrowed
-  "supported-server matrix" to gate on current-generation ClickHouse rows
-  only. `tests/spike/clickhouse-client/run-matrix.mjs`'s `computeGates()` was
-  updated accordingly and evidence was recomputed from the same underlying
-  facts (no live matrix re-run) via the new
-  `tests/spike/clickhouse-client/recompute-decision.mjs`, flipping the
-  decision to **Accepted**. This authorizes #585 Phase 2 (production
-  official-client implementation) and Phase 3 (production cutover) to
-  proceed; production behavior is still unchanged as of this entry —
-  `src/net/ch-client.ts` remains authoritative until cutover. No `src/**`
-  code changed.
+  defect, since it fails identically for the current production transport
+  (tracked independently as #627); and "net production-code deletion" was
+  demoted from a hard pass/fail gate to a measured metric. That amendment
+  briefly moved the decision to Accepted and authorized #585 Phase 2. The
+  same day, a Phase 2 implementation attempt's plan review (5 rounds, 23
+  verified findings) surfaced an eleventh, disqualifying consideration Phase
+  0 never measured: `@clickhouse/client-web`'s abort/cancellation model ties
+  the real network request exclusively to its own internal controller, never
+  to the caller's `AbortSignal` — structurally incompatible with the Phase 1
+  transport contract's requirement that the caller's signal control
+  cancellation for the whole response lifetime, including body streaming
+  (breaks mid-stream Cancel for progressive queries/exports). Two
+  independent architecture reviews (ChatGPT and a separate Fable/high
+  reviewer) confirmed this and additionally found that, once every other
+  required correction is applied, the official client contributes no bytes
+  or behavior to the actual wire request. ADR-0005 reverted to **Rejected**
+  the same day (2026-08-07) — see its "Phase 2 cancellation-incompatibility
+  addendum" for the full mechanics. Production behavior is unchanged
+  throughout: `src/net/ch-client.ts` remains authoritative; no `src/**` code
+  changed at any point across either amendment.
 
 ## [0.7.3] - 2026-08-06
 
