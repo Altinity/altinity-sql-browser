@@ -23,8 +23,13 @@
 // the ADR/wiki-consistency checks (§31) are only MEANINGFUL once the matrix
 // is complete — asserting them against a partial run would either force a
 // premature ADR or produce a spurious failure on a legitimately-not-yet-
-// pending wiki page. See `main()`'s `completenessFindings.length === 0` gate
-// below.
+// pending wiki page. "Complete" means nothing REQUIRED is missing
+// (`checkCompleteness`'s `missingCount`) — NOT that every finding is a pass:
+// a fully-complete run reaching a correctly-evidenced Rejected decision
+// keeps reporting legitimate, permanent failures (e.g. the 24.8.x
+// server-matrix incompatibility) forever, and that must not suppress the
+// ADR/wiki cross-check. See `main()`'s `completenessFindings.missingCount
+// === 0` gate below.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
