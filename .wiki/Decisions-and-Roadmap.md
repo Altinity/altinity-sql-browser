@@ -130,9 +130,13 @@ Two roadmap tracks are current:
   0 completed as a fully valid outcome — **no production cutover occurred**, and
   `src/net/ch-client.ts` (the current custom transport) **remains
   authoritative**. Phase 1 (separating application policy from the concrete
-  transport implementation) remains useful and unblocked on its own merits;
-  Phases 2–4 (production adoption, cutover, and custom-transport deletion) do
-  not proceed without a new decision.
+  transport implementation) — **landed** on `wip/585-phase1-transport-seam`:
+  `src/net/clickhouse-transport.types.ts` (the `ClickHouseTransport` contract)
+  + `src/net/clickhouse-http-transport.ts` (`createHttpTransport`, the current
+  implementation behind it) put the existing transport behind a narrow seam
+  with zero behavior change; `ch-client.ts` keeps every auth/epoch/retry
+  policy and product operation. Phases 2–4 (production adoption, cutover, and
+  custom-transport deletion) do not proceed without a new decision.
 
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).

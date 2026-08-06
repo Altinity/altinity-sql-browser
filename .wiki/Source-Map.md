@@ -16,7 +16,9 @@ Back to [[Home]]. Related: [[Architecture]], [[Product-and-Features]].
 | `src/dashboard/application/dashboard-repaint-plan.js` | pure repaint-decision arbitration extracted from `ui/dashboard.js`'s `renderDashboard` effect (#589) |
 | `src/ui/dashboard-tile-gestures.js` | Dashboard corner-drag resize, Command/Ctrl-drag reorder, and modifier-cue controller, extracted from `ui/dashboard.js` behind an injected `TileGestureDeps` seam (#589) |
 | `src/state.js` | signals-backed state model and persistence operations |
-| `src/net/ch-client.js` | ClickHouse HTTP execution and schema calls |
+| `src/net/ch-client.js` | ClickHouse HTTP execution and schema calls; auth/epoch/retry policy, product operations, `ChCtx` (#585 Phase 1: generic request/stream mechanics delegate through the transport seam below) |
+| `src/net/clickhouse-transport.types.js` | Type-only `ClickHouseTransport` contract (`send`/`streamLines`, `TransportDeps`, `TransportRequest`) (#585 Phase 1) |
+| `src/net/clickhouse-http-transport.js` | `createHttpTransport` — the current custom HTTP implementation of that contract, plus `chUrl`/`ChUrlOpts` (#585 Phase 1) |
 | `src/net/oauth.js` | OAuth flow/token exchange |
 | `src/editor/editor-port.js` | SQL editor contract and safe no-op port |
 | `src/editor/codemirror-adapter.js` | SQL CodeMirror 6 adapter |

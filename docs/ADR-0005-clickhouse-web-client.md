@@ -630,6 +630,30 @@ teardown; permanent live-ClickHouse CI integration; general supported-browser
 documentation (tracked separately by #71); a permanent second transport
 path.
 
+### Phase 1 addendum (landed)
+
+Phase 1 — "establish the transport seam without behavior change" — landed on
+`wip/585-phase1-transport-seam`, per this ADR's own prescription for a
+Rejected outcome ("retain the current transport with the layer separation
+from Phase 1 remains useful independent of this decision"). It defines
+`src/net/clickhouse-transport.types.ts` (the `ClickHouseTransport` contract:
+`send`/`streamLines`, `TransportDeps`, `TransportRequest`, `StreamCallbacks`)
+and `src/net/clickhouse-http-transport.ts` (`createHttpTransport` — the
+current custom HTTP implementation behind that contract, plus `chUrl`/
+`ChUrlOpts` moved verbatim from `ch-client.ts`). `ch-client.ts`'s auth/epoch/
+retry policy, product operations, and `ChCtx` are otherwise unchanged — no
+new `ChCtx` field, no runtime transport switch; `authedFetch` is the one
+exported-signature change, scoped to its own unit test (no production
+importer exists outside `ch-client.ts` itself). A reusable contract-test-
+suite factory (`tests/unit/clickhouse-transport-contract.ts`) registers
+against the current implementation only — Phases 2–4 remain exactly as
+scoped above and do not proceed without a new decision. `build/
+check-boundaries.mjs` gained a bare-specifier ban on `@clickhouse/client-web`
+under `src/**` (mirrored as a coverage-gated unit test), naming
+`src/net/clickhouse-web-transport.ts` as the single allowlisted (not yet
+existing) future official-transport file. No user-visible or production-
+behavior change; bundle size delta ≈ 0.
+
 ## Reproduction commands
 
 ```sh

@@ -111,6 +111,26 @@ const RULES = [
     except: ['src/ui/dnd-mime.js', 'src/ui/dnd-mime.ts', 'src/ui/dom.js', 'src/ui/dom.ts'],
     why: 'issue #60/#313: the editor layer is a leaf — UI actions are injected via app callbacks, not imported',
   },
+  // Issue #585 Phase 1: the generic ClickHouse transport (and its type-only
+  // contract) is a low-level leaf that must not reach auth/application
+  // policy or UI, even type-only (the checker's own header comment: `import
+  // type` counts too). Two entries, not one, because collectFiles(ruleDir)
+  // matches per-`dir` — a single-file rule naming only the implementation
+  // file would leave the sibling contract file unguarded. `forbidden` targets
+  // are resolved repo-relative paths (never raw specifier strings like
+  // './ch-client.ts'), matching how the checker resolves and compares them.
+  {
+    dir: 'src/net/clickhouse-http-transport.ts',
+    forbidden: ['src/net/ch-client.ts', 'src/net/oauth.ts',
+      'src/net/oauth-config.ts', 'src/application', 'src/ui'],
+    why: 'issue #585 Phase 1: the generic transport cannot reach auth/application policy or UI',
+  },
+  {
+    dir: 'src/net/clickhouse-transport.types.ts',
+    forbidden: ['src/net/ch-client.ts', 'src/net/oauth.ts',
+      'src/net/oauth-config.ts', 'src/application', 'src/ui'],
+    why: 'issue #585 Phase 1: the transport contract must not couple to auth/application policy or UI, even type-only',
+  },
 ];
 
 function collectFiles(target) {
@@ -222,6 +242,28 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   if (connectionProjectionOwners.has(relFile)) continue;
   if (connectionProjectionPattern.test(fs.readFileSync(file, 'utf8'))) {
     violations.push(`${relFile} → connection-chip projection (issue #512: only app-header may render lifecycle state)`);
+  }
+}
+
+// Issue #585 Phase 1: no file under src/** may import the official
+// `@clickhouse/client-web` package (a bare specifier — the `RULES` loop above
+// skips those, `if (!spec.startsWith('.')) continue;`, hence this separate
+// block). ADR-0005 (docs/ADR-0005-clickhouse-web-client.md) is Rejected, so
+// Phases 2-4 (the official-client cutover) do not proceed without a new
+// decision — today this bans the import everywhere in `src/`. The single
+// allowlist entry names the FUTURE official transport file (does not exist
+// yet); the rule is written so it activates correctly the moment that file is
+// born, rather than needing a second edit here.
+const CLIENT_WEB_SPECIFIER = '@clickhouse/client-web';
+const CLIENT_WEB_ALLOWLIST = new Set(['src/net/clickhouse-web-transport.ts']);
+for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  checkedFiles += 1;
+  const source = fs.readFileSync(file, 'utf8');
+  for (const spec of extractSpecifiers(source)) {
+    if (spec !== CLIENT_WEB_SPECIFIER && !spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) continue;
+    if (CLIENT_WEB_ALLOWLIST.has(relFile)) continue;
+    violations.push(`${relFile} → ${spec} (issue #585 Phase 1: only the future official transport file may import @clickhouse/client-web — ADR-0005 is Rejected, Phases 2-4 do not proceed without a new decision)`);
   }
 }
 
