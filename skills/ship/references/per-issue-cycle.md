@@ -219,7 +219,8 @@ Every commit this step produces must land **before the PR is certified**: a
 post-certification commit voids the exact-head review and burns another pass.
 
 - Update `CHANGELOG.md` under `[Unreleased]` when required (the worker writes its own
-  unit's entry; the coordinator dedupes across units).
+  unit's entry; with one unit per PR, the coordinator reconciles only this unit's own
+  entry — there's no other unit's entry sharing this PR to dedupe against).
 - Update the relevant ADR addendum for architecture changes.
 - Reconcile the issue's Goal/Acceptance text when implementation deliberately changed it.
 - Close or reconcile superseded issues — when the unit that owns that result lands, not

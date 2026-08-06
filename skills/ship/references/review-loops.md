@@ -1,6 +1,6 @@
 # The review loops as Workflow scripts
 
-The selected plan loop (SKILL.md step 2.2) and each code review pass (step 3.5) run as Workflow
+The selected plan loop (SKILL.md step 2.2) and each code review pass (step 2.6) run as Workflow
 scripts, not as prose the coordinator follows by hand. The point is mechanical
 enforcement: the pass caps are `for`-loop bounds, the verdict is schema-validated
 (fail-closed to REVISE), finding verification fans out one read-only agent per finding,
@@ -11,8 +11,10 @@ bodies inline, and change them here so there is one copy:
 
 - `plan-review-loop.workflow.mjs` — default mode: Fable/high authors and ChatGPT reviews.
 - `chatgpt-plan-author-loop.workflow.mjs` — `--planner chatgpt`: ChatGPT authors and Fable/high approves.
-- `code-review-pass.workflow.mjs` — exactly one PR review pass per run; the coordinator
-  pushes, waits for CI, and re-invokes (the 3-pass cap is enforced by the
+- `code-review-pass.workflow.mjs` — exactly one PR review pass per call, scoped to one
+  unit's own PR (SKILL.md step 2.6). `pass`/`session` reset to `1`/`null` for every
+  unit — never carried over from a previous unit's loop, even on the same spine. The
+  coordinator pushes, waits for CI, and re-invokes (the 3-pass cap is enforced by the
   `chatgpt-review` script itself).
 
 These Workflow calls are part of this skill's contract — invoking `/ship` is the
@@ -97,7 +99,7 @@ incomplete after bounded same-session retries.
 
 Coordinator loop per pass (max 3; the CLI errors on pass 4):
 
-1. Check out the integration branch in the main tree; update the question file
+1. Check out this unit's own branch in the main tree; update the question file
    (append rebuttals for previously rejected findings).
 2. ```
    Workflow {
@@ -110,7 +112,7 @@ Coordinator loop per pass (max 3; the CLI errors on pass 4):
 
 | status | meaning | coordinator action |
 |---|---|---|
-| `certified-pending-proofs` | `VERDICT: SHIP`, no accepted findings | proceed to the gate (step 3.6) — still check SHA match, green CI, branch protection yourself |
+| `certified-pending-proofs` | `VERDICT: SHIP`, no accepted findings | proceed to the gate (step 2.7) — still check SHA match, green CI, branch protection yourself |
 | `fixed-await-push` | accepted findings fixed, gate green, local commits made | verify the diff yourself, push, wait for green CI keyed on the head SHA, re-invoke with `pass+1` and the returned `session` |
 | `no-accepted-findings` | REVISE, but nothing survived verification | append the rebuttals to the question file; re-invoke (spends a pass) — or go to the gate's FULL STOP if this repeats |
 | `fix-failed` | fix agent died or could not reach a green gate | **FULL STOP** at the gate with the gate tail |
