@@ -228,9 +228,9 @@ async function measureLoc(absPath) {
   return { physical, transformedExecutable };
 }
 
-/** Regex-detect top-level `export function`/`export async function`/
- * `export const` symbol boundaries in an in-memory TS source string and sum
- * `physicalLineCount()` — the SAME comment/blank-stripped metric
+/** Regex-detect top-level `function`/`async function`/`const` symbol
+ * boundaries (exported or not — see below) in an in-memory TS source string
+ * and sum `physicalLineCount()` — the SAME comment/blank-stripped metric
  * `measureLoc()` uses — per caller-supplied bucket, over each symbol's own
  * line range. Throws on any detected symbol absent from `classification` —
  * the deletion estimate must fail loudly on drift (a renamed/added/removed
@@ -241,11 +241,26 @@ async function measureLoc(absPath) {
  * regression test can exercise the counting logic directly against a literal
  * fixture string; `classifyFunctionRanges` below is the thin file-reading
  * wrapper the orchestrator actually calls. `sourceLabel` is only used to name
- * the source in the unclassified-symbol error message. */
+ * the source in the unclassified-symbol / stale-classification error messages.
+ *
+ * The detection regex used to require a leading `export` keyword. A real
+ * drift incident (issue #585 Phase 1, PR #621) showed why that was wrong:
+ * `ch-client.ts`'s Phase 1 transport-seam restructuring left several
+ * top-level functions (`isAbort`, `errMessage`, `isCurrentEpoch`,
+ * `staleEpochAbort`, `querySystemAware`, `loadDataLakeCatalogTableNames`)
+ * non-exported (they always were, or became so incidentally) while they
+ * stayed in `CH_CLIENT_CLASSIFICATION` — the export-only regex simply never
+ * saw them as boundaries, so their LOC silently vanished into whichever
+ * EARLIER exported symbol's range preceded them (or, for the four before the
+ * file's first export, into no bucket at all). The regex now matches a
+ * top-level (still `^`-anchored — nested declarations are never matched)
+ * `function`/`const` declaration whether or not it is exported, so every
+ * real symbol becomes its own tracked boundary again regardless of its
+ * export status. */
 export function classifyFunctionRangesFromSource(src, classification, ignore = [], sourceLabel = '<source>') {
   const lines = src.split('\n');
   const starts = [];
-  const re = /^export\s+(?:async\s+)?function\s+(\w+)|^export\s+const\s+(\w+)/;
+  const re = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)|^(?:export\s+)?const\s+(\w+)/;
   lines.forEach((line, i) => {
     const m = line.match(re);
     if (m) starts.push({ name: m[1] || m[2], line: i + 1 });
@@ -253,8 +268,10 @@ export function classifyFunctionRangesFromSource(src, classification, ignore = [
   starts.push({ name: '__EOF__', line: lines.length + 1 });
   const byBucket = {};
   const unclassified = [];
+  const matchedNames = new Set();
   for (let i = 0; i < starts.length - 1; i += 1) {
     const { name } = starts[i];
+    matchedNames.add(name);
     const rangeSrc = lines.slice(starts[i].line - 1, starts[i + 1].line - 1).join('\n');
     const count = physicalLineCount(rangeSrc);
     if (ignore.includes(name)) continue;
@@ -264,6 +281,19 @@ export function classifyFunctionRangesFromSource(src, classification, ignore = [
   }
   if (unclassified.length) {
     throw new Error(`run-matrix: classifyFunctionRanges(${sourceLabel}) found unclassified top-level symbol(s): ${unclassified.join(', ')} — the deletion-estimate manifest in run-matrix.mjs must classify every one (plan §28)`);
+  }
+  // The MIRROR of the check above (the exact drift shape that caused the
+  // issue #585 Phase 1 regression this function's header comment describes):
+  // a classification-table entry that used to match a real symbol but no
+  // longer matches ANYTHING in the source — renamed, moved to another file
+  // (e.g. `chUrl` relocating to `clickhouse-http-transport.ts`), or deleted.
+  // Silently ignoring a stale entry is exactly as wrong as silently dropping
+  // an unclassified symbol: both let the manifest quietly stop reflecting the
+  // real file. Fail loudly here too, rather than only catching the one
+  // direction.
+  const staleClassifications = Object.keys(classification).filter((name) => !matchedNames.has(name));
+  if (staleClassifications.length) {
+    throw new Error(`run-matrix: classifyFunctionRanges(${sourceLabel}) has classification-table entr${staleClassifications.length === 1 ? 'y' : 'ies'} that no longer match(es) any top-level symbol in the source: ${staleClassifications.join(', ')} — the symbol was renamed/moved/deleted; fix or remove its entry in run-matrix.mjs (plan §28)`);
   }
   return byBucket;
 }
@@ -735,12 +765,22 @@ async function checkFormatTypeProbeCompiles() {
 //                                     browsing: domain-specific SQL, never
 //                                     generic transport, unaffected by which
 //                                     client library issues the request.
+//
+// `chUrl` is NOT here — issue #585 Phase 1 (PR #621) moved it verbatim to
+// `clickhouse-http-transport.ts` (see HTTP_TRANSPORT_CLASSIFICATION below);
+// ch-client.ts only re-exports the name (`export { chUrl };`, no `const`/
+// `function` keyword), which the boundary regex correctly does not match, so
+// keeping a `chUrl` entry here would itself be exactly the stale-
+// classification drift the mirror guard now catches.
 const CH_CLIENT_CLASSIFICATION = {
   isAbort: 'delete-after-cutover',
   errMessage: 'delete-after-cutover',
   isCurrentEpoch: 'rewrite-narrow-adapter',
   staleEpochAbort: 'rewrite-narrow-adapter',
-  chUrl: 'delete-after-cutover',
+  // Thin wiring from `ChCtx` to the current generic transport — no auth/
+  // epoch policy of its own (that stays in authedFetch); Phase 2 replaces
+  // `createHttpTransport` itself, so this wiring goes with it.
+  transportFor: 'delete-after-cutover',
   authedFetch: 'rewrite-narrow-adapter',
   queryJson: 'delete-after-cutover',
   querySystemAware: 'unrelated-product-operation',
@@ -761,12 +801,29 @@ const CH_CLIENT_CLASSIFICATION = {
   trySystemAwareQueryData: 'unrelated-product-operation',
   firstLine: 'unrelated-product-operation',
   loadReferenceData: 'unrelated-product-operation',
+  // The doc-probe table-name lookup backing loadDocTableColumns — #313/#314
+  // doc-browsing data, same bucket as its callers below.
+  DOC_PROBE_TABLE_NAMES: 'unrelated-product-operation',
   loadDocTableColumns: 'unrelated-product-operation',
   loadDocRow: 'unrelated-product-operation',
   loadFunctionsDocColumns: 'unrelated-product-operation',
   loadFunctionDocRow: 'unrelated-product-operation',
   exportQuery: 'delete-after-cutover',
   runQuery: 'delete-after-cutover',
+};
+
+// src/net/clickhouse-http-transport.ts (issue #585 Phase 1, PR #621) — the
+// current custom generic-transport implementation `chUrl` moved into,
+// alongside the progress-line stream-read loop and the transport factory
+// itself. All three are generic HTTP/URL/stream mechanics (ADR-0005's
+// "Official client owns" column — request construction, response streaming),
+// never SQL Browser policy, so all three are `delete-after-cutover`: a Phase
+// 2 official-client-backed transport implementation replaces this whole
+// file, not just parts of it.
+const HTTP_TRANSPORT_CLASSIFICATION = {
+  chUrl: 'delete-after-cutover',
+  streamLines: 'delete-after-cutover',
+  createHttpTransport: 'delete-after-cutover',
 };
 
 // official-adapter.ts symbols that are SPIKE-TEST-ONLY harness scaffolding
@@ -776,10 +833,29 @@ const CH_CLIENT_CLASSIFICATION = {
 // the "estimated official adapter executable LOC" figure entirely (not
 // classified into a bucket at all).
 const OFFICIAL_ADAPTER_TEST_ONLY_SYMBOLS = ['RefreshDrivenResult', 'runOfficialRefreshThenRetry', 'makeOfficialRunQueryShim'];
+// NOTE: `OfficialConnection` is deliberately NOT a key here (and never was
+// matched by either the old or the broadened boundary regex): it is an
+// `export interface`, and this function's boundary detection only ever
+// matches `function`/`const` declarations — a type-only interface is always
+// silently absorbed into whichever range precedes it (or, here, dropped
+// entirely as it sits before this file's first matched boundary), exactly
+// like every OTHER interface in this file and in ch-client.ts. It was a
+// latent stale classification-table entry (harmless before the drift guard
+// below existed, since nothing checked this direction) surfaced by adding
+// that guard — removed rather than "fixed" some other way, to match how
+// every other type-only declaration in both files is already handled.
 const OFFICIAL_ADAPTER_CORE_CLASSIFICATION = {
-  OfficialConnection: 'official-adapter-core',
   createOfficialConnection: 'official-adapter-core',
   officialAuthFor: 'official-adapter-core',
+  // Broadening the boundary regex (see classifyFunctionRangesFromSource's
+  // header comment) to match non-exported declarations makes these two
+  // helpers — always non-exported, always part of runOfficial's own
+  // outcome-normalization logic, never spike-test-only scaffolding — their
+  // own tracked boundaries for the first time; they were previously
+  // invisible to this mechanism and silently absorbed into whichever
+  // exported boundary preceded them.
+  classifyError: 'official-adapter-core',
+  flattenHeaders: 'official-adapter-core',
   runOfficial: 'official-adapter-core',
 };
 
@@ -792,6 +868,14 @@ const OFFICIAL_ADAPTER_CORE_CLASSIFICATION = {
 export async function computeDeletionEstimate() {
   const chClientPath = join(repoRoot, 'src/net/ch-client.ts');
   const chClientBuckets = await classifyFunctionRanges(chClientPath, CH_CLIENT_CLASSIFICATION);
+  // Issue #585 Phase 1 (PR #621) moved chUrl/streamLines/createHttpTransport
+  // out of ch-client.ts into their own file — classified and measured
+  // separately here (its own manifest entry, own boundary set) so a drift in
+  // EITHER file fails loudly on its own, then combined into one
+  // `currentGenericLoc` below since both files together are the current
+  // generic-transport surface the deletion estimate is about.
+  const httpTransportPath = join(repoRoot, 'src/net/clickhouse-http-transport.ts');
+  const httpTransportBuckets = await classifyFunctionRanges(httpTransportPath, HTTP_TRANSPORT_CLASSIFICATION);
   const officialAdapterPath = join(spikeDir, 'official-adapter.ts');
   const officialBuckets = await classifyFunctionRanges(
     officialAdapterPath, OFFICIAL_ADAPTER_CORE_CLASSIFICATION, OFFICIAL_ADAPTER_TEST_ONLY_SYMBOLS,
@@ -802,7 +886,8 @@ export async function computeDeletionEstimate() {
   const streamTsLines = (await readFile(join(repoRoot, 'src/core/stream.ts'), 'utf8')).split('\n').length;
   const qesLines = (await readFile(join(repoRoot, 'src/application/query-execution-service.ts'), 'utf8')).split('\n').length;
 
-  const currentGenericLoc = chClientBuckets['delete-after-cutover'] || 0;
+  const currentGenericLoc = (chClientBuckets['delete-after-cutover'] || 0)
+    + (httpTransportBuckets['delete-after-cutover'] || 0);
   const estimatedOfficialAdapterLoc = officialBuckets['official-adapter-core'] || 0;
   const acceptedBridgeGuardLoc = bridgeLoc.physical + guardLoc.physical;
   const netExecutableDeletion = currentGenericLoc - estimatedOfficialAdapterLoc - acceptedBridgeGuardLoc;
@@ -814,6 +899,7 @@ export async function computeDeletionEstimate() {
     netExecutableDeletion,
     manifest: {
       'ch-client.ts': chClientBuckets,
+      'clickhouse-http-transport.ts': httpTransportBuckets,
       'official-adapter.ts (test-only harness excluded)': officialBuckets,
       'progress-bridge.ts (physical)': bridgeLoc.physical,
       'guarded-fetch.ts (physical)': guardLoc.physical,
@@ -831,16 +917,29 @@ export function renderDeletionEstimateMd(d) {
   L.push('# Future production deletion estimate (plan §28)');
   L.push('');
   L.push('Estimate only — actual deletion is Phase 4, per plan §4/§28. Computed mechanically');
-  L.push('from `src/net/ch-client.ts`\'s own top-level symbol boundaries (see `run-matrix.mjs`\'s');
-  L.push('`CH_CLIENT_CLASSIFICATION` data table) so the figures stay tied to the real file rather');
-  L.push('than a hand-typed guess; an unclassified symbol makes `run-matrix.mjs` throw instead of');
-  L.push('silently under/over-counting.');
+  L.push('from `src/net/ch-client.ts`\'s and `src/net/clickhouse-http-transport.ts`\'s own top-level');
+  L.push('symbol boundaries (see `run-matrix.mjs`\'s `CH_CLIENT_CLASSIFICATION`/');
+  L.push('`HTTP_TRANSPORT_CLASSIFICATION` data tables) so the figures stay tied to the real files');
+  L.push('rather than a hand-typed guess; an unclassified symbol, or a classification-table entry');
+  L.push('that no longer matches anything, makes `run-matrix.mjs` throw instead of silently under/');
+  L.push('over-counting in either direction.');
   L.push('');
   L.push('## `src/net/ch-client.ts` buckets (physical LOC per top-level symbol range)');
   L.push('');
   L.push('| Bucket | Physical LOC |');
   L.push('|---|---|');
   for (const [bucket, loc] of Object.entries(d.manifest['ch-client.ts'])) L.push(`| \`${bucket}\` | ${loc} |`);
+  L.push('');
+  L.push('## `src/net/clickhouse-http-transport.ts` buckets (physical LOC per top-level symbol range)');
+  L.push('');
+  L.push('Issue #585 Phase 1 (PR #621) moved `chUrl` (+ the progress-line stream-read loop and the');
+  L.push('transport factory) out of `ch-client.ts` into this file — classified here on its own so it');
+  L.push('stays tied to the real file, then combined with `ch-client.ts`\'s own `delete-after-cutover`');
+  L.push('bucket below for the net-deletion formula.');
+  L.push('');
+  L.push('| Bucket | Physical LOC |');
+  L.push('|---|---|');
+  for (const [bucket, loc] of Object.entries(d.manifest['clickhouse-http-transport.ts'])) L.push(`| \`${bucket}\` | ${loc} |`);
   L.push('');
   L.push('## Other named responsibilities');
   L.push('');
@@ -861,9 +960,13 @@ export function renderDeletionEstimateMd(d) {
   L.push('official-adapter.ts terms, which inflated those two terms (concentrated in');
   L.push('comment-heavy functions like `runOfficial`) relative to the bridge/guard terms.');
   L.push('');
+  L.push('Issue #585 Phase 1 (PR #621) split the current generic-transport surface across TWO files —');
+  L.push('`ch-client.ts`\'s own `delete-after-cutover` bucket plus `clickhouse-http-transport.ts`\'s');
+  L.push('(where `chUrl` now lives); the formula\'s first term is their SUM, not `ch-client.ts` alone.');
+  L.push('');
   L.push('```text');
   L.push('current generic physical LOC eligible for deletion');
-  L.push(`  = ${d.currentGenericLocEligibleForDeletion}   (ch-client.ts "delete-after-cutover" bucket)`);
+  L.push(`  = ${d.currentGenericLocEligibleForDeletion}   (ch-client.ts "delete-after-cutover" bucket + clickhouse-http-transport.ts "delete-after-cutover" bucket)`);
   L.push('- estimated official adapter physical LOC');
   L.push(`  = ${d.estimatedOfficialAdapterLoc}   (official-adapter.ts production-shaped core)`);
   L.push('- accepted narrow bridge/guard physical LOC');

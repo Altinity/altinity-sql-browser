@@ -568,6 +568,85 @@ describe('classifyFunctionRangesFromSource (P3 review finding: one consistent co
   });
 });
 
+describe('classifyFunctionRangesFromSource — broadened boundary regex (issue #585 Phase 1 drift: real ch-client.ts symbols lost their `export` keyword after the transport-seam refactor, PR #621)', () => {
+  it('matches a non-exported top-level function declaration as its own boundary, not silently absorbed into (or dropped ahead of) an exported neighbor', () => {
+    const src = [
+      'function helper() {',
+      '  return 1;',
+      '}',
+      'export function main() {',
+      '  return 2;',
+      '}',
+    ].join('\n');
+    const buckets = classifyFunctionRangesFromSource(src, { helper: 'bucketA', main: 'bucketB' });
+    expect(buckets).toEqual({ bucketA: 3, bucketB: 3 });
+  });
+
+  it('matches a non-exported top-level const declaration as its own boundary', () => {
+    const src = [
+      'const TABLE = 1;',
+      'export function main() {',
+      '  return 2;',
+      '}',
+    ].join('\n');
+    const buckets = classifyFunctionRangesFromSource(src, { TABLE: 'bucketA', main: 'bucketB' });
+    expect(buckets).toEqual({ bucketA: 1, bucketB: 3 });
+  });
+
+  it('matches a non-exported top-level async function declaration', () => {
+    const src = [
+      'async function helper() {',
+      '  return 1;',
+      '}',
+    ].join('\n');
+    const buckets = classifyFunctionRangesFromSource(src, { helper: 'bucketA' });
+    expect(buckets).toEqual({ bucketA: 3 });
+  });
+
+  it('still never matches a nested (indented) declaration as its own top-level boundary', () => {
+    const src = [
+      'export function outer() {',
+      '  function inner() {',
+      '    return 1;',
+      '  }',
+      '  return inner();',
+      '}',
+    ].join('\n');
+    // `inner` is indented, never `^`-anchored — it must NOT appear as its own
+    // boundary (and therefore needs no classification entry of its own);
+    // its lines are simply part of `outer`'s range.
+    const buckets = classifyFunctionRangesFromSource(src, { outer: 'bucketA' });
+    expect(buckets).toEqual({ bucketA: 6 });
+  });
+});
+
+describe('classifyFunctionRangesFromSource — symmetric drift guard (the mirror of the unclassified-symbol throw: a classification-table entry that stops matching anything)', () => {
+  it('does not throw when every classification-table entry matches something in the source', () => {
+    const src = 'export function foo() {\n  return 1;\n}\nconst bar = 2;\n';
+    expect(() => classifyFunctionRangesFromSource(src, { foo: 'bucketA', bar: 'bucketB' })).not.toThrow();
+  });
+
+  it('throws when a classification-table entry never matches any top-level symbol in the source — the exact issue #585 Phase 1 shape (`chUrl` moving out of ch-client.ts without its old table entry being removed)', () => {
+    const src = 'export function foo() {\n  return 1;\n}\n';
+    expect(() => classifyFunctionRangesFromSource(src, { foo: 'bucketA', chUrl: 'bucketB' }, [], 'fixture.ts'))
+      .toThrow(/classification-table entry that no longer match.*chUrl/);
+  });
+
+  it('reports every stale entry, not just the first, when more than one classification-table entry stops matching', () => {
+    const src = 'export function foo() {\n  return 1;\n}\n';
+    expect(() => classifyFunctionRangesFromSource(src, { foo: 'bucketA', gone1: 'bucketB', gone2: 'bucketC' }))
+      .toThrow(/gone1, gone2/);
+  });
+
+  it('does not flag an ignore-listed symbol as stale even when it never matches anything (a type-only interface is legitimately never a boundary)', () => {
+    const src = 'export function foo() {\n  return 1;\n}\n';
+    // `TypeOnlyThing` is in `ignore`, not in `classification` — this must not
+    // throw, matching how official-adapter.ts's `RefreshDrivenResult`
+    // interface is handled in run-matrix.mjs's own OFFICIAL_ADAPTER_TEST_ONLY_SYMBOLS.
+    expect(() => classifyFunctionRangesFromSource(src, { foo: 'bucketA' }, ['TypeOnlyThing'])).not.toThrow();
+  });
+});
+
 describe('computeDeletionEstimate (P3 review finding: the whole-formula regression — every term consistent end to end)', () => {
   it('produces internally self-consistent buckets: the formula computed by hand from the manifest matches netExecutableDeletion exactly', async () => {
     const d = await computeDeletionEstimate();
@@ -579,5 +658,30 @@ describe('computeDeletionEstimate (P3 review finding: the whole-formula regressi
     // terms, so this is genuinely one metric throughout, not two that
     // happen to agree on this particular file pair.
     expect(d.acceptedBridgeGuardLoc).toBe(d.bridgeLoc.physical + d.guardLoc.physical);
+  });
+
+  it('classifies src/net/clickhouse-http-transport.ts on its own (issue #585 Phase 1, PR #621 moved chUrl/streamLines/createHttpTransport there) and combines its delete-after-cutover bucket into currentGenericLocEligibleForDeletion alongside ch-client.ts\'s own', async () => {
+    const d = await computeDeletionEstimate();
+    // The transport file gets its OWN manifest entry, distinct from
+    // ch-client.ts's — per-file transparency is preserved even though the
+    // two are summed for the headline figure.
+    // `computeDeletionEstimate`'s return value comes from the untyped .mjs
+    // orchestrator (same interop limitation `classifyFunctionRangesFromSource`
+    // is cast for above) — the manifest's per-file bucket objects need the
+    // same explicit local type for indexing.
+    const httpTransportBuckets = d.manifest['clickhouse-http-transport.ts'] as Record<string, number>;
+    const chClientBuckets = d.manifest['ch-client.ts'] as Record<string, number>;
+    expect(httpTransportBuckets).toBeDefined();
+    expect(Object.keys(httpTransportBuckets)).toEqual(['delete-after-cutover']);
+    expect(httpTransportBuckets['delete-after-cutover']).toBeGreaterThan(0);
+    // currentGenericLocEligibleForDeletion is the SUM of both files' own
+    // delete-after-cutover buckets, not either one alone.
+    const expectedCombined = (chClientBuckets['delete-after-cutover'] || 0)
+      + httpTransportBuckets['delete-after-cutover'];
+    expect(d.currentGenericLocEligibleForDeletion).toBe(expectedCombined);
+  });
+
+  it('does not throw for the real ch-client.ts / clickhouse-http-transport.ts / official-adapter.ts files under the broadened boundary regex and the new symmetric drift guard — the real-file proof that CH_CLIENT_CLASSIFICATION and HTTP_TRANSPORT_CLASSIFICATION stay exhaustive in both directions', async () => {
+    await expect(computeDeletionEstimate()).resolves.toBeDefined();
   });
 });
