@@ -149,6 +149,21 @@ export async function authedFetch(ctx: ChCtx, request: Omit<TransportRequest, 'a
   const settings = request.settings ? { ...request.settings } : undefined;
   const params = request.params ? { ...request.params } : undefined;
   const { sql, defaultFormat, signal } = request;
+  // Request-preparation failures are not transport failures (ChatGPT review
+  // pass 2, P1). Pre-refactor, every caller built `chUrl(...)` as a plain
+  // argument BEFORE invoking authedFetch, so a URIError from malformed
+  // settings/params (e.g. `encodeURIComponent` on a lone UTF-16 surrogate)
+  // propagated as a synchronous throw with no token read, no fetch, and no
+  // `onTransportOffline` call. `transport.send` now builds that same URL
+  // internally, inside the try/catch that classifies fetch rejections as
+  // transport-offline — so without this eager, discarded validation call, the
+  // identical throw would surface only after `ctx.getToken()` and would be
+  // misclassified as a network failure. Calling `chUrl` here, before the first
+  // await, reproduces the exact original failure shape; `transport.send` still
+  // calls it again at actual send time against the (possibly since-mutated)
+  // live `ctx.origin` — origin is only concatenated, never `encodeURIComponent`-
+  // encoded, so it cannot itself throw and re-validating it changes nothing.
+  chUrl(ctx.origin, { format: defaultFormat, extra: settings, params });
   const token = await ctx.getToken();
   // getToken may have awaited a sign-in/sign-out replacement. Its credential
   // belongs to that replacement and this request must not send it.

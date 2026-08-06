@@ -212,6 +212,18 @@ describe('authedFetch', () => {
     await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toBe(abortError);
     expect(onTransportOffline).not.toHaveBeenCalled();
   });
+  it('rejects a malformed URL param synchronously without a token read, a fetch, or an offline signal (review pass 2, P1)', async () => {
+    const onTransportOffline = vi.fn();
+    const ctx = ctxWith(async () => jsonResp({ ok: 1 }), { onTransportOffline });
+    // A lone UTF-16 surrogate makes `chUrl`'s `encodeURIComponent` throw a
+    // URIError — request-preparation failure, not a network failure.
+    await expect(
+      authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress', params: { x: '\ud800' } }),
+    ).rejects.toBeInstanceOf(URIError);
+    expect(ctx.getToken).not.toHaveBeenCalled();
+    expect(ctx.fetchMock).not.toHaveBeenCalled();
+    expect(onTransportOffline).not.toHaveBeenCalled();
+  });
   it('refreshes once on 401 then retries', async () => {
     let n = 0;
     const ctx = ctxWith(async () => (n++ === 0 ? jsonResp({}, false, 401) : jsonResp({ ok: 1 })), {
