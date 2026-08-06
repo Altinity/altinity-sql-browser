@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope, author and approve each plan with the selected Fable or ChatGPT planner workflow (max 5 review passes), implement code and tests, open one PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds. Stops for a human only when a review loop exhausts its passes or a merge proof fails. Invoke as `/ship ISSUE [--planner fable|chatgpt]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
+description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope into dependency-ordered units (a phase or a whole issue), then for each unit in turn author and approve its plan with the selected Fable or ChatGPT planner workflow (max 5 review passes), implement code and tests, open that unit's own PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds — auto-chaining to the next unit off the just-merged origin/main with no re-prompting. Stops the whole run only when a unit's plan or merge proof exhausts its review passes; stops only a gated unit's own spine — every other independent unit or spine still ships in the same run — when the issue explicitly gates further phases on a new decision. Invoke as `/ship ISSUE [--planner fable|chatgpt]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
 ---
 
 # /ship — deliver altinity-sql-browser issues autonomously
@@ -20,14 +20,38 @@ subagent with its own context window, and only a summary returns. Your context g
 ~1–2k per unit, not by a full transcript. Never inline a unit's implementation into your
 own turn to save a spawn.
 
-Proceed autonomously. There are exactly two human stops, both failure stops:
+Every unit ships through its own branch, its own PR, its own review loop, and its own
+merge — never combined with another unit's diff — and the run auto-chains from one unit
+to the next without re-prompting, until a gate, a block, or a failure stop ends that
+unit's own dependency spine.
+
+Proceed autonomously, one unit at a time, in dependency order. Each unit gets its own
+branch, its own PR, its own code review loop, and its own merge — never squashed into
+another unit's diff, whether the units come from one issue's phases or from a
+comma-separated issue list. When a unit merges cleanly and step 2.8's gate check finds
+nothing blocking the next unit on its spine, the run auto-chains straight into that next
+unit off the freshly-fetched `origin/main` — no re-prompting.
+
+There are exactly three stop reasons:
 
 1. a unit's plan is not approved after **5** review passes (step 2.2);
-2. a merge proof condition fails at the gate — including no certified head after **3**
-   code review passes (step 3.6).
+2. a unit's merge proof condition fails at its own gate — including no certified head
+   after **3** code review passes (step 2.7);
+3. an explicit phase/issue **gate** is reached before starting the next unit on a spine
+   (gate detection: step 1, re-checked at step 2.8 for every subsequent unit).
 
-Everywhere else, an ambiguous or blocked unit is **skipped and reported**, never guessed
-at — this is a settled-architecture project; don't invent decisions.
+Reasons 1 and 2 are failure stops: they end the **whole run** immediately, right there —
+ask the human to rule before attempting anything further, exactly as before. Reason 3 is
+different in kind: a gate is a known, *meant* decision point the issue's author already
+recorded, not a defect — it stops only that unit's own dependency spine, and the
+coordinator keeps going through every other unit and every other independent spine (a
+different phase spine that doesn't depend on the gated one, or another issue in a
+comma-list) in the same run, reporting the gate distinctly (step 3), never worded as a
+generic block.
+
+Everywhere else, an ambiguous or blocked unit (a missing or unmet dependency) is
+**skipped and reported**, never guessed at — this is a settled-architecture project;
+don't invent decisions.
 
 ## Operating rules
 
@@ -172,18 +196,70 @@ references. A blocked unit → skip it (leave its commits out), continue the res
 list it in the final report — the same policy as for units needing an unrecorded
 decision.
 
-### Wave plan and integration branch
+### Gate detection
+
+Run this once here for the whole wave plan, and again at step 2.8 before every
+subsequent unit, always against a **freshly re-fetched** issue body — never reuse a
+cached read from a previous unit. A **gate** is a known, authored decision point —
+distinct from a block (a missing or unmet dependency, handled above).
+
+Look for, in this order:
+
+1. **The authoring convention (primary signal).** A blockquote directly under the
+   affected `## Phases` checklist row(s), e.g.:
+
+   ```markdown
+   - [ ] 2 — official transport implementation
+   > **Gate:** Phases 2-4 do not proceed without a new decision.
+   ```
+
+   Parse exactly which unit(s) it names — a single phase, a range, or the blanket form
+   below — never guess a narrower or wider scope than stated.
+2. **Fallback prose scan, for issues written before this convention existed.** Scan the
+   issue body — the global lead-in prose above `## Phases` and each phase's own
+   section — case-insensitively for stop language, including at least: "do not proceed
+   without a new decision", "does not proceed without", "requires a new decision", and
+   the blanket form "human merge gate between every phase" (covers *every* remaining
+   phase boundary in that issue, not just a named range).
+
+A prior unit's own recorded outcome (an ADR marked Accepted or Rejected, a decision
+logged in the ship log) is context worth reporting alongside a gate — it explains *why*
+the gate is active — but it never self-clears a gate by the coordinator's own
+inference; only a visible edit to the live issue text does.
+
+An explicitly forced single-unit invocation (`/ship 447.2`) is the human's own override
+for that one named unit — it proceeds even if a gate nominally covers it, but surface
+the gate text in the plan-assembly summary so the override is visible in the record.
+Any unit the run later auto-chains to is still subject to normal gate detection.
+
+A gate found here stops **that unit's own dependency spine only**, from the gated unit
+onward, and is reported as a gate (step 3), never folded into the generic "blocked"
+wording; every other unit and every other independent spine in the same invocation
+still proceeds.
+
+### Wave plan and per-unit branch
 
 - Sequence the dependency spine. Parallelize only units whose planned file footprints
   are disjoint — when in doubt, serialize; a merge conflict costs more than lost
-  parallelism. Phases of one issue are almost always a spine, not a wave.
-- **One integration branch for the whole run, one PR at the end**, off the remote
+  parallelism. Phases of one issue are almost always a spine, not a wave; separate
+  issues in a comma-list are usually independent spines unless one's `Depends on:`
+  header names another.
+- **One branch, one PR, per unit — never a shared integration branch for the whole
+  run.** Each unit's cycle (step 2) cuts its own branch off the freshly-fetched remote
   default: `git fetch origin && git checkout -b <type>/<slug> origin/main`. Push
   immediately so CI runs from the start. (In a worktree, local `main` is stale — see
-  footguns.)
+  footguns.) A unit always branches off `origin/main`, never off another unit's still-
+  open branch or PR, so it starts from whatever the previous unit on its spine already
+  merged.
+- Independent spines (disjoint footprints, no dependency between them) may implement
+  concurrently in separate worktrees, but the single Agent Chrome session still means
+  their code review loops and merges serialize — queue them, and if a queued unit's
+  branch base has moved since it branched, re-fetch `origin/main` into it immediately
+  before its own review loop starts (should be conflict-free given disjoint footprints;
+  treat any conflict as a red flag, not something to force through).
 - Run `npm ci` when dependencies may have changed or `node_modules` is absent.
 
-## 2 — Per unit (repeat per wave)
+## 2 — Per unit (auto-chained through the spine, one PR each)
 
 ### 2.1 Establish the canonical plan path
 
@@ -202,7 +278,7 @@ this in-progress mutating workflow and can conclude it should finish the whole j
 plan; it is never resumed for implementation (2.3 spawns a separate, fresh coding
 agent instead). Parallel planners still get `isolation: "worktree"` if the unit's
 later implementation will need it; a solo unit may target the main tree on
-`wip/<unit>-<slug>` off the current integration HEAD (the coding agent in 2.3 checks
+`wip/<unit>-<slug>` off this unit's own branch HEAD (the coding agent in 2.3 checks
 out the same branch).
 
 The planner prompt must contain, explicitly:
@@ -313,7 +389,7 @@ resume, re-verify — do not silently skip the remaining sub-tasks.
 high-risk, in which case omit `model` to inherit yours) — do not resume any planner;
 the canonical plan file, not planner memory or ChatGPT chat text, is the handoff.
 Parallel units get `isolation: "worktree"`; a solo unit uses the main tree on
-`wip/<unit>-<slug>` off the current integration HEAD.
+`wip/<unit>-<slug>` off this unit's own branch HEAD.
 
 The coding-agent prompt must contain, explicitly:
 
@@ -340,101 +416,158 @@ The coding-agent prompt must contain, explicitly:
   for medium/high, prompted with the unit's contract + CLAUDE.md hard rules. Real
   findings → back to the worker (`SendMessage`, branch checked out first) or a bounded
   fix agent; re-verify. Do not add generic per-unit review passes on top.
-- **Integrate**: merge the worker branch into the integration branch (you resolve
+- **High-risk pre-PR pass, in place of the old whole-run review.** With one unit per PR
+  there is no whole-run accumulated diff left to review at the end — if this unit
+  itself is classified High risk (`per-issue-cycle.md`), or its implementation ran
+  through the decompose-and-implement loop (2.3) with more than one sub-task, add one
+  additional targeted read-only pass over this unit's *complete* branch diff at high
+  effort before opening its PR (plus the `security-review` skill if anything touched
+  auth/config). Do not stack this on top of the Medium/High budget above if that review
+  already covered the whole diff at high effort.
+- **Integrate**: merge the worker branch into this unit's own branch (you resolve
   conflicts — you are its only writer), rerun the gate, push. Key every CI wait on the
-  head SHA (footguns) and check it before the next dependent wave. Red CI stops the
+  head SHA (footguns) and check it before the next unit on this spine. Red CI stops the
   line until fixed.
 - **Log**: append the unit's handoff block to the `<!-- ship-log -->` comment now,
-  status `in review` until the single PR merges. Include the plan-review outcome
+  status `in review` until this unit's own PR merges. Include the plan-review outcome
   (passes, conversation URL).
 
 After every batch, regardless of what agents reported: `git diff`, `git log`,
 `gh pr list`. An instruction in a prompt is not an enforced tool restriction, and
 review agents on this repo have edited files despite an explicit report-only boundary.
 
-## 3 — Finish: PR, code review loop, gate
+### 2.5 Reconcile and open this unit's PR
 
-1. **Whole-branch review** — only if the run contains high-risk work or interacting
-   units: one targeted read-only pass over the full branch diff at high effort (plus
-   the `security-review` skill if anything touched auth/config). Do not repeat the
-   per-unit reviews. Apply real findings via a fix agent under the worker boundary;
-   re-verify; push.
-2. Confirm required CI checks are green at the head. The e2e signal is layered:
-   workers ran Chromium + WebKit locally per the cycle; PR CI adds its Chromium e2e
-   run (#564); Firefox comes only from the CI jobs that provide it.
-3. **Reconcile per cycle step 4** — CHANGELOG entries are per-unit already, so dedupe
-   and resolve conflicts only; close superseded issues; tick any `## Phases` checklist
-   in one edit. All reconcile commits land **now, before the PR** — nothing may be
-   pushed after certification.
-4. **One PR** (`gh pr create --base main`), title `<type>(#<ISSUE>): <summary>`, body
-   per `.github/PULL_REQUEST_TEMPLATE.md` covering contract coverage, invariant
-   verification, sabotage cases, tests, build, and e2e results; a per-unit summary
-   table; `Closes #<n>` per fully completed issue (`Part of #<n>` for partial or
-   skipped); the repo PR footer.
-5. **Code review loop — max 3 passes, one Workflow run per pass.** Write a question
-   file to `$TMPDIR`: the unit contracts and acceptance subsets, the invariant maps,
-   compatibility requirements, tests and sabotage cases, the behaviors that need
-   adversarial review, and the verdict protocol — "End your review with exactly one
-   line: `VERDICT: SHIP` or `VERDICT: REVISE`." Then, with the integration branch
-   checked out in the main tree, per pass:
+1. Confirm required CI checks are green at this unit's current head. The e2e signal is
+   layered: workers ran Chromium + WebKit locally per the cycle; PR CI adds its
+   Chromium e2e run (#564); Firefox comes only from the CI jobs that provide it.
+2. **Reconcile per cycle step 4 — this unit's own entry only.** One unit per PR means
+   there is no other unit's CHANGELOG entry sharing this diff to dedupe against: update
+   `CHANGELOG.md` under `[Unreleased]` for this unit alone, close or reconcile any issue
+   this unit itself supersedes, and tick only this unit's own `## Phases` row (if the
+   issue carries that checklist). All of this lands **now, before the PR** — nothing may
+   be pushed after certification (2.6).
+3. **Open this unit's PR** (`gh pr create --base main`), title `<type>(#<ISSUE>):
+   <summary>` — a phase marker like `(phase N)` is a convenience for a human skimming
+   the issue's PR list, never the state of record (footguns: PR titles go stale); body
+   per `.github/PULL_REQUEST_TEMPLATE.md` covering this unit's contract coverage,
+   invariant verification, sabotage cases, tests, build, and e2e results; `Closes #<n>`
+   only if this unit completes the whole issue, `Part of #<n>` otherwise; the repo PR
+   footer.
 
-   ```
-   Workflow {
-     scriptPath: "skills/ship/references/code-review-pass.workflow.mjs",
-     args: { prUrl, questionFile, session: <handle|null>, pass: <n>,
-             integrationBranch: "<branch>", issueRef: "<issue>" }
-   }
-   ```
+### 2.6 Code review loop — max 3 passes, this unit's PR only
 
-   The pass reviews (publishing a PR comment), verifies every finding with parallel
-   read-only agents, and — when findings are accepted — applies the fixes with tests,
-   loops the full local gate to green, and commits **locally only**. Act on the return
-   per the table in `references/review-loops.md`:
+Exactly the mechanics of the single-PR loop, scoped per unit: `pass` and `session`
+start over at 1 / `null` for every unit's PR — never carry a pass count or a `session`
+handle over from a previous unit's loop, even on the same spine.
 
-   - `fixed-await-push` → diff the commits yourself, push, wait for green CI keyed on
-     the head SHA, re-invoke with `pass+1` and the returned `session` handle so
-     ChatGPT reassesses every earlier finding in the same conversation. Each fix pass
-     gets its own pushed commit and separately labelled public review comment.
-   - `no-accepted-findings` → append the rebuttals to the question file and re-invoke
-     (spends a pass).
-   - `fix-failed`, `needs_human`, `error` → treat as a failed proof condition at the
-     gate (step 3.6).
+Write a question file to `$TMPDIR`: this unit's contract and acceptance subset, its
+invariant map, compatibility requirements, tests and sabotage cases, the behaviors that
+need adversarial review, and the verdict protocol — "End your review with exactly one
+line: `VERDICT: SHIP` or `VERDICT: REVISE`." Then, with this unit's branch checked out
+in the main tree, per pass:
 
-   A **certified head** is a `certified-pending-proofs` return (completed pass,
-   verdict `SHIP`, no accepted findings) whose reviewed SHA equals the current PR
-   head.
+```
+Workflow {
+  scriptPath: "skills/ship/references/code-review-pass.workflow.mjs",
+  args: { prUrl, questionFile, session: <handle|null>, pass: <n>,
+          integrationBranch: "<this unit's branch>", issueRef: "<issue>" }
+}
+```
 
-   - First clean pass at the current head → certified; stop reviewing. Never re-review
-     an already-certified head — three is a failure ceiling, not a ritual (and the
-     `chatgpt-review` script enforces the cap for `pr` mode).
-   - **After certification, push nothing.** Any push voids the certification and burns
-     another pass — which is why all reconcile commits landed in step 3.3. Ship-log
-     comment edits are fine; comments are not commits.
-6. **The gate.** Merge automatically — no prompt — only when ALL hold at one exact head:
+(`integrationBranch` is the script's existing argument name — pass this unit's own
+branch into it; no script edit is required.)
 
-   - certified head (step 3.5);
-   - reviewed SHA equals the current PR head;
-   - required CI checks green at that head;
-   - branch protection permits the merge.
+The pass reviews (publishing a PR comment), verifies every finding with parallel
+read-only agents, and — when findings are accepted — applies the fixes with tests,
+loops the full local gate to green, and commits **locally only**. Act on the return
+per the table in `references/review-loops.md`:
 
-   Then `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit
-   convention), verify the PR reports `MERGED`, fetch `origin/main` and verify the
-   merge, and flip every included ship-log row to `shipped`.
+- `fixed-await-push` → diff the commits yourself, push, wait for green CI keyed on the
+  head SHA, re-invoke with `pass+1` and the returned `session` handle so ChatGPT
+  reassesses every earlier finding in the same conversation. Each fix pass gets its own
+  pushed commit and separately labelled public review comment.
+- `no-accepted-findings` → append the rebuttals to the question file and re-invoke
+  (spends a pass).
+- `fix-failed`, `needs_human`, `error` → treat as a failed proof condition at the gate
+  (2.7).
 
-   **Any condition fails** — no certified head after 3 passes, ChatGPT unreachable or
-   a pass incomplete, SHA drift, CI red or pending, branch protection refusal —
-   → **FULL STOP — human decision needed.** Do not merge. Summarize the PR URL, head
-   SHA, CI state, certification state, and every accepted, rejected, and **unresolved**
-   finding with its comment URL, then ask the human to rule: merge anyway, leave the
-   PR open, or direct further work. Their decision governs.
+A **certified head** is a `certified-pending-proofs` return (completed pass, verdict
+`SHIP`, no accepted findings) whose reviewed SHA equals this unit's current PR head.
 
-## 4 — Final report
+- First clean pass at the current head → certified; stop reviewing. Never re-review an
+  already-certified head — three is a failure ceiling, not a ritual (and the
+  `chatgpt-review` script enforces the cap for `pr` mode).
+- **After certification, push nothing.** Any push voids the certification and burns
+  another pass — which is why all reconcile commits landed in 2.5. Ship-log comment
+  edits are fine; comments are not commits.
 
-Report: PR and merge URLs, per-unit shipped/skipped status and why, plan-loop pass
-counts, every ChatGPT conversation/comment link, findings
-accepted/rejected/unresolved, final head SHA, CI state, and ship-log updates.
+### 2.7 The gate — merge this unit
 
-## 5 — Friction → memory
+Merge automatically — no prompt — only when ALL hold at one exact head:
+
+- certified head (2.6);
+- reviewed SHA equals this unit's current PR head;
+- required CI checks green at that head;
+- branch protection permits the merge.
+
+Then `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit convention),
+verify the PR reports `MERGED`, fetch `origin/main` and verify the merge, and flip this
+unit's own ship-log row to `shipped`.
+
+**Any condition fails** — no certified head after 3 passes, ChatGPT unreachable or a
+pass incomplete, SHA drift, CI red or pending, branch protection refusal — → **FULL
+STOP, right now, for the whole run.** Do not merge, and do not attempt any further unit
+or spine. Summarize the PR URL, head SHA, CI state, certification state, and every
+accepted, rejected, and **unresolved** finding with its comment URL, then ask the human
+to rule: merge anyway, leave the PR open, or direct further work. Their decision
+governs.
+
+### 2.8 Before the next unit: re-check the gate, then auto-chain or stop
+
+This unit just merged. Before cutting the next unit's branch:
+
+1. Re-fetch the issue body (and the ship-log comment) fresh — never reuse step 1's
+   cached read. Re-run gate detection (step 1) against the *specific* next unit on this
+   spine.
+2. **No gate applies** → auto-chain immediately: `git fetch origin`, cut the next
+   unit's branch off `origin/main` (as in step 1's wave plan), and continue at 2.1. No
+   re-prompting, no human confirmation needed.
+3. **A gate applies** → stop this spine here. Report it as a gate (step 3), quoting the
+   exact trigger text/blockquote, its scope, and the just-landed unit's own recorded
+   outcome as context. Move on to the next unit on any *other* independent spine in
+   this run (a different phase spine, or another issue in a comma-list) — a gate never
+   halts the whole run, only the spine it names.
+4. If this spine has no more units and no other spine is pending either, proceed to
+   the final report (step 3).
+
+## 3 — Final report
+
+Report per unit — a run can now produce several PRs and several merges:
+
+- **Shipped units**: PR URL, merge URL, merged head SHA, CI state, plan-loop pass count
+  + conversation URL, code-review pass count + every ChatGPT conversation/comment link,
+  findings accepted/rejected/unresolved, and confirmation the ship-log row now reads
+  `shipped`.
+- **Gated units**: the exact trigger text (blockquote or matched prose, quoted
+  verbatim) and its source, which unit(s) it covers, and — when it follows a unit that
+  just landed — that unit's own recorded outcome as context. State plainly this is a
+  known, authored decision point, distinct from a block.
+- **Blocked units**: the concrete missing dependency or unrecorded decision, exactly as
+  before.
+- **The unit that triggered a failure stop, if the run ended in one** (step 2.2's
+  5-pass plan exhaustion, or step 2.7's 3-pass merge-gate exhaustion): PR URL if one
+  exists, head SHA, CI state, certification state, every accepted/rejected/unresolved
+  finding with its comment URL, and every unit and spine the run did not reach because
+  of it.
+
+A failure stop (not a gate, not a block) ends the run immediately at that unit — ask the
+human to rule (merge anyway, redirect, or skip) before anything past that point is
+attempted, exactly as today. A gate or a block never halts the run this way: the
+coordinator keeps going through every other unit and spine it still can, and only lists
+gated/blocked units in this same report at the end.
+
+## 4 — Friction → memory
 
 If anything needed retries or surprised you (test / env / scope), save a concise memory
 so the next `/ship` doesn't repeat it. Record stable process knowledge, not transient

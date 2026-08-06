@@ -95,6 +95,8 @@ repo; when one bites anyway, update this file in the same change.
 
 - PR titles with phase counts (`(2/3)`) go stale when a phase count is re-scoped
   mid-flight (#427 shipped `(1/3)` and `(2/2)`); the `<!-- ship-log -->` comment is
-  the only state of record.
+  the only state of record. One PR per unit is now the default shape of a `/ship` run,
+  not an exception — check the ship log, never the PR title, before deciding what's
+  next.
 - The per-phase `## Tests` subsection often lives *outside* the phase heading — missing
   it is the most common way to under-deliver a phase.
