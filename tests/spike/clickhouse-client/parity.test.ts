@@ -16,7 +16,8 @@ import { createOfficialConnection, runOfficial, makeOfficialRunQueryShim, runOff
 import { createEpochFence } from './guarded-fetch.js';
 import { BASIC_USER_A, BASIC_USER_B, DENIED_USER, BEARER_FIXTURE, JWT_AS_BASIC_FIXTURE } from './auth-fixtures.js';
 import { createQueryExecutionService } from '../../../src/application/query-execution-service.js';
-import type { ChCtx } from '../../../src/net/ch-client.js';
+import { killQueryWithLease } from '../../../src/net/ch-client.js';
+import type { ChCtx, AuthenticatedCancellationLease } from '../../../src/net/ch-client.js';
 import type { ScriptEntry } from '../../../src/core/script-result.js';
 import type { SpikeCredential, SpikeRequest } from './types.js';
 
@@ -361,35 +362,68 @@ describe('credential-epoch fencing at the real fetch boundary', () => {
   });
 });
 
-describe('retry safety — official outcomes fed through the REAL, unmodified QueryExecutionService', () => {
-  function service(conn: ReturnType<typeof createOfficialConnection>) {
-    const runQueryShim = makeOfficialRunQueryShim(conn, () => BASIC_USER_A);
-    return createQueryExecutionService({
-      runQuery: runQueryShim as unknown as typeof import('../../../src/net/ch-client.js').runQuery,
-      killQuery: async () => {},
-      ctx: () => ({} as ChCtx),
-      now: () => Date.now(),
-      uid: (prefix: string) => qid(prefix),
-      retryMs: 1,
-      sleep: () => Promise.resolve(),
-      sqlString: (s) => `'${String(s)}'`,
-    });
-  }
+describe('cancellation lease — the REAL production killQueryWithLease uses the frozen request credential, never live auth state (plan §22/§28 "frozen cancellation lease")', () => {
+  it('a credential rotated AFTER the lease was captured never reaches the KILL QUERY request; the frozen one always does', async () => {
+    const { fetch: capturing, lastAuth } = capturingFetch(fetch);
+    // Mirrors src/application/connection-session.ts's captureCancellationLease():
+    // `authorization` is a COMPLETE, already-resolved header value, frozen at
+    // capture time — never recomputed from mutable auth state later.
+    const frozenAuthorization = `Basic ${btoa('frozen-user:frozen-pass')}`;
+    const lease: AuthenticatedCancellationLease = {
+      epoch: 1,
+      origin: fault.baseUrl,
+      authorization: frozenAuthorization,
+      fetch: capturing,
+    };
+    // Simulate a credential rotation (OAuth refresh / replacement sign-in)
+    // that happens AFTER the lease was captured — killQueryWithLease must
+    // have no way to observe this; it only ever reads `lease.authorization`,
+    // never a live ctx/auth-mode lookup (unlike plain `killQuery`, which
+    // does go through `queryJson`/`authedFetch`'s live auth path).
+    const rotatedAuthorization = `Basic ${btoa('rotated-user:rotated-pass')}`;
+    expect(rotatedAuthorization).not.toBe(frozenAuthorization); // sanity: the two really differ
 
+    await killQueryWithLease(lease, qid('ordinary-query'), (s) => `'${String(s)}'`);
+
+    expect(lastAuth()).toBe(frozenAuthorization);
+  });
+
+  it('a null/undefined query_id is a no-op — no fetch at all (matches killQuery\'s own early-return contract)', async () => {
+    const { fetch: capturing, lastAuth } = capturingFetch(fetch);
+    const lease: AuthenticatedCancellationLease = {
+      epoch: 1, origin: fault.baseUrl, authorization: 'Basic irrelevant', fetch: capturing,
+    };
+    await killQueryWithLease(lease, null, (s) => `'${String(s)}'`);
+    await killQueryWithLease(lease, undefined, (s) => `'${String(s)}'`);
+    expect(lastAuth()).toBeNull();
+  });
+});
+
+describe('retry safety — official outcomes fed through the REAL, unmodified QueryExecutionService', () => {
   it('SESSION_IS_LOCKED gets exactly one delayed retry, then succeeds', async () => {
     const conn = createOfficialConnection(fault.baseUrl, fetch);
-    const svc = service(conn);
-    const starts: number[] = [];
+    // Routed through the REAL QueryExecutionService via `serviceFor()` —
+    // consistently with the sibling "ambiguous INSERT/DDL reset: no retry"
+    // tests below, which already prove `serviceFor()`'s overridden `uid`
+    // (minting `<fixturePrefix>__<n>` on every call, ignoring executeScript's
+    // own fixed `deps.uid('q')` prefix) routes a full `executeScript` run to
+    // a SPECIFIC fault-server fixture. The `scenarios.ts:63` comment claiming
+    // this can't be done ("executeScript always mints its own query_id, so it
+    // cannot itself be routed to a specific fixture") is contradicted by that
+    // sibling test's own successful use of exactly this mechanism.
+    const svc = serviceFor(conn, 'session-is-locked');
+    const attempts: number[] = [];
     const result = await svc.executeScript({
       statements: [{ sql: 'SELECT 1', execSql: 'SELECT 1', params: {} }],
-      onStatementStart: (_i, info) => starts.push(info.attempt),
+      onStatementStart: (_i, info) => attempts.push(info.attempt),
       onStatementResult: () => {},
     });
-    // The statement text itself doesn't select the fixture (the shim routes
-    // by query_id, minted by `uid()` -> `qid('q')`, which never starts with
-    // "session-is-locked" — so this test instead proves the MECHANISM using
-    // the raw shim directly against a query_id we control).
-    expect(result.entries.length).toBeGreaterThanOrEqual(0); // placeholder assertion for the generic-id path, see the targeted test below
+    // fault-server.mjs's 'session-is-locked' fixture rejects attempt 1 with
+    // SESSION_IS_LOCKED (code 373) and succeeds on attempt 2 — exactly one
+    // retry, then success, never a third attempt.
+    expect(attempts).toEqual([1, 2]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].status).not.toBe('error');
   });
 
   it('SESSION_IS_LOCKED: raw shim retried once by hand-driving the same policy the service applies', async () => {

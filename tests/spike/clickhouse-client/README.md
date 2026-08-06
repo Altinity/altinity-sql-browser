@@ -7,8 +7,10 @@ against the official `@clickhouse/client-web@1.23.1` package, running both
 through the exact same scenario/request shape and diffing the normalized
 result. Nothing under `src/` imports anything in this directory, and nothing
 here changes production behavior — see `docs/ADR-0005-clickhouse-web-client.md`
-(once it exists — see "Current status" below) for the evidence-based
-Accepted/Rejected decision this harness feeds.
+for the evidence-based decision this harness feeds: **Rejected** (three
+independently-verified failing hard gates — see the ADR for the exact root
+causes; the current custom transport remains authoritative and no production
+cutover occurred).
 
 `@clickhouse/client-web` is pinned as an exact, dev-only dependency
 (`package.json`'s `devDependencies`, no range) for the lifetime of Phase 0.
@@ -22,29 +24,26 @@ enforcement" below.
 
 ## Current status
 
-Not every file this README describes exists yet — this harness is being
-built incrementally, sub-task by sub-task, on
-`wip/585-phase0-clickhouse-web-client-spike`. As of this writing:
+The harness is complete: every file this README describes is present, the
+full evidence set under `docs/evidence/585/` has been generated and
+validated, `docs/ADR-0005-clickhouse-web-client.md` records the
+evidence-based decision (**Rejected**), and `.wiki/Decisions-and-Roadmap.md`
+reflects the same status.
 
-* **Present**: `types.ts`, `normalize.ts`, `expected-values.ts`,
+* **Deterministic harness**: `types.ts`, `normalize.ts`, `expected-values.ts`,
   `scenarios.ts`, `precision-corpus.ts`, `format-type-probe.ts`,
   `current-adapter.ts`, `official-adapter.ts`, `progress-bridge.ts`,
-  `guarded-fetch.ts`, `auth-fixtures.ts`, `parity.test.ts`,
-  `fault-server.mjs`, `vitest.config.mjs`, `candidate-entry.ts`,
-  `candidate-third-party-notices.md`, this `README.md`.
-* **Not yet present** (deferred to later Phase 0 sub-tasks per the plan's
-  execution order, §34.F/G/H): `spike-server.mjs`, `clickhouse-containers.mjs`,
-  `run-matrix.mjs`, `validate-evidence.mjs`, `playwright.config.js`,
-  `browser-harness.html`, `browser-harness.ts`, `browser.spec.js`,
-  `matrix.json`, and everything under `docs/evidence/585/`. The package
-  scripts below that shell out to these files (`test:client-spike:matrix`,
-  `test:client-spike:browser`, `check:client-spike:evidence`) will fail with
-  a plain "file not found" until those sub-tasks land — that is expected,
-  not a regression.
-* `docs/ADR-0005-clickhouse-web-client.md` does not exist yet. Until it
-  does, `.wiki/Decisions-and-Roadmap.md` correctly still frames #585/ADR-0005
-  as a pending spike, not a settled decision — see "ADR/wiki consistency"
-  below.
+  `guarded-fetch.ts`, `auth-fixtures.ts`, `parity.test.ts`, `fault-server.mjs`,
+  `vitest.config.mjs`, `candidate-entry.ts`, `candidate-third-party-notices.md`.
+* **Live-server harness**: `clickhouse-containers.mjs` (Docker orchestration),
+  `matrix.json` (the resolved, digest-pinned server matrix), `live-parity.test.ts`,
+  `live-precision.test.ts`, `live-sessions.test.ts`.
+* **Evidence orchestration**: `run-matrix.mjs` (generates
+  `docs/evidence/585/`), `validate-evidence.mjs` (validates it).
+* **Browser harness**: `spike-server.mjs`, `playwright.config.js`,
+  `browser-harness.html`, `browser-harness.ts`, `browser.spec.js`.
+
+See "Layout" below for what each file does.
 
 ## Layout
 
@@ -66,6 +65,17 @@ built incrementally, sub-task by sub-task, on
 | `candidate-entry.ts` | The candidate build's esbuild entry point — imports the real production entry plus the official adapter, retains the latter through a non-executing global registration so esbuild's tree-shaker can't drop it. Never used by normal `npm run build`. |
 | `candidate-third-party-notices.md` | The Apache-2.0 notice fragment appended **only** to the candidate artifact's embedded third-party notices (`build/build.mjs`'s `additionalNotices` option) — never to the normal `THIRD-PARTY-NOTICES.md` or the normal artifact. |
 | `vitest.config.mjs` | The dedicated Vitest config the spike scripts use (`environment: 'node'`, `singleThread: true`, no coverage) — deliberately separate from `tests/vitest.config.ts` so `npm test` never discovers this suite. |
+| `clickhouse-containers.mjs` | Dependency-free Docker orchestrator (plan §12/§13): pulls and boots one real ClickHouse server (OSS or Altinity Stable, resolved via `matrix.json`) for the live-server specs below, with every bind mount asserted under `$TMPDIR`/`$SPIKE_TMP` (never `/tmp`), unique run-labeled containers, and a `stop()`/orphan-sweep that removes only containers carrying this run's label. |
+| `matrix.json` | The exact, digest-pinned ClickHouse server images the live matrix boots (proposed-oldest OSS/Altinity Stable, current-stable OSS, current Altinity Stable, plus a conditional Cloud row) — resolved by hand against the registry at implementation time, never an unqualified `latest` tag. |
+| `live-parity.test.ts` | Live-server progressive timing, mid-stream exception, raw/export byte-hash, and `KILL QUERY`/`system.processes` cancellation proofs (plan §19/§20/§22/§24) against a **real** ClickHouse server (`ASB_SPIKE_CH_URL`, set by `clickhouse-containers.mjs`/`run-matrix.mjs`). Skips cleanly when the env var is unset. |
+| `live-precision.test.ts` | Runs every `expected-values.ts` precision case (plan §17) through both adapters against a real server — no fixture can safely stand in for a real server's exact numeric/date/decimal serialization. Skips cleanly without `ASB_SPIKE_CH_URL`. |
+| `live-sessions.test.ts` | Live-server logical-session, `SESSION_IS_LOCKED` retry, and connection-reset retry-safety proofs (plan §23) fed through the REAL, unmodified `QueryExecutionService`. Skips cleanly without `ASB_SPIKE_CH_URL`. |
+| `run-matrix.mjs` | The evidence-generation orchestrator (plan §29/§34): runs the deterministic suite, the support-minimum derivation, the live server/browser matrix, the build/size-report measurements, and writes the complete `docs/evidence/585/` tree. `main()` runs unconditionally on import — only ever run as a script (`node run-matrix.mjs`), never imported. |
+| `validate-evidence.mjs` | The evidence completeness/consistency validator (plan §29's exhaustive failure-rule list) — checked against the committed `docs/evidence/585/` by default. Exit 0 with no findings, exit 1 with an itemized list otherwise; never mutates anything, never prints a credential value. |
+| `spike-server.mjs` | A dedicated Node HTTP server for the Playwright browser matrix (plan §14/§26): a streaming same-origin reverse proxy, the static browser-harness page, and a local esbuild-bundled ESM wrapper around the verified installed `@clickhouse/client-web` entry (no CDN). |
+| `playwright.config.js` | A dedicated Playwright config scoped to `browser.spec.js` only (Chromium + WebKit — Firefox is explicitly excluded per plan §14, matching this sandbox's local e2e limitation) — the repository's root `playwright.config.js`/`npm run test:e2e` is untouched. |
+| `browser-harness.html` / `browser-harness.ts` | The browser-facing static harness page and its module — the second (and only other) module in this repository that imports `@clickhouse/client-web`, this time from a real browser engine rather than Node, proving the same production decisions (exec()+bridge Table path, per-call `auth`, `query_id`, response headers) survive unmodified in Chromium/WebKit. |
+| `browser.spec.js` | The actual Chromium/WebKit coverage (plan §25): client construction, ordinary query, progressive first row, request-local Basic auth, cancellation during streaming, response headers, query ID, raw bytes, and a network recorder proving no external runtime import, per required server/origin row. |
 
 ## Type checking
 
@@ -91,18 +101,24 @@ is intentional (plan §8).
 # npm test does not discover these tests.
 npm run test:client-spike
 
-# Live-server support-minimum/precision/session/cancellation matrix.
-# NOT YET IMPLEMENTED (see "Current status" above) — run-matrix.mjs doesn't
-# exist yet.
+# Full evidence-generation run: the deterministic suite, the support-minimum
+# derivation, the live Docker server matrix + live-*.test.ts, the Playwright
+# browser matrix, and the build/size-report measurements — writes the
+# complete docs/evidence/585/ tree. Every flag below narrows this for
+# iteration/smoke-testing only; a narrowed invocation is never the "real"
+# evidence run (see run-matrix.mjs's own header for the full flag list):
+#   --rows <comma-list|all|none>      matrix.json rows to boot via Docker
+#   --browsers <comma-list|all|none>  Playwright projects to run
+#   --skip-baseline-gate              skip the baseline worktree's full local
+#                                      gate (the baseline size-report
+#                                      self-check still always runs)
 npm run test:client-spike:matrix
 
 # Chromium/WebKit browser harness (same-origin + cross-origin CORS).
-# NOT YET IMPLEMENTED — playwright.config.js/browser-harness.* don't exist yet.
 npm run test:client-spike:browser -- --project=chromium
 npm run test:client-spike:browser -- --project=webkit
 
 # Evidence completeness/consistency validator (docs/evidence/585/).
-# NOT YET IMPLEMENTED — validate-evidence.mjs doesn't exist yet.
 npm run check:client-spike:evidence
 ```
 
@@ -158,13 +174,13 @@ coverage-gated `npm test` run — mechanically enforces:
   `fault-server.mjs` constructs for its own local server (e.g.
   `http://127.0.0.1:<port>`) are not import specifiers and are not flagged;
 * `docs/ADR-0005-clickhouse-web-client.md` and
-  `.wiki/Decisions-and-Roadmap.md` never disagree: if the ADR exists, its
-  `Status:` (Accepted/Rejected) must appear, **unquoted**, near the wiki's
-  ADR-0005/#585 mentions, and the wiki must link the ADR file; if the ADR
-  does not exist yet, the wiki must not make an unquoted Accepted/Rejected
-  claim near those same mentions (today's wording — `a "Rejected" outcome
-  still completes the phase` — is deliberately quoted/hypothetical, so it
-  passes without claiming a settled decision).
+  `.wiki/Decisions-and-Roadmap.md` never disagree: since the ADR exists, its
+  `Status:` (**Rejected**) must appear, **unquoted**, near the wiki's
+  ADR-0005/#585 mentions, and the wiki must link the ADR file. (Before the
+  ADR existed, the test instead required the wiki to avoid an unquoted
+  Accepted/Rejected claim near those same mentions — that branch of the
+  policy test still exists and is exercised by its own fixture, but no longer
+  describes this repository's current state.)
 
 ## Non-goals
 

@@ -281,8 +281,17 @@ describe.skipIf(!CH_URL)('live server cancellation via KILL QUERY / system.proce
     const result = await longRunning;
     expect(result.outcome.cancelled).toBe(true);
 
-    // 4. KILL QUERY using the frozen request credential (the REAL
-    // production killQuery, via current-adapter.ts's re-export).
+    // 4. KILL QUERY against the REAL, running server — the REAL production
+    // `killQuery` (via current-adapter.ts's re-export), which resolves auth
+    // through `ctx`'s live authentication path. This is NOT
+    // `killQueryWithLease` (the frozen-credential cancellation path used by a
+    // closing authenticated execution scope, per src/net/ch-client.ts) — that
+    // invariant (a credential rotated after capture never reaches the
+    // request) is proven deterministically in parity.test.ts's "cancellation
+    // lease" block, which imports and calls `killQueryWithLease` directly.
+    // This test's job is the complementary, live-server-only proof: that
+    // issuing KILL QUERY for a real, still-running query_id actually makes it
+    // disappear from `system.processes`.
     await currentKillQuery(ctx, queryId);
 
     // 5. Poll until it disappears from system.processes.

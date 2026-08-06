@@ -26,25 +26,25 @@ Evidence: tests/spike/clickhouse-client/parity.test.ts in-band exception test; l
 
 ## Can per-request auth work without mutation or reconstruction?
 
-> Evidence recorded per the alternating-credentials/constructor-count test in parity.test.ts.
+> Yes — proven by the alternating-credentials test: each of four requests (Basic user A / user B / an invalid credential / user A again) is observed server-side using ONLY its own supplied credential, and the official client's constructor-call count stays at 1 throughout (official-adapter.ts's `constructorCalls` is a real, mechanically-enforced count backed by every `.client` assignment — never a hardcoded literal — so a future reconstruction would be caught, not silently passed).
 
-Evidence: tests/spike/clickhouse-client/parity.test.ts "alternating Basic user A / user B / invalid / valid"
+Evidence: tests/spike/clickhouse-client/parity.test.ts "alternating Basic user A / user B / invalid / valid"; tests/spike/clickhouse-client/official-adapter.ts constructorCalls
 
 ## Can epoch fencing occur immediately before fetch?
 
-> Evidence recorded per the deliberate epoch-flip race test in parity.test.ts (guarded-fetch.ts).
+> Yes — proven by the deliberate epoch-flip race test at the ACTUAL injected-fetch boundary (guarded-fetch.ts's guardedFetch, wired as the real official client's own fetch): a request whose epoch turns after preparation but before the delegate fetch fires is rejected with zero delegated calls; a current-epoch request delegates exactly once.
 
 Evidence: tests/spike/clickhouse-client/parity.test.ts credential-epoch fencing block; tests/spike/clickhouse-client/guarded-fetch.ts
 
 ## How are abort, timeout, and ClickHouse errors distinguished?
 
-> Evidence recorded per the four-way taxonomy tests (cancel/timeout/offline/HTTP-error).
+> Recorded per the four-way taxonomy tests: cancel/timeout/offline/HTTP-error each produce a distinct, non-overlapping classification on the official adapter (see the cited tests for the exact shape each one receives).
 
 Evidence: tests/spike/clickhouse-client/parity.test.ts cancellation + timeout/offline blocks
 
 ## Are code and message retained for current policy?
 
-> Evidence recorded per the 401/403/SESSION_IS_LOCKED/reset error-taxonomy tests.
+> Yes — proven by the 401/403/SESSION_IS_LOCKED/reset error-taxonomy tests: ClickHouse code AND message survive intact for HTTP-level errors (401 -> chCode 516, 403 -> chCode 497, both with the server's own message text preserved), and the retry-safety layer's message is preserved for the ambiguous-write/reset cases the same policy already produces today.
 
 Evidence: tests/spike/clickhouse-client/parity.test.ts retry-safety block
 

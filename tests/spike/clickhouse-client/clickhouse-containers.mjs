@@ -359,48 +359,16 @@ export async function startRow(rowKeyOrRow, opts = {}) {
   const admin = { username: `asb_spike_admin_${randomBytes(3).toString('hex')}`, password: `asb-spike-admin-${randomUUID()}` };
   const containerName = `asb585-${rowLabel}-${randomBytes(4).toString('hex')}`;
 
-  // Explicit `docker pull` FIRST (plan §13: "If a required Altinity build
-  // cannot be resolved or run: do not substitute OSS silently; record the
-  // exact failure") — a pull failure here throws a clear, row-tagged error
-  // rather than an ambiguous `docker run` failure buried under container
-  // creation.
-  try {
-    await docker(['pull', row.pullRef]);
-  } catch (e) {
-    throw new Error(`clickhouse-containers: pull failed for row "${rowKey}" (${row.pullRef}) — recording exact failure, NOT substituting another image:\n${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  // Step 1: create on the DEFAULT bridge with the published port — see this
-  // module's header docstring for why `--network` must NOT be passed here.
-  await docker([
-    'run', '-d',
-    '--name', containerName,
-    '--label', `${RUN_LABEL_KEY}=${RUN_ID}`,
-    '--label', `asb585.row=${rowLabel}`,
-    '-p', '127.0.0.1::8123',
-    '-v', `${configDir}:/etc/clickhouse-server/config.d:ro`,
-    '-e', `CLICKHOUSE_USER=${admin.username}`,
-    '-e', `CLICKHOUSE_PASSWORD=${admin.password}`,
-    '-e', 'CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1',
-    row.pullRef,
-  ]);
-
-  const port = await discoverPort(containerName);
-  const url = `http://127.0.0.1:${port}/`;
-
-  // Step 2 (plan §12 "attach every container with --network $DOCKER_NETWORK"):
-  // attach the sandbox's allowlisted network, health-checking the result
-  // (belt-and-suspenders after the config.d footgun above) and rolling back
-  // rather than leaving a broken container if attaching ever does regress
-  // host->container delivery again. Pass `{ attachDockerNetwork: false }` to
-  // skip this entirely (e.g. a caller that wants the fastest possible boot
-  // and has no need for the row to be reachable from another container on
-  // that network).
-  let dockerNetworkAttached = false;
-  if (opts.attachDockerNetwork !== false) {
-    dockerNetworkAttached = await attachDockerNetworkWithRollback(containerName, url, dockerNetwork);
-  }
-
+  // `stop` is defined THIS early (before `docker pull`/`docker run` even run)
+  // and the try/catch below wraps EVERYTHING from here through readiness —
+  // not just the later readiness-wait — so a pull/run/discoverPort/attach
+  // failure cleans up exactly like a bootstrap/readiness failure already did.
+  // `docker rm -f` on a container that was never created (a pull or early
+  // run failure) is a harmless, already-caught no-op, so calling `stop()`
+  // unconditionally here is always safe. Discovered by review: the previous
+  // try/catch only wrapped `waitForReady`+bootstrap, so a pull or `docker
+  // run` failure returned/threw WITHOUT ever removing the scratch config
+  // directory this function creates unconditionally above.
   const stop = async () => {
     try { await docker(['rm', '-f', containerName]); } catch { /* already gone — fine */ }
     if (ownsSpikeTmp) {
@@ -409,6 +377,48 @@ export async function startRow(rowKeyOrRow, opts = {}) {
   };
 
   try {
+    // Explicit `docker pull` FIRST (plan §13: "If a required Altinity build
+    // cannot be resolved or run: do not substitute OSS silently; record the
+    // exact failure") — a pull failure here throws a clear, row-tagged error
+    // rather than an ambiguous `docker run` failure buried under container
+    // creation.
+    try {
+      await docker(['pull', row.pullRef]);
+    } catch (e) {
+      throw new Error(`clickhouse-containers: pull failed for row "${rowKey}" (${row.pullRef}) — recording exact failure, NOT substituting another image:\n${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Step 1: create on the DEFAULT bridge with the published port — see this
+    // module's header docstring for why `--network` must NOT be passed here.
+    await docker([
+      'run', '-d',
+      '--name', containerName,
+      '--label', `${RUN_LABEL_KEY}=${RUN_ID}`,
+      '--label', `asb585.row=${rowLabel}`,
+      '-p', '127.0.0.1::8123',
+      '-v', `${configDir}:/etc/clickhouse-server/config.d:ro`,
+      '-e', `CLICKHOUSE_USER=${admin.username}`,
+      '-e', `CLICKHOUSE_PASSWORD=${admin.password}`,
+      '-e', 'CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1',
+      row.pullRef,
+    ]);
+
+    const port = await discoverPort(containerName);
+    const url = `http://127.0.0.1:${port}/`;
+
+    // Step 2 (plan §12 "attach every container with --network $DOCKER_NETWORK"):
+    // attach the sandbox's allowlisted network, health-checking the result
+    // (belt-and-suspenders after the config.d footgun above) and rolling back
+    // rather than leaving a broken container if attaching ever does regress
+    // host->container delivery again. Pass `{ attachDockerNetwork: false }` to
+    // skip this entirely (e.g. a caller that wants the fastest possible boot
+    // and has no need for the row to be reachable from another container on
+    // that network).
+    let dockerNetworkAttached = false;
+    if (opts.attachDockerNetwork !== false) {
+      dockerNetworkAttached = await attachDockerNetworkWithRollback(containerName, url, dockerNetwork);
+    }
+
     await waitForReady(containerName, url, admin, opts.readiness);
     for (const stmt of bootstrapStatements()) {
       await runAdminStatement(url, admin, stmt);
@@ -435,7 +445,9 @@ export async function startRow(rowKeyOrRow, opts = {}) {
       stop,
     };
   } catch (e) {
-    // Never leak a half-booted container on a bootstrap/readiness failure.
+    // Never leak a half-booted container OR the scratch config directory on
+    // ANY failure between directory creation and readiness (pull, run,
+    // discoverPort, network-attach, bootstrap, readiness).
     await stop();
     throw e;
   }

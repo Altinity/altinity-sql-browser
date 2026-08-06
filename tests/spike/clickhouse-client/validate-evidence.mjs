@@ -38,6 +38,18 @@ const here = dirname(fileURLToPath(import.meta.url));
 const spikeDir = here;
 const repoRoot = resolvePath(here, '../../..');
 
+/** This sandbox's own CLAUDE.md ("Temporary files") and plan §12 both forbid
+ * `/tmp` for anything this process creates — it's shared across sandbox users
+ * and rejected by the Docker daemon's own mount allowlist (the same rule
+ * `clickhouse-containers.mjs`'s `requireEnv` enforces for its bind mounts).
+ * Silently falling back to `/tmp` when `$TMPDIR` is unset would violate that
+ * rule without any visible signal, so this throws instead. */
+function requireTmpDir() {
+  const tmp = process.env.TMPDIR;
+  if (!tmp) throw new Error('validate-evidence: $TMPDIR must be set (this sandbox forbids /tmp for temporary files — see CLAUDE.md "Temporary files")');
+  return tmp;
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
@@ -57,7 +69,7 @@ function printHelp() {
 // run-matrix.mjs — see there for why plain .mjs needs it to reach .ts data) ──
 
 async function loadDeterministicScenarioIds() {
-  const tmpDir = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'asb585-validate.'));
+  const tmpDir = mkdtempSync(join(requireTmpDir(), 'asb585-validate.'));
   try {
     const outfile = join(tmpDir, `loader-${randomBytes(6).toString('hex')}.mjs`);
     await esbuildBuild({
@@ -73,7 +85,7 @@ async function loadDeterministicScenarioIds() {
 }
 
 async function loadPrecisionCaseIds() {
-  const tmpDir = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'asb585-validate.'));
+  const tmpDir = mkdtempSync(join(requireTmpDir(), 'asb585-validate.'));
   try {
     const outfile = join(tmpDir, `loader-${randomBytes(6).toString('hex')}.mjs`);
     await esbuildBuild({

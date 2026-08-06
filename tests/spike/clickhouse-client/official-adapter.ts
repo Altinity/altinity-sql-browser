@@ -56,23 +56,42 @@ export interface OfficialConnection {
  * (optional) sets the vendor client's own `request_timeout` (default 30s) —
  * used by the "timeout" scenario to prove the official client's connection-
  * level timeout produces a distinct `Error("Timeout error.")`, never an
- * `AbortError`, unlike a caller-driven `abort_signal`. */
+ * `AbortError`, unlike a caller-driven `abort_signal`.
+ *
+ * `constructorCalls` is a REAL count, not a literal: `.client` is exposed as
+ * a getter/setter pair backed by `constructorCallCount`, and the ONLY writer
+ * to that setter is the single `setClient()` call below, at construction.
+ * Nothing else in this file (or in `runOfficial`/`runOfficialRefreshThenRetry`
+ * /`makeOfficialRunQueryShim`) ever assigns `conn.client` again — they only
+ * read it — so this mechanically enforces the plan's "one official client per
+ * connection config, no reconstruction after refresh" invariant: if a FUTURE
+ * change (e.g. a refresh-retry path) were to reassign `conn.client` to a
+ * freshly `createClient()`-ed instance instead of reusing this one, the
+ * setter would increment the count past 1 and every `constructorCalls === 1`
+ * assertion (parity.test.ts / live-*.test.ts) would correctly fail. */
 export function createOfficialConnection(baseUrl: string, realFetch: typeof fetch, requestTimeoutMs?: number): OfficialConnection {
   let fetchCalls = 0;
   const countingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     fetchCalls += 1;
     return realFetch(input, init);
   }) as typeof fetch;
-  const client = createClient({
+  let constructorCallCount = 0;
+  let currentClient!: ClickHouseClient;
+  function setClient(c: ClickHouseClient): void {
+    constructorCallCount += 1;
+    currentClient = c;
+  }
+  setClient(createClient({
     url: baseUrl,
     username: 'asb-spike-default-invalid',
     password: 'asb-spike-default-invalid',
     fetch: countingFetch,
     ...(requestTimeoutMs !== undefined ? { request_timeout: requestTimeoutMs } : {}),
-  });
+  }));
   return {
-    client,
-    get constructorCalls() { return 1; },
+    get client() { return currentClient; },
+    set client(c: ClickHouseClient) { setClient(c); },
+    get constructorCalls() { return constructorCallCount; },
     get fetchCalls() { return fetchCalls; },
   };
 }

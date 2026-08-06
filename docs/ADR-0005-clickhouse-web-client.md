@@ -174,7 +174,9 @@ derived and recorded live by `support-minimum.mjs`'s
 
 1. The repository does not itself pin/promise a ClickHouse version anywhere
    in CI, Docker, deployment docs, demo config, README, or tests (checked
-   search, 28 genuine pinned-version mentions inventoried, none binding).
+   search over 287 files found zero genuine pinned-version mentions; 10
+   version-shaped tokens were found and excluded with a recorded reason —
+   see `pinnedVersionScan.benignExclusions` in `results.json`).
 2. `@clickhouse/client-web`'s own README ("## Compatibility with ClickHouse",
    row "1.12.0+ | 24.8+") documents a guaranteed floor of **ClickHouse
    24.8+**.
@@ -295,18 +297,32 @@ Quoted verbatim from `docs/evidence/585/critical-questions.md` (plan §27):
 > real-server corroboration per row.
 >
 > **Can per-request auth work without mutation or reconstruction?** Yes —
-> per the alternating-credentials/constructor-count test
-> (`parity.test.ts` "alternating Basic user A / user B / invalid / valid").
+> proven by the alternating-credentials test: each of four requests (Basic
+> user A / user B / an invalid credential / user A again) is observed
+> server-side using ONLY its own supplied credential, and the official
+> client's constructor-call count stays at 1 throughout (`official-adapter.ts`'s
+> `constructorCalls` is a real, mechanically-enforced count backed by every
+> `.client` assignment — never a hardcoded literal — so a future
+> reconstruction would be caught, not silently passed).
 >
-> **Can epoch fencing occur immediately before fetch?** Yes — per the
-> deliberate epoch-flip race test (`guarded-fetch.ts`, `parity.test.ts`
-> credential-epoch fencing block).
+> **Can epoch fencing occur immediately before fetch?** Yes — proven by the
+> deliberate epoch-flip race test at the ACTUAL injected-fetch boundary
+> (`guarded-fetch.ts`'s `guardedFetch`, wired as the real official client's
+> own fetch): a request whose epoch turns after preparation but before the
+> delegate fetch fires is rejected with zero delegated calls; a
+> current-epoch request delegates exactly once.
 >
-> **How are abort, timeout, and ClickHouse errors distinguished?** Per the
-> four-way taxonomy tests (cancel/timeout/offline/HTTP-error).
+> **How are abort, timeout, and ClickHouse errors distinguished?** Recorded
+> per the four-way taxonomy tests: cancel/timeout/offline/HTTP-error each
+> produce a distinct, non-overlapping classification on the official adapter
+> (see the cited tests for the exact shape each one receives).
 >
-> **Are code and message retained for current policy?** Yes — per the
-> 401/403/`SESSION_IS_LOCKED`/reset error-taxonomy tests.
+> **Are code and message retained for current policy?** Yes — proven by the
+> 401/403/`SESSION_IS_LOCKED`/reset error-taxonomy tests: ClickHouse code AND
+> message survive intact for HTTP-level errors (401 -> `chCode` 516, 403 ->
+> `chCode` 497, both with the server's own message text preserved), and the
+> retry-safety layer's message is preserved for the ambiguous-write/reset
+> cases the same policy already produces today.
 >
 > **Does the client support the proposed minimum?** Proposed minimum
 > ClickHouse `26.3.16.10001.altinitystable` — see
