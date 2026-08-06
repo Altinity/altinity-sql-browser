@@ -64,9 +64,15 @@ test('prompts enforce investigation, trust, publication, and follow-up contracts
   assert.match(followup, new RegExp('a{40}'));
   assert.match(followup, /Do not edit or replace/);
   assert.match(buildPrompt({ mode: 'issue', target: { ...target, canonicalUrl: 'https://github.com/o/r/issues/9' }, publish: false, pass: 1 }), /Do not post/);
-  const plan = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', context: 'acceptance' });
+  const plan = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', context: 'acceptance', pass: 1 });
   assert.match(plan, /attached as exact-plan\.md/);
   assert.match(plan, /Do not write anything to GitHub/);
+  assert.doesNotMatch(plan, /SAME conversation/);
+  const planRevision = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', context: 'acceptance', pass: 2 });
+  assert.match(planRevision, /revision review pass 2 of the SAME plan, in the SAME conversation/);
+  assert.match(planRevision, /"## Review responses" section/);
+  assert.match(planRevision, /explicitly engage with and refute its cited evidence/);
+  assert.doesNotMatch(planRevision, /Critically review whether it closes the stated acceptance gap, respects the repository architecture and seams, has a safe migration order and rollback story, and includes adequate tests\. Identify omissions/);
   const author = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 1, context: 'delivery contract' });
   assert.match(author, /Browse the issue, the actual repository, CLAUDE\.md/);
   assert.match(author, /PLAN_STATUS: READY/);
