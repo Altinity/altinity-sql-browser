@@ -1,0 +1,9 @@
+{
+  "name": "@clickhouse/client-web",
+  "declaredRange": "1.23.1",
+  "exact": true,
+  "devOnly": true,
+  "resolved": "https://registry.npmjs.org/@clickhouse/client-web/-/client-web-1.23.1.tgz",
+  "integrity": "sha512-VpYPSnBD7PWmEucp8wfd24u9tkyLwFH2ATyMT9R6J8b4U9snbVX1QjanJt/92YtSjam1GblhM7t3oChmJF/m0Q==",
+  "installedVersion": "1.23.1"
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  Phase 0 / issue #585, plan §14 "Same-origin, CORS, and browser harness".
+  Served by spike-server.mjs at
+  /tests/spike/clickhouse-client/browser-harness.html — never opened as a
+  bare file:// document (the client-web import map path and same-origin
+  proxy both require an http(s) origin). The import map resolves the bare
+  "@clickhouse/client-web" specifier browser-harness.ts uses to
+  spike-server.mjs's own esbuild-bundled ESM wrapper around the VERIFIED
+  installed 1.23.1 entry — never a CDN (plan's "No CDN fallback is
+  permitted").
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ASB spike browser harness (#585)</title>
+<script type="importmap">
+{
+  "imports": {
+    "@clickhouse/client-web": "/__clickhouse-client-web.mjs"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+  import { runScenario } from '/tests/spike/clickhouse-client/browser-harness.js';
+  window.__spikeRun = runScenario;
+  window.__spikeReady = true;
+</script>
+</body>
+</html>

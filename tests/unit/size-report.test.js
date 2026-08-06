@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   REPORT_SCHEMA_VERSION,
   normalizeInputPath,
@@ -13,6 +18,9 @@ import {
   formatBytes,
   renderMarkdown,
 } from '../../build/size-report-lib.mjs';
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const sizeReportScript = resolve(projectRoot, 'build/size-report.mjs');
 
 // A minimal esbuild-metafile shape covering every ownership bucket the report
 // distinguishes: hand-written src, generated src, a plain external package, and a
@@ -247,4 +255,94 @@ describe('renderMarkdown', () => {
     expect(md).toContain('| project |');
     expect(md).not.toMatch(/\| other \|/);
   });
+});
+
+// Issue #585 Phase 0's supplemental unminified-JS measurement (--include-
+// unminified-js). buildReport() must add this field only when asked, and must
+// never alter any other field when it isn't.
+describe('buildReport unminifiedJs (issue #585 Phase 0)', () => {
+  it('omits unminifiedJs entirely when unminifiedJsBytes is not given', () => {
+    const r = buildReport({ sizes: SIZES, metafile: METAFILE, outputKey: 'main.js' });
+    expect(r.unminifiedJs).toBeUndefined();
+    expect(Object.keys(r)).not.toContain('unminifiedJs');
+  });
+
+  it('records unminifiedJs.raw when given, without changing any other field', () => {
+    const withOpt = buildReport({
+      sizes: SIZES, metafile: METAFILE, outputKey: 'main.js', unminifiedJsBytes: 12345,
+    });
+    const without = buildReport({ sizes: SIZES, metafile: METAFILE, outputKey: 'main.js' });
+    expect(withOpt.unminifiedJs).toEqual({ raw: 12345 });
+    const { unminifiedJs, ...rest } = withOpt;
+    expect(rest).toEqual(without);
+  });
+});
+
+// Issue #585 Phase 0 (plan §9, "Metafile path invariant"): running the reporter
+// CLI from a process cwd OUTSIDE the repository, with `--root` pointing at it,
+// must produce the exact same attribution as running it from inside the
+// repository — esbuild's `absWorkingDir: repoRoot` (set by every esbuildOptions()
+// call, never the invoking shell's cwd) is what makes that true. Each run gets
+// its own --out/--artifact-out under $TMPDIR so neither touches this repo's
+// real dist/ or bundle-report/ directories, and neither run ever calls
+// process.chdir() — the child process's cwd is independent of the parent test
+// process's, which this test asserts stayed put.
+describe('size-report.mjs CLI attribution is independent of process cwd', () => {
+  it('reproduces byte-identical reports whether launched from repoRoot or a foreign cwd with --root', async () => {
+    const cwdBefore = process.cwd();
+    const dirs = await Promise.all([
+      mkdtemp(resolve(tmpdir(), 'asb-report-a-')),
+      mkdtemp(resolve(tmpdir(), 'asb-artifact-a-')),
+      mkdtemp(resolve(tmpdir(), 'asb-report-b-')),
+      mkdtemp(resolve(tmpdir(), 'asb-artifact-b-')),
+      mkdtemp(resolve(tmpdir(), 'asb-foreign-cwd-')),
+    ]);
+    const [outA, artifactA, outB, artifactB, foreignCwd] = dirs;
+    try {
+      // Run A: launched with cwd = repoRoot itself, no --root (default
+      // resolution — this is exactly what `npm run size-report` does).
+      execFileSync(process.execPath, [
+        sizeReportScript, '--out', outA, '--artifact-out', artifactA,
+      ], { cwd: projectRoot, stdio: 'pipe' });
+
+      // Run B: launched with cwd OUTSIDE the repository entirely, --root
+      // pointing back at it explicitly.
+      execFileSync(process.execPath, [
+        sizeReportScript, '--root', projectRoot, '--out', outB, '--artifact-out', artifactB,
+      ], { cwd: foreignCwd, stdio: 'pipe' });
+
+      const reportA = JSON.parse(await readFile(resolve(outA, 'bundle-size-report.json'), 'utf8'));
+      const reportB = JSON.parse(await readFile(resolve(outB, 'bundle-size-report.json'), 'utf8'));
+
+      for (const report of [reportA, reportB]) {
+        // Project code and dependencies are attributed under their normal
+        // repository-relative buckets...
+        expect(report.topModules.some((m) => m.path.startsWith('src/'))).toBe(true);
+        expect(report.topModules.some((m) => m.path.startsWith('node_modules/'))).toBe(true);
+        // ...and no metafile input or entry point is ever absolute or escapes
+        // the root with a leading '../', regardless of which cwd launched it.
+        for (const m of report.topModules) {
+          expect(m.path.startsWith('/')).toBe(false);
+          expect(m.path.startsWith('../')).toBe(false);
+        }
+        for (const e of report.entryPoints) {
+          if (e.entryPoint === null) continue;
+          expect(e.entryPoint.startsWith('/')).toBe(false);
+          expect(e.entryPoint.startsWith('../')).toBe(false);
+        }
+        expect(report.entryPoints.some((e) => e.entryPoint === 'src/main.ts')).toBe(true);
+      }
+
+      // Ownership, package attribution, top modules, and entry-point summaries
+      // are identical between the two runs — and since both target the same
+      // repoRoot at the same commit with no override, the whole report
+      // (including compressed sizes) is byte-for-byte identical too.
+      expect(reportB).toEqual(reportA);
+    } finally {
+      await Promise.all(dirs.map((d) => rm(d, { recursive: true, force: true })));
+    }
+    // Spawning a child process with an explicit `cwd` option never touches the
+    // parent test process's own working directory.
+    expect(process.cwd()).toBe(cwdBefore);
+  }, 180_000);
 });
