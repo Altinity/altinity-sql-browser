@@ -7,7 +7,7 @@ package's own README).
 
 ## 1. Does the repository currently pin/exercise/promise a ClickHouse version?
 
-No. Checked search over 287 files (CI workflows, deploy/, docker-compose.yaml, README.md, docs/, tests/) found no genuine ClickHouse version pin/promise; 10 version-shaped token(s) were found and excluded with a recorded reason (see pinnedVersionScan.benignExclusions) — none is a repository-exercised promise.
+No. Checked search over 289 files (CI workflows, deploy/, docker-compose.yaml, README.md, docs/, tests/) found no genuine ClickHouse version pin/promise; 10 version-shaped token(s) were found and excluded with a recorded reason (see pinnedVersionScan.benignExclusions) — none is a repository-exercised promise.
 
 ## 2. Server-sensitive dependency inventory
 
@@ -39,12 +39,12 @@ No. Checked search over 287 files (CI workflows, deploy/, docker-compose.yaml, R
 
 ## 4. Derivation
 
-- Checked search over 287 files (CI workflows, deploy/, docker-compose.yaml, README.md, docs/, tests/) found no genuine ClickHouse version pin/promise; 10 version-shaped token(s) were found and excluded with a recorded reason (see pinnedVersionScan.benignExclusions) — none is a repository-exercised promise.
+- Checked search over 289 files (CI workflows, deploy/, docker-compose.yaml, README.md, docs/, tests/) found no genuine ClickHouse version pin/promise; 10 version-shaped token(s) were found and excluded with a recorded reason (see pinnedVersionScan.benignExclusions) — none is a repository-exercised promise.
 - Official client node_modules/@clickhouse/client-web/README.md, "## Compatibility with ClickHouse" table row "1.12.0+ | 24.8+" documents a guaranteed floor of ClickHouse 24.8+.
 - Application inventory raises the floor to NOT long-standing — ClickHouse GitHub PR #74181 ("JSONEachRowWithProgress format will include meta, totals, and extremes", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6) via: JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns).
-- Proposed minimum = max(pinned official-client guaranteed minimum=24.8, application feature/fallback minimum=NOT long-standing — ClickHouse GitHub PR #74181 ("JSONEachRowWithProgress format will include meta, totals, and extremes", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6), earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)=26.6.2.160) = 26.6.2.160 (binding source: earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)).
+- Proposed minimum = max(pinned official-client guaranteed minimum=24.8, application feature/fallback minimum=NOT long-standing — ClickHouse GitHub PR #74181 ("JSONEachRowWithProgress format will include meta, totals, and extremes", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6), earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)=26.3.16.10001.altinitystable) = 26.3.16.10001.altinitystable (binding source: earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)).
 - Live-gate corroboration (step 5 of the plan's derivation) has run and is folded in above.
 
-**Proposed minimum: ClickHouse 26.6.2.160** (binding source: earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)).
+**Proposed minimum: ClickHouse 26.3.16.10001.altinitystable** (binding source: earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)).
 
-Live-gate corroboration (plan §5 step 5): earliest passing version fed back = 26.6.2.160.
+Live-gate corroboration (plan §5 step 5): earliest passing version fed back = 26.3.16.10001.altinitystable.

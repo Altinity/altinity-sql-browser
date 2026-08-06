@@ -8,7 +8,7 @@
 | auth/epoch parity | pass | parity.test.ts auth/epoch blocks |
 | raw/export bytes | pass | parity.test.ts raw/export block |
 | supported-server matrix | fail | docs/evidence/585/compatibility-matrix.md |
-| browser matrix | fail | docs/evidence/585/compatibility-matrix.md (browser section) |
+| browser matrix | pass | docs/evidence/585/compatibility-matrix.md (browser section) |
 | single-file build | pass | docs/evidence/585/candidate/* |
 | bundle delta | measured | docs/evidence/585/candidate/normalized-bundle-size-report.md |
 | net production-code deletion | fail | docs/evidence/585/deletion-estimate.md |

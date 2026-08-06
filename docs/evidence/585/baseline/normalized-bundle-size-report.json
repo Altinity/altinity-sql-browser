@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "artifact": {
-    "raw": 2125810,
-    "gzip": 623569,
-    "brotli": 527556
+    "raw": 2126368,
+    "gzip": 623760,
+    "brotli": 527728
   },
   "js": {
-    "raw": 1868798,
-    "gzip": 508283,
-    "brotli": 419085
+    "raw": 1869356,
+    "gzip": 508492,
+    "brotli": 418860
   },
   "css": {
     "raw": 236956,
@@ -16,28 +16,28 @@
     "brotli": 105666
   },
   "unminifiedJs": {
-    "raw": 3672262
+    "raw": 3673333
   },
-  "totalOutputBytes": 1868602,
+  "totalOutputBytes": 1869160,
   "entryPoints": [
     {
       "file": "main.js",
       "entryPoint": "src/main.ts",
-      "bytes": 1868795
+      "bytes": 1869353
     }
   ],
   "ownership": {
     "project": {
-      "bytes": 629526,
-      "pct": 33.68967816581594
+      "bytes": 630078,
+      "pct": 33.70915277450833
     },
     "generated": {
       "bytes": 457347,
-      "pct": 24.475356442945046
+      "pct": 24.46804981917011
     },
     "external": {
-      "bytes": 781729,
-      "pct": 41.83496539123901
+      "bytes": 781735,
+      "pct": 41.822797406321556
     },
     "other": {
       "bytes": 0,
@@ -48,337 +48,337 @@
     {
       "name": "chart.js",
       "bytes": 197138,
-      "pct": 10.550026169296618
+      "pct": 10.546876671873996
     },
     {
       "name": "@codemirror/view",
-      "bytes": 186289,
-      "pct": 9.96943169278423
+      "bytes": 186295,
+      "pct": 9.966776519934088
     },
     {
       "name": "date-fns",
       "bytes": 47998,
-      "pct": 2.568658280361468
+      "pct": 2.5678914592651245
     },
     {
       "name": "@codemirror/state",
       "bytes": 46721,
-      "pct": 2.5003184198668307
+      "pct": 2.4995720002567996
     },
     {
       "name": "marked",
       "bytes": 41843,
-      "pct": 2.2392676450094777
+      "pct": 2.238599156840506
     },
     {
       "name": "@dagrejs/dagre",
       "bytes": 40422,
-      "pct": 2.1632214885780923
+      "pct": 2.1625757024545784
     },
     {
       "name": "@codemirror/lang-sql",
       "bytes": 32160,
-      "pct": 1.7210727592071504
+      "pct": 1.7205589676646194
     },
     {
       "name": "@codemirror/autocomplete",
       "bytes": 31522,
-      "pct": 1.6869295869318346
+      "pct": 1.686425988144407
     },
     {
       "name": "@lezer/lr",
       "bytes": 26552,
-      "pct": 1.420955345226003
+      "pct": 1.4205311476813114
     },
     {
       "name": "@codemirror/language",
       "bytes": 24521,
-      "pct": 1.312264462951447
+      "pct": 1.3118727128763723
     },
     {
       "name": "@codemirror/commands",
       "bytes": 23371,
-      "pct": 1.2507211273454701
+      "pct": 1.25034774979135
     },
     {
       "name": "@lezer/common",
       "bytes": 20372,
-      "pct": 1.0902268112738829
+      "pct": 1.0899013460591922
     },
     {
       "name": "@codemirror/search",
       "bytes": 18472,
-      "pct": 0.9885465176640077
+      "pct": 0.9882514070491557
     },
     {
       "name": "@lezer/xml",
       "bytes": 8583,
-      "pct": 0.45932734739660985
+      "pct": 0.45919022448586533
     },
     {
       "name": "@kurkle/color",
       "bytes": 7597,
-      "pct": 0.40656062660748515
+      "pct": 0.4064392561364464
     },
     {
       "name": "@lezer/highlight",
       "bytes": 7218,
-      "pct": 0.38627808382951534
+      "pct": 0.38616276830233903
     },
     {
       "name": "@codemirror/lang-xml",
       "bytes": 5975,
-      "pct": 0.3197577654310549
+      "pct": 0.31966230820261504
     },
     {
       "name": "@preact/signals-core",
       "bytes": 4749,
-      "pct": 0.2541472180806828
+      "pct": 0.25407134755719146
     },
     {
       "name": "@marijn/find-cluster-break",
       "bytes": 2328,
-      "pct": 0.12458511764409971
+      "pct": 0.12454792527124485
     },
     {
       "name": "style-mod",
       "bytes": 2202,
-      "pct": 0.11784210869944484
+      "pct": 0.11780692931584241
     },
     {
       "name": "chartjs-adapter-date-fns",
       "bytes": 1688,
-      "pct": 0.09033491348077333
+      "pct": 0.09030794581523251
     },
     {
       "name": "@lezer/json",
       "bytes": 1607,
-      "pct": 0.08600012201635233
+      "pct": 0.08597444841533096
     },
     {
       "name": "w3c-keyname",
       "bytes": 1516,
-      "pct": 0.08113017111187935
+      "pct": 0.0811059513364292
     },
     {
       "name": "crelt",
       "bytes": 611,
-      "pct": 0.032698241787175654
+      "pct": 0.03268848038691177
     },
     {
       "name": "@codemirror/lang-json",
       "bytes": 274,
-      "pct": 0.014663368657424106
+      "pct": 0.014658991204605279
     }
   ],
   "topModules": [
     {
       "path": "src/generated/json-schema-validators.js",
       "bytes": 214575,
-      "pct": 11.483183684915247,
+      "pct": 11.479755612146633,
       "owner": "generated",
       "group": "src/generated"
     },
     {
       "path": "src/generated/example-dashboards.ts",
       "bytes": 187686,
-      "pct": 10.044193466559491,
+      "pct": 10.041194975283014,
       "owner": "generated",
       "group": "src/generated"
     },
     {
       "path": "node_modules/@codemirror/view/dist/index.js",
-      "bytes": 186289,
-      "pct": 9.96943169278423,
+      "bytes": 186295,
+      "pct": 9.966776519934088,
       "owner": "external",
       "group": "@codemirror/view"
     },
     {
       "path": "node_modules/chart.js/dist/chart.js",
       "bytes": 165468,
-      "pct": 8.855176222652014,
+      "pct": 8.852532688480387,
       "owner": "external",
       "group": "chart.js"
     },
     {
       "path": "src/generated/json-schemas.js",
       "bytes": 55086,
-      "pct": 2.947979291470308,
+      "pct": 2.947099231740461,
       "owner": "generated",
       "group": "src/generated"
     },
     {
       "path": "node_modules/@codemirror/state/dist/index.js",
       "bytes": 46721,
-      "pct": 2.5003184198668307,
+      "pct": 2.4995720002567996,
       "owner": "external",
       "group": "@codemirror/state"
     },
     {
       "path": "node_modules/marked/lib/marked.esm.js",
       "bytes": 41843,
-      "pct": 2.2392676450094777,
+      "pct": 2.238599156840506,
       "owner": "external",
       "group": "marked"
     },
     {
       "path": "node_modules/@dagrejs/dagre/dist/dagre.esm.js",
       "bytes": 40422,
-      "pct": 2.1632214885780923,
+      "pct": 2.1625757024545784,
       "owner": "external",
       "group": "@dagrejs/dagre"
     },
     {
       "path": "node_modules/@codemirror/lang-sql/dist/index.js",
       "bytes": 32160,
-      "pct": 1.7210727592071504,
+      "pct": 1.7205589676646194,
       "owner": "external",
       "group": "@codemirror/lang-sql"
     },
     {
       "path": "node_modules/chart.js/dist/chunks/helpers.dataset.js",
       "bytes": 31641,
-      "pct": 1.693297984268453,
+      "pct": 1.6927924843245097,
       "owner": "external",
       "group": "chart.js"
     },
     {
       "path": "node_modules/@codemirror/autocomplete/dist/index.js",
       "bytes": 31522,
-      "pct": 1.6869295869318346,
+      "pct": 1.686425988144407,
       "owner": "external",
       "group": "@codemirror/autocomplete"
     },
     {
       "path": "src/ui/app.ts",
       "bytes": 28257,
-      "pct": 1.5122000297548648,
+      "pct": 1.5117485929508443,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/ui/dashboard.ts",
       "bytes": 27271,
-      "pct": 1.4594333089657403,
+      "pct": 1.4589976246014251,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "node_modules/@lezer/lr/dist/index.js",
       "bytes": 26552,
-      "pct": 1.420955345226003,
+      "pct": 1.4205311476813114,
       "owner": "external",
       "group": "@lezer/lr"
     },
     {
       "path": "node_modules/@codemirror/language/dist/index.js",
       "bytes": 24521,
-      "pct": 1.312264462951447,
+      "pct": 1.3118727128763723,
       "owner": "external",
       "group": "@codemirror/language"
     },
     {
       "path": "node_modules/@codemirror/commands/dist/index.js",
       "bytes": 23371,
-      "pct": 1.2507211273454701,
+      "pct": 1.25034774979135,
       "owner": "external",
       "group": "@codemirror/commands"
     },
     {
       "path": "node_modules/@lezer/common/dist/index.js",
       "bytes": 20372,
-      "pct": 1.0902268112738829,
+      "pct": 1.0899013460591922,
       "owner": "external",
       "group": "@lezer/common"
     },
     {
       "path": "src/ui/results.ts",
       "bytes": 18762,
-      "pct": 1.0040661414255148,
+      "pct": 1.0037663977401614,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "node_modules/@codemirror/search/dist/index.js",
       "bytes": 18472,
-      "pct": 0.9885465176640077,
+      "pct": 0.9882514070491557,
       "owner": "external",
       "group": "@codemirror/search"
     },
     {
       "path": "src/dashboard/application/dashboard-viewer-session.ts",
       "bytes": 15254,
-      "pct": 0.8163322098552821,
+      "pct": 0.8160885103468938,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/ui/dashboard-tree.ts",
       "bytes": 13917,
-      "pct": 0.7447813927203332,
+      "pct": 0.7445590532645681,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/ui/file-menu.ts",
       "bytes": 12906,
-      "pct": 0.6906767733310786,
+      "pct": 0.6904705857176485,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/core/chart-data.ts",
       "bytes": 12003,
-      "pct": 0.6423518758943851,
+      "pct": 0.6421601147039312,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/ui/explain-graph.ts",
       "bytes": 11980,
-      "pct": 0.6411210091822657,
+      "pct": 0.6409296154422307,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/state.ts",
       "bytes": 10862,
-      "pct": 0.5812901837844549,
+      "pct": 0.5811166513300092,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/ui/shortcuts.ts",
       "bytes": 10307,
-      "pct": 0.5515888348615703,
+      "pct": 0.5514241691454985,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/net/ch-client.ts",
-      "bytes": 9850,
-      "pct": 0.5271320484511951,
+      "bytes": 9509,
+      "pct": 0.5087311947612831,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "src/dashboard/model/workspace-semantics.ts",
       "bytes": 8712,
-      "pct": 0.4662309041732804,
+      "pct": 0.46609172034496776,
       "owner": "project",
       "group": "src"
     },
     {
       "path": "node_modules/@lezer/xml/dist/index.js",
       "bytes": 8583,
-      "pct": 0.45932734739660985,
+      "pct": 0.45919022448586533,
       "owner": "external",
       "group": "@lezer/xml"
     },
     {
       "path": "src/core/spec-schema.ts",
       "bytes": 8272,
-      "pct": 0.4426838888109934,
+      "pct": 0.44255173446895935,
       "owner": "project",
       "group": "src"
     }

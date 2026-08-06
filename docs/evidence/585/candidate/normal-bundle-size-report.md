@@ -4,15 +4,15 @@ Sizes for the self-contained `dist/sql.html` and its inlined parts.
 
 | Artifact | Raw | gzip | Brotli |
 |---|---|---|---|
-| `dist/sql.html` | 2.1 MiB | 629.2 KiB | 531.5 KiB |
-| JS bundle | 1.8 MiB | 512.5 KiB | 422.2 KiB |
+| `dist/sql.html` | 2.1 MiB | 629.4 KiB | 531.8 KiB |
+| JS bundle | 1.8 MiB | 512.7 KiB | 422.5 KiB |
 | CSS (minified) | 231.4 KiB | 106.9 KiB | 103.2 KiB |
 
 ## Ownership (raw contributed output bytes)
 
 | Owner | Bytes | % of JS output |
 |---|---|---|
-| project | 615.1 KiB | 32.6% |
+| project | 615.6 KiB | 32.7% |
 | generated | 446.6 KiB | 23.7% |
 | external | 816.1 KiB | 43.3% |
 | other | 6.5 KiB | 0.3% |
@@ -84,7 +84,7 @@ Sizes for the self-contained `dist/sql.html` and its inlined parts.
 | `src/ui/explain-graph.ts` | project | 11.7 KiB | 0.6% |
 | `src/state.ts` | project | 10.6 KiB | 0.6% |
 | `src/ui/shortcuts.ts` | project | 10.1 KiB | 0.5% |
-| `src/net/ch-client.ts` | project | 9.6 KiB | 0.5% |
+| `src/net/ch-client.ts` | project | 9.3 KiB | 0.5% |
 | `src/dashboard/model/workspace-semantics.ts` | project | 8.5 KiB | 0.5% |
 | `node_modules/@lezer/xml/dist/index.js` | external | 8.4 KiB | 0.4% |
 | `src/core/spec-schema.ts` | project | 8.1 KiB | 0.4% |

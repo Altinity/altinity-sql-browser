@@ -27,6 +27,6 @@
 | current-stable-oss | cross-origin | chromium | yes | passed | — |
 | current-stable-oss | cross-origin | webkit | yes | passed | — |
 | current-altinity-stable | same-origin | chromium | yes | passed | — |
-| current-altinity-stable | same-origin | webkit | yes | failed | — |
+| current-altinity-stable | same-origin | webkit | yes | passed | — |
 | current-altinity-stable | cross-origin | chromium | yes | passed | — |
 | current-altinity-stable | cross-origin | webkit | yes | passed | — |

@@ -7164,8 +7164,13 @@
       ],
       "format": "esm"
     },
+    "src/net/clickhouse-http-transport.ts": {
+      "bytes": 3807,
+      "imports": [],
+      "format": "esm"
+    },
     "src/net/ch-client.ts": {
-      "bytes": 52543,
+      "bytes": 55641,
       "imports": [
         {
           "path": "src/core/stream.ts",
@@ -7181,6 +7186,11 @@
           "path": "src/core/format.ts",
           "kind": "import-statement",
           "original": "../core/format.js"
+        },
+        {
+          "path": "src/net/clickhouse-http-transport.ts",
+          "kind": "import-statement",
+          "original": "./clickhouse-http-transport.js"
         }
       ],
       "format": "esm"
@@ -12178,8 +12188,11 @@
         "src/core/schema-graph.ts": {
           "bytesInOutput": 4632
         },
+        "src/net/clickhouse-http-transport.ts": {
+          "bytesInOutput": 893
+        },
         "src/net/ch-client.ts": {
-          "bytesInOutput": 9850
+          "bytesInOutput": 9509
         },
         "src/editor/editor-port.ts": {
           "bytesInOutput": 247
@@ -12200,7 +12213,7 @@
           "bytesInOutput": 611
         },
         "node_modules/@codemirror/view/dist/index.js": {
-          "bytesInOutput": 186289
+          "bytesInOutput": 186295
         },
         "node_modules/@lezer/common/dist/index.js": {
           "bytesInOutput": 20372
@@ -12719,7 +12732,7 @@
           "bytesInOutput": 2651
         }
       },
-      "bytes": 1868795
+      "bytes": 1869353
     }
   }
 }

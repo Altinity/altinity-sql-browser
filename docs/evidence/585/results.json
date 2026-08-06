@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-06T04:13:35.239Z",
+  "generatedAt": "2026-08-06T14:52:00.852Z",
   "dependency": {
     "name": "@clickhouse/client-web",
     "declaredRange": "1.23.1",
@@ -29,7 +29,7 @@
   "baselineGate": {
     "ran": true,
     "pass": true,
-    "tail": "undle-order.ts  |     100 |    97.56 |     100 |     100 | 17                \n  ...d-document.ts |     100 |    94.68 |     100 |     100 | 30,50,104,109,117 \n  ...ndle-codec.ts |     100 |    93.54 |     100 |     100 | 99,121,156,162    \n  ...n-resolver.ts |     100 |    99.02 |     100 |     100 | 160               \n  ...gin-badges.ts |     100 |    92.59 |     100 |     100 | 49,97,107,140     \n  ...-semantics.ts |     100 |    94.19 |     100 |     100 | ...95-398,403,444 \n src/editor        |     100 |    95.74 |     100 |     100 |                   \n  ...or-adapter.ts |     100 |    97.44 |     100 |     100 | 387-388,420-423   \n  ...on-adapter.ts |     100 |    92.59 |     100 |     100 | 85,121,156,239    \n  spec-editor.ts   |     100 |    91.48 |     100 |     100 | ...89,246,257-262 \n  ...on-context.ts |     100 |    96.31 |     100 |     100 | ...17,135,158,274 \n src/net           |     100 |     98.2 |     100 |     100 |                   \n  ch-client.ts     |     100 |    97.48 |     100 |     100 | ...29,543,595,856 \n src/ui            |     100 |    95.52 |     100 |     100 |                   \n  app-shell.ts     |     100 |       95 |     100 |     100 | 127               \n  app.ts           |     100 |    90.41 |     100 |     100 | ...2256,2301-2303 \n  chart-render.ts  |     100 |    98.21 |     100 |     100 | 163               \n  combobox.ts      |     100 |    98.41 |     100 |     100 | 291               \n  ...nteraction.ts |     100 |    93.98 |     100 |     100 | ...66,186,200,230 \n  ...e-gestures.ts |     100 |    97.74 |     100 |     100 | 206,263,299,404   \n  ...board-tree.ts |     100 |    94.67 |     100 |     100 | ...1309,1326-1342 \n  dashboard.ts     |     100 |    91.93 |     100 |     100 | ...2598,2633,2735 \n  dialog-shell.ts  |     100 |    96.22 |     100 |     100 | 113,312           \n  dom.ts           |     100 |    98.38 |     100 |     100 | 122               \n  explain-graph.ts |     100 |    94.97 |     100 |     100 | ...91,546-547,810 \n  file-menu.ts     |     100 |    95.23 |     100 |     100 | ...-748,1041,1182 \n  ...ssign-menu.ts |     100 |    93.75 |     100 |     100 | 112,117           \n  login.ts         |     100 |       93 |     100 |     100 | ...72,483,494-500 \n  panels.ts        |     100 |    96.18 |     100 |     100 | ...78,541,607-609 \n  popover.ts       |     100 |       98 |     100 |     100 | 131               \n  results.ts       |     100 |    94.35 |     100 |     100 | ...1069,1198,1323 \n  schema-detail.ts |     100 |    98.33 |     100 |     100 | 196               \n  shortcuts.ts     |     100 |    93.71 |     100 |     100 | ...15-224,260,277 \n  sidebar-upper.ts |     100 |       90 |     100 |     100 | 70                \n  variable-bar.ts  |     100 |    97.24 |     100 |     100 | 468,504,626       \n src/ui/workbench  |     100 |    98.58 |     100 |     100 |                   \n  ...controller.ts |     100 |    97.95 |     100 |     100 | 336,365           \n  ...ch-session.ts |     100 |    98.55 |     100 |     100 | 342,434,481       \n  ...ench-shell.ts |     100 |    97.56 |     100 |     100 | 222               \n src/workspace     |     100 |     98.1 |     100 |     100 |                   \n  ...rt-planner.ts |     100 |    98.61 |     100 |     100 | 184               \n  ...-workspace.ts |     100 |    96.87 |     100 |     100 | 144,149           \n  ...repository.ts |     100 |    94.82 |     100 |     100 | 151,182-187       \n-------------------|---------|----------|---------|---------|-------------------\n\n=============================== Coverage summary ===============================\nStatements   : 100% ( 20837/20837 )\nBranches     : 97.14% ( 14731/15164 )\nFunctions    : 100% ( 4142/4142 )\nLines        : 100% ( 16861/16861 )\n================================================================================\n\n> altinity-sql-browser@0.7.2 build\n> node build/build.mjs\n\nbuilt dist/sql.html (2125730 bytes, incl. 88660 bytes of inlined woff2)\n"
+    "tail": "undle-order.ts  |     100 |    97.56 |     100 |     100 | 17                \n  ...d-document.ts |     100 |    94.68 |     100 |     100 | 30,50,104,109,117 \n  ...ndle-codec.ts |     100 |    93.54 |     100 |     100 | 99,121,156,162    \n  ...n-resolver.ts |     100 |    99.02 |     100 |     100 | 160               \n  ...gin-badges.ts |     100 |    92.59 |     100 |     100 | 49,97,107,140     \n  ...-semantics.ts |     100 |    94.19 |     100 |     100 | ...95-398,403,444 \n src/editor        |     100 |    95.74 |     100 |     100 |                   \n  ...or-adapter.ts |     100 |    97.44 |     100 |     100 | 387-388,420-423   \n  ...on-adapter.ts |     100 |    92.59 |     100 |     100 | 85,121,156,239    \n  spec-editor.ts   |     100 |    91.48 |     100 |     100 | ...89,246,257-262 \n  ...on-context.ts |     100 |    96.31 |     100 |     100 | ...17,135,158,274 \n src/net           |     100 |    98.23 |     100 |     100 |                   \n  ch-client.ts     |     100 |    97.32 |     100 |     100 | ...69,583,635,896 \n src/ui            |     100 |    95.52 |     100 |     100 |                   \n  app-shell.ts     |     100 |       95 |     100 |     100 | 127               \n  app.ts           |     100 |    90.41 |     100 |     100 | ...2256,2301-2303 \n  chart-render.ts  |     100 |    98.21 |     100 |     100 | 163               \n  combobox.ts      |     100 |    98.41 |     100 |     100 | 291               \n  ...nteraction.ts |     100 |    93.98 |     100 |     100 | ...66,186,200,230 \n  ...e-gestures.ts |     100 |    97.74 |     100 |     100 | 206,263,299,404   \n  ...board-tree.ts |     100 |    94.67 |     100 |     100 | ...1309,1326-1342 \n  dashboard.ts     |     100 |    91.93 |     100 |     100 | ...2598,2633,2735 \n  dialog-shell.ts  |     100 |    96.22 |     100 |     100 | 113,312           \n  dom.ts           |     100 |    98.38 |     100 |     100 | 122               \n  explain-graph.ts |     100 |    94.97 |     100 |     100 | ...91,546-547,810 \n  file-menu.ts     |     100 |    95.23 |     100 |     100 | ...-748,1041,1182 \n  ...ssign-menu.ts |     100 |    93.75 |     100 |     100 | 112,117           \n  login.ts         |     100 |       93 |     100 |     100 | ...72,483,494-500 \n  panels.ts        |     100 |    96.18 |     100 |     100 | ...78,541,607-609 \n  popover.ts       |     100 |       98 |     100 |     100 | 131               \n  results.ts       |     100 |    94.35 |     100 |     100 | ...1069,1198,1323 \n  schema-detail.ts |     100 |    98.33 |     100 |     100 | 196               \n  shortcuts.ts     |     100 |    93.71 |     100 |     100 | ...15-224,260,277 \n  sidebar-upper.ts |     100 |       90 |     100 |     100 | 70                \n  variable-bar.ts  |     100 |    97.24 |     100 |     100 | 468,504,626       \n src/ui/workbench  |     100 |    98.58 |     100 |     100 |                   \n  ...controller.ts |     100 |    97.95 |     100 |     100 | 336,365           \n  ...ch-session.ts |     100 |    98.55 |     100 |     100 | 342,434,481       \n  ...ench-shell.ts |     100 |    97.56 |     100 |     100 | 222               \n src/workspace     |     100 |     98.1 |     100 |     100 |                   \n  ...rt-planner.ts |     100 |    98.61 |     100 |     100 | 184               \n  ...-workspace.ts |     100 |    96.87 |     100 |     100 | 144,149           \n  ...repository.ts |     100 |    94.82 |     100 |     100 | 151,182-187       \n-------------------|---------|----------|---------|---------|-------------------\n\n=============================== Coverage summary ===============================\nStatements   : 100% ( 20850/20850 )\nBranches     : 97.14% ( 14735/15168 )\nFunctions    : 100% ( 4150/4150 )\nLines        : 100% ( 16870/16870 )\n================================================================================\n\n> altinity-sql-browser@0.7.2 build\n> node build/build.mjs\n\nbuilt dist/sql.html (2126288 bytes, incl. 88660 bytes of inlined woff2)\n"
   },
   "baseline": {
     "selfCheck": {
@@ -38,14 +38,14 @@
     },
     "normal": {
       "js": {
-        "raw": 1868798,
-        "gzip": 508285,
-        "brotli": 418920
+        "raw": 1869356,
+        "gzip": 508495,
+        "brotli": 418885
       },
       "artifact": {
-        "raw": 2125810,
-        "gzip": 623575,
-        "brotli": 527504
+        "raw": 2126368,
+        "gzip": 623764,
+        "brotli": 527762
       },
       "css": {
         "raw": 236956,
@@ -55,17 +55,17 @@
     },
     "normalized": {
       "js": {
-        "raw": 1868798,
-        "gzip": 508283,
-        "brotli": 419085
+        "raw": 1869356,
+        "gzip": 508492,
+        "brotli": 418860
       },
       "artifact": {
-        "raw": 2125810,
-        "gzip": 623569,
-        "brotli": 527556
+        "raw": 2126368,
+        "gzip": 623760,
+        "brotli": 527728
       },
       "unminifiedJs": {
-        "raw": 3672262
+        "raw": 3673333
       }
     }
   },
@@ -73,14 +73,14 @@
   "candidate": {
     "normal": {
       "js": {
-        "raw": 1930228,
-        "gzip": 524823,
-        "brotli": 432307
+        "raw": 1930786,
+        "gzip": 524994,
+        "brotli": 432594
       },
       "artifact": {
-        "raw": 2198435,
-        "gzip": 644351,
-        "brotli": 544261
+        "raw": 2198993,
+        "gzip": 644529,
+        "brotli": 544609
       },
       "css": {
         "raw": 236956,
@@ -90,30 +90,30 @@
     },
     "normalized": {
       "js": {
-        "raw": 1930228,
-        "gzip": 524818,
-        "brotli": 432593
+        "raw": 1930786,
+        "gzip": 524989,
+        "brotli": 432500
       },
       "artifact": {
-        "raw": 2198435,
-        "gzip": 644345,
-        "brotli": 544270
+        "raw": 2198993,
+        "gzip": 644524,
+        "brotli": 544148
       },
       "unminifiedJs": {
-        "raw": 3809575
+        "raw": 3810646
       }
     },
     "officialClientAttributedBytes": 53846,
     "selfContained": true,
-    "sha": "3dc49c5fa1c61aec3782d64e2ab34bdc1c1743b4",
+    "sha": "1269e5deaaf6450b5382a39d6e097f88b45fe793",
     "dirty": false
   },
   "bundleDelta": {
     "gzip": {
-      "base": 623569,
-      "current": 644345,
-      "abs": 20776,
-      "pct": 3.3317884628645746
+      "base": 623760,
+      "current": 644524,
+      "abs": 20764,
+      "pct": 3.32884442734385
     },
     "officialClientAttributedBytes": 53846
   },
@@ -355,6 +355,21 @@
       "status": "passed",
       "matchedTestCount": 1
     },
+    "per-request-auth-no-reconstruction": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "epoch-fence-immediate-pre-fetch": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 2
+    },
+    "cancellation-lease-frozen-credential": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
     "server-cancellation-kill-query": {
       "row:proposed-oldest-oss": {
         "executed": true,
@@ -486,37 +501,25 @@
         "status": "passed",
         "matchedTestCount": 2
       }
-    },
-    "per-request-auth-no-reconstruction": {
-      "executed": true,
-      "status": "passed",
-      "matchedTestCount": 1
-    },
-    "epoch-fence-immediate-pre-fetch": {
-      "executed": true,
-      "status": "passed",
-      "matchedTestCount": 2
-    },
-    "cancellation-lease-frozen-credential": {
-      "executed": true,
-      "status": "passed",
-      "matchedTestCount": 1
     }
   },
   "deletionEstimate": {
-    "currentGenericLocEligibleForDeletion": 120,
-    "estimatedOfficialAdapterLoc": 182,
+    "currentGenericLocEligibleForDeletion": 131,
+    "estimatedOfficialAdapterLoc": 190,
     "acceptedBridgeGuardLoc": 95,
-    "netExecutableDeletion": -157,
+    "netExecutableDeletion": -154,
     "manifest": {
       "ch-client.ts": {
-        "delete-after-cutover": 120,
-        "rewrite-narrow-adapter": 56,
-        "retain-temporary-bridge": 20,
-        "unrelated-product-operation": 364
+        "delete-after-cutover": 73,
+        "rewrite-narrow-adapter": 67,
+        "unrelated-product-operation": 386,
+        "retain-temporary-bridge": 21
+      },
+      "clickhouse-http-transport.ts": {
+        "delete-after-cutover": 58
       },
       "official-adapter.ts (test-only harness excluded)": {
-        "official-adapter-core": 182
+        "official-adapter-core": 190
       },
       "progress-bridge.ts (physical)": 40,
       "guarded-fetch.ts (physical)": 55,
@@ -618,6 +621,8 @@
         "tests/unit/ch-session-params.test.ts",
         "tests/unit/chart-data.test.ts",
         "tests/unit/chart-render.test.ts",
+        "tests/unit/clickhouse-http-transport.test.ts",
+        "tests/unit/clickhouse-transport-contract.ts",
         "tests/unit/clickhouse-type.test.ts",
         "tests/unit/client-web-spike-policy.test.js",
         "tests/unit/code-viewer.test.ts",
@@ -1086,7 +1091,7 @@
     "applicationFeatureMinimum": "NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6)",
     "liveGateCorroboration": {
       "evaluated": true,
-      "earliestPassingVersion": "26.6.2.160"
+      "earliestPassingVersion": "26.3.16.10001.altinitystable"
     },
     "floors": [
       {
@@ -1099,16 +1104,16 @@
       },
       {
         "source": "earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)",
-        "value": "26.6.2.160"
+        "value": "26.3.16.10001.altinitystable"
       }
     ],
-    "proposedMinimum": "26.6.2.160",
+    "proposedMinimum": "26.3.16.10001.altinitystable",
     "proposedMinimumSource": "earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)",
     "rationale": [
-      "Checked search over 287 files (CI workflows, deploy/, docker-compose.yaml, README.md, docs/, tests/) found no genuine ClickHouse version pin/promise; 10 version-shaped token(s) were found and excluded with a recorded reason (see pinnedVersionScan.benignExclusions) — none is a repository-exercised promise.",
+      "Checked search over 289 files (CI workflows, deploy/, docker-compose.yaml, README.md, docs/, tests/) found no genuine ClickHouse version pin/promise; 10 version-shaped token(s) were found and excluded with a recorded reason (see pinnedVersionScan.benignExclusions) — none is a repository-exercised promise.",
       "Official client node_modules/@clickhouse/client-web/README.md, \"## Compatibility with ClickHouse\" table row \"1.12.0+ | 24.8+\" documents a guaranteed floor of ClickHouse 24.8+.",
       "Application inventory raises the floor to NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6) via: JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns).",
-      "Proposed minimum = max(pinned official-client guaranteed minimum=24.8, application feature/fallback minimum=NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6), earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)=26.6.2.160) = 26.6.2.160 (binding source: earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)).",
+      "Proposed minimum = max(pinned official-client guaranteed minimum=24.8, application feature/fallback minimum=NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6), earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)=26.3.16.10001.altinitystable) = 26.3.16.10001.altinitystable (binding source: earliest version that passed every required hard gate (live matrix, precision corpus, and browser matrix)).",
       "Live-gate corroboration (step 5 of the plan's derivation) has run and is folded in above."
     ]
   },
@@ -2783,12 +2788,12 @@
   "timing": {
     "deterministic": {
       "current": {
-        "firstRowMs": 126,
-        "completedMs": 1263
+        "firstRowMs": 127,
+        "completedMs": 1260
       },
       "official": {
         "firstRowMs": 125,
-        "completedMs": 1259
+        "completedMs": 1257
       }
     },
     "fixture": "delayed-headers-scheduled-rows"
@@ -2934,7 +2939,7 @@
       "browser": "webkit",
       "requested": true,
       "executed": true,
-      "status": "failed",
+      "status": "passed",
       "browserVersion": "26.5"
     },
     "current-altinity-stable/cross-origin/chromium": {
@@ -2963,7 +2968,7 @@
     "auth/epoch parity": "pass",
     "raw/export bytes": "pass",
     "supported-server matrix": "fail",
-    "browser matrix": "fail",
+    "browser matrix": "pass",
     "single-file build": "pass",
     "bundle delta": "measured",
     "net production-code deletion": "fail"
@@ -3017,12 +3022,12 @@
     },
     {
       "title": "Does the client support the proposed minimum?",
-      "answer": "Proposed minimum ClickHouse 26.6.2.160 — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.",
+      "answer": "Proposed minimum ClickHouse 26.3.16.10001.altinitystable — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.",
       "evidence": "docs/evidence/585/support-minimum-analysis.md; results.json.matrixRows"
     },
     {
       "title": "What production code would be deleted?",
-      "answer": "Estimated net executable LOC deletion: -157 (120 eligible - 182 adapter - 95 bridge/guard).",
+      "answer": "Estimated net executable LOC deletion: -154 (131 eligible - 190 adapter - 95 bridge/guard).",
       "evidence": "docs/evidence/585/deletion-estimate.md"
     }
   ]

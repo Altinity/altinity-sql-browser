@@ -4,15 +4,15 @@ Sizes for the self-contained `dist/sql.html` and its inlined parts.
 
 | Artifact | Raw | gzip | Brotli |
 |---|---|---|---|
-| `dist/sql.html` | 2.0 MiB | 609.0 KiB | 515.1 KiB |
-| JS bundle | 1.8 MiB | 496.4 KiB | 409.1 KiB |
+| `dist/sql.html` | 2.0 MiB | 609.1 KiB | 515.4 KiB |
+| JS bundle | 1.8 MiB | 496.6 KiB | 409.1 KiB |
 | CSS (minified) | 231.4 KiB | 106.9 KiB | 103.2 KiB |
 
 ## Ownership (raw contributed output bytes)
 
 | Owner | Bytes | % of JS output |
 |---|---|---|
-| project | 614.8 KiB | 33.7% |
+| project | 615.3 KiB | 33.7% |
 | generated | 446.6 KiB | 24.5% |
 | external | 763.4 KiB | 41.8% |
 
@@ -20,7 +20,7 @@ Sizes for the self-contained `dist/sql.html` and its inlined parts.
 
 | Package | Bytes | % of JS output |
 |---|---|---|
-| `chart.js` | 192.5 KiB | 10.6% |
+| `chart.js` | 192.5 KiB | 10.5% |
 | `@codemirror/view` | 181.9 KiB | 10.0% |
 | `date-fns` | 46.9 KiB | 2.6% |
 | `@codemirror/state` | 45.6 KiB | 2.5% |
@@ -82,7 +82,7 @@ Sizes for the self-contained `dist/sql.html` and its inlined parts.
 | `src/ui/explain-graph.ts` | project | 11.7 KiB | 0.6% |
 | `src/state.ts` | project | 10.6 KiB | 0.6% |
 | `src/ui/shortcuts.ts` | project | 10.1 KiB | 0.6% |
-| `src/net/ch-client.ts` | project | 9.6 KiB | 0.5% |
+| `src/net/ch-client.ts` | project | 9.3 KiB | 0.5% |
 | `src/dashboard/model/workspace-semantics.ts` | project | 8.5 KiB | 0.5% |
 | `node_modules/@lezer/xml/dist/index.js` | external | 8.4 KiB | 0.5% |
 | `src/core/spec-schema.ts` | project | 8.1 KiB | 0.4% |
