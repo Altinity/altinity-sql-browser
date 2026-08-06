@@ -12,6 +12,19 @@ import type { StreamLine } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
 import { sqlString } from '../core/format.js';
+// Issue #585 Phase 1 — the transport seam. `chUrl` moved verbatim to
+// `clickhouse-http-transport.ts`; re-exported here (with its `ChUrlOpts`
+// parameter type) so every existing importer — including
+// `tests/spike/clickhouse-client/current-adapter.ts` — keeps resolving. The
+// generic request-construction/fetch/stream mechanics live in
+// `createHttpTransport`; this module keeps every auth/epoch/retry policy,
+// product operation, and `ChCtx` exactly as before, delegating through the
+// transport instead of calling `chUrl`/`ctx.fetch` directly.
+import { chUrl, createHttpTransport } from './clickhouse-http-transport.js';
+import type { TransportRequest } from './clickhouse-transport.types.js';
+export { chUrl };
+export type { ChUrlOpts } from './clickhouse-http-transport.js';
+export type { ClickHouseTransport, StreamCallbacks, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────
 
@@ -101,33 +114,41 @@ export interface ChJsonResult<T = Record<string, unknown>> {
   data?: T[];
 }
 
-/** `chUrl`'s query-string options. */
-export interface ChUrlOpts {
-  format?: string;
-  extra?: Record<string, string | number>;
-  params?: Record<string, string | number>;
-}
-
-/** Build a ClickHouse HTTP URL with query-string options. Pure. */
-export function chUrl(origin: string, opts: ChUrlOpts = {}): string {
-  const format = opts.format || 'JSONStringsEachRowWithProgress';
-  let url = origin + '?default_format=' + format + '&enable_http_compression=1';
-  for (const [k, v] of Object.entries(opts.extra || {})) {
-    url += '&' + k + '=' + encodeURIComponent(v);
-  }
-  for (const [k, v] of Object.entries(opts.params || {})) {
-    url += '&' + k + '=' + encodeURIComponent(v);
-  }
-  return url;
+/** Delegates unconditionally to the single current transport implementation.
+ * `deps.fetch`/`deps.origin` are accessors reading the LIVE mutable `ctx`
+ * fields per request (never a snapshot) — `ctx.origin` is mutated in place on
+ * sign-in (`connection-session.ts`), so a request issued after that mutation
+ * must observe the new value. `ChCtx` itself gains no new field: there is no
+ * production runtime switch, only this one unconditional wiring (an
+ * injectable composition seam is introduced only when a second
+ * implementation actually exists — Phase 2, which requires a new decision). */
+function transportFor(ctx: ChCtx) {
+  return createHttpTransport({ fetch: () => ctx.fetch, origin: () => ctx.origin });
 }
 
 /**
- * POST `sql` to ClickHouse with one automatic token-refresh retry. Resolves to
- * the raw Response. Throws Error('signed out') after calling ctx.onSignedOut()
- * when authentication cannot be recovered.
+ * POST `request.sql` to ClickHouse with one automatic token-refresh retry.
+ * Resolves to the raw Response. Throws Error('signed out') after calling
+ * ctx.onSignedOut() when authentication cannot be recovered. `request` omits
+ * `authorization` — this function resolves the credential for THIS request
+ * (and its retry) itself; every other `TransportRequest` field is the
+ * caller's request, unchanged.
  */
-export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?: AbortSignal): Promise<Response> {
+export async function authedFetch(ctx: ChCtx, request: Omit<TransportRequest, 'authorization'>): Promise<Response> {
   const requestEpoch = ctx.currentEpoch?.();
+  // Centralized aliasing defense (review finding folded in, pass-5 revision):
+  // snapshot the incoming request's settings/params synchronously HERE, at
+  // entry, before the first await (`ctx.getToken()`) — one mechanism for
+  // every present and future caller, rather than per-call-site defensive
+  // spreads. This preserves today's invocation-time capture (today `chUrl`
+  // serializes both records into the URL string synchronously, before this
+  // function's first await), so a caller that retains and mutates either
+  // record while a token/refresh await is pending cannot change the request
+  // this function already committed to sending — on the initial attempt AND
+  // the one-refresh retry alike.
+  const settings = request.settings ? { ...request.settings } : undefined;
+  const params = request.params ? { ...request.params } : undefined;
+  const { sql, defaultFormat, signal } = request;
   const token = await ctx.getToken();
   // getToken may have awaited a sign-in/sign-out replacement. Its credential
   // belongs to that replacement and this request must not send it.
@@ -141,19 +162,19 @@ export async function authedFetch(ctx: ChCtx, url: string, sql: string, signal?:
   // ctx.authHeader(token) lets the app pick the scheme (Bearer vs Basic);
   // default to Bearer so the seam stays optional.
   const authHeader = ctx.authHeader || ((t: string) => 'Bearer ' + t);
+  const transport = transportFor(ctx);
   for (;;) {
     let resp: Response;
     try {
       // Fence every attempt immediately before the injected side effect. A
       // retry must never send a replacement session's newly-read credential.
+      // (Precision: `transport.send` internally evaluates the REQUIRED-PURE
+      // `deps.origin()`/`deps.fetch()` accessors and builds the URL AFTER
+      // this fence, immediately before the fetch itself — see
+      // `clickhouse-transport.types.ts`'s `TransportDeps` doc comment.)
       const authorization = authHeader(bearer);
       if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
-      resp = await ctx.fetch(url, {
-        method: 'POST',
-        body: sql,
-        headers: { Authorization: authorization },
-        signal,
-      });
+      resp = await transport.send({ sql, defaultFormat, settings, params, authorization, signal });
     } catch (e) {
       // Only a rejected fetch is a transport failure. HTTP failures are normal
       // responses and caller cancellation is deliberately invisible here.
@@ -222,7 +243,7 @@ export async function queryJson<T = Record<string, unknown>>(
   extra?: Record<string, string | number>,
   params?: Record<string, string | number>,
 ): Promise<ChJsonResult<T>> {
-  const resp = await authedFetch(ctx, chUrl(ctx.origin, { format: 'JSON', extra, params }), sql, signal);
+  const resp = await authedFetch(ctx, { sql, defaultFormat: 'JSON', settings: extra, params, signal });
   if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
   return resp.json();
 }
@@ -329,10 +350,14 @@ export async function killQueryWithLease(
 ): Promise<void> {
   if (!queryId) return;
   try {
-    await lease.fetch(chUrl(lease.origin, { format: 'JSON' }), {
-      method: 'POST',
-      body: 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC',
-      headers: { Authorization: lease.authorization },
+    // A one-shot transport built directly from the frozen lease — never
+    // `transportFor(ctx)` / `authedFetch` — so cleanup reads no mutable auth,
+    // token, or refresh state (hard invariant 8).
+    const transport = createHttpTransport({ fetch: () => lease.fetch, origin: () => lease.origin });
+    await transport.send({
+      sql: 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC',
+      defaultFormat: 'JSON',
+      authorization: lease.authorization,
     });
   } catch { /* best-effort */ }
 }
@@ -966,11 +991,12 @@ export interface ExportQueryOptions {
  */
 export async function exportQuery(ctx: ChCtx, sql: string, opts: ExportQueryOptions = {}): Promise<Response> {
   const { queryId, signal, format, params } = opts;
-  const url = chUrl(ctx.origin, {
-    format: format || 'TabSeparatedWithNames',
+  const resp = await authedFetch(ctx, {
+    sql,
+    defaultFormat: format || 'TabSeparatedWithNames',
     params: { ...(queryId ? { query_id: queryId } : {}), ...(params || {}) },
+    signal,
   });
-  const resp = await authedFetch(ctx, url, sql, signal);
   if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
   return resp;
 }
@@ -1039,20 +1065,21 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
   const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0
     ? { max_result_rows: o.resultRowLimit!, result_overflow_mode: 'break' }
     : {};
-  const url = chUrl(ctx.origin, {
-    format: fmtParam,
+  const resp = await authedFetch(ctx, {
+    sql,
+    defaultFormat: fmtParam,
     // wait_end_of_query buffers the whole response server-side so the HTTP
     // status reflects errors — but it defeats progressive streaming (first rows
     // wait for the query to finish: ~16s vs ~0.5s on a 1.3M-row scan). Keep it
     // only for raw modes (read whole anyway); the streaming Table path drops it
     // and surfaces mid-stream errors via the in-band `exception` line instead.
-    extra: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), ...cap, add_http_cors_header: 1 },
+    settings: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), ...cap, add_http_cors_header: 1 },
     // Tagging the request with a query_id lets Cancel issue KILL QUERY for it.
     // Caller-supplied params (o.params) ride alongside — e.g. multiquery SELECTs
     // add max_result_rows / result_overflow_mode to cap the result server-side.
     params: { ...(o.queryId ? { query_id: o.queryId } : {}), ...(o.params || {}) },
+    signal: o.signal,
   });
-  const resp = await authedFetch(ctx, url, sql, o.signal);
 
   if (!resp.ok) {
     return { error: parseExceptionText(await resp.text()) };
@@ -1060,33 +1087,6 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
   if (!isStreaming) {
     return { raw: await resp.text() };
   }
-  const reader = resp.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines[lines.length - 1];
-    for (const line of lines.slice(0, -1)) {
-      if (!line) continue;
-      let json: StreamLine;
-      try {
-        json = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      o.onLine && o.onLine(json);
-    }
-    o.onChunk && o.onChunk();
-  }
-  if (buffer.trim()) {
-    try {
-      o.onLine && o.onLine(JSON.parse(buffer));
-    } catch {
-      /* trailing partial line */
-    }
-  }
+  await transportFor(ctx).streamLines(resp.body!, { onLine: o.onLine, onChunk: o.onChunk });
   return { streamed: true };
 }
