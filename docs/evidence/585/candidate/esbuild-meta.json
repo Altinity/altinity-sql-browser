@@ -7164,8 +7164,13 @@
       ],
       "format": "esm"
     },
+    "src/net/clickhouse-http-transport.ts": {
+      "bytes": 3807,
+      "imports": [],
+      "format": "esm"
+    },
     "src/net/ch-client.ts": {
-      "bytes": 52543,
+      "bytes": 55641,
       "imports": [
         {
           "path": "src/core/stream.ts",
@@ -7181,6 +7186,11 @@
           "path": "src/core/format.ts",
           "kind": "import-statement",
           "original": "../core/format.js"
+        },
+        {
+          "path": "src/net/clickhouse-http-transport.ts",
+          "kind": "import-statement",
+          "original": "./clickhouse-http-transport.js"
         }
       ],
       "format": "esm"
@@ -12747,7 +12757,7 @@
           "bytesInOutput": 420
         },
         "src/core/recent-values.ts": {
-          "bytesInOutput": 1352
+          "bytesInOutput": 1356
         },
         "src/core/state-codec.ts": {
           "bytesInOutput": 960
@@ -12830,8 +12840,11 @@
         "src/core/schema-graph.ts": {
           "bytesInOutput": 4642
         },
+        "src/net/clickhouse-http-transport.ts": {
+          "bytesInOutput": 895
+        },
         "src/net/ch-client.ts": {
-          "bytesInOutput": 9860
+          "bytesInOutput": 9519
         },
         "src/editor/editor-port.ts": {
           "bytesInOutput": 247
@@ -13383,7 +13396,7 @@
           "bytesInOutput": 169
         }
       },
-      "bytes": 1930225
+      "bytes": 1930783
     }
   }
 }

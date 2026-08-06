@@ -1,25 +1,38 @@
 # Future production deletion estimate (plan §28)
 
 Estimate only — actual deletion is Phase 4, per plan §4/§28. Computed mechanically
-from `src/net/ch-client.ts`'s own top-level symbol boundaries (see `run-matrix.mjs`'s
-`CH_CLIENT_CLASSIFICATION` data table) so the figures stay tied to the real file rather
-than a hand-typed guess; an unclassified symbol makes `run-matrix.mjs` throw instead of
-silently under/over-counting.
+from `src/net/ch-client.ts`'s and `src/net/clickhouse-http-transport.ts`'s own top-level
+symbol boundaries (see `run-matrix.mjs`'s `CH_CLIENT_CLASSIFICATION`/
+`HTTP_TRANSPORT_CLASSIFICATION` data tables) so the figures stay tied to the real files
+rather than a hand-typed guess; an unclassified symbol, or a classification-table entry
+that no longer matches anything, makes `run-matrix.mjs` throw instead of silently under/
+over-counting in either direction.
 
 ## `src/net/ch-client.ts` buckets (physical LOC per top-level symbol range)
 
 | Bucket | Physical LOC |
 |---|---|
-| `delete-after-cutover` | 120 |
-| `rewrite-narrow-adapter` | 56 |
-| `retain-temporary-bridge` | 20 |
-| `unrelated-product-operation` | 364 |
+| `delete-after-cutover` | 73 |
+| `rewrite-narrow-adapter` | 67 |
+| `unrelated-product-operation` | 386 |
+| `retain-temporary-bridge` | 21 |
+
+## `src/net/clickhouse-http-transport.ts` buckets (physical LOC per top-level symbol range)
+
+Issue #585 Phase 1 (PR #621) moved `chUrl` (+ the progress-line stream-read loop and the
+transport factory) out of `ch-client.ts` into this file — classified here on its own so it
+stays tied to the real file, then combined with `ch-client.ts`'s own `delete-after-cutover`
+bucket below for the net-deletion formula.
+
+| Bucket | Physical LOC |
+|---|---|
+| `delete-after-cutover` | 58 |
 
 ## Other named responsibilities
 
 | Responsibility | Final owner / bucket | Physical LOC |
 |---|---|---|
-| `tests/spike/clickhouse-client/official-adapter.ts` production-shaped core (`OfficialConnection`/`createOfficialConnection`/`officialAuthFor`/`runOfficial`; spike-test-only harness excluded) | estimated official adapter | 182 |
+| `tests/spike/clickhouse-client/official-adapter.ts` production-shaped core (`OfficialConnection`/`createOfficialConnection`/`officialAuthFor`/`runOfficial`; spike-test-only harness excluded) | estimated official adapter | 190 |
 | `tests/spike/clickhouse-client/progress-bridge.ts` | accepted narrow bridge | 40 (34 transformed executable) |
 | `tests/spike/clickhouse-client/guarded-fetch.ts` | accepted narrow guard | 55 (58 transformed executable) |
 | `src/core/stream.ts` (whole file) | retain as SQL Browser policy — normalized meta/row/progress/error representation, unaffected by transport choice | 222 |
@@ -34,15 +47,19 @@ with a raw, comment-and-blank-INCLUSIVE line-range count for the ch-client.ts/
 official-adapter.ts terms, which inflated those two terms (concentrated in
 comment-heavy functions like `runOfficial`) relative to the bridge/guard terms.
 
+Issue #585 Phase 1 (PR #621) split the current generic-transport surface across TWO files —
+`ch-client.ts`'s own `delete-after-cutover` bucket plus `clickhouse-http-transport.ts`'s
+(where `chUrl` now lives); the formula's first term is their SUM, not `ch-client.ts` alone.
+
 ```text
 current generic physical LOC eligible for deletion
-  = 120   (ch-client.ts "delete-after-cutover" bucket)
+  = 131   (ch-client.ts "delete-after-cutover" bucket + clickhouse-http-transport.ts "delete-after-cutover" bucket)
 - estimated official adapter physical LOC
-  = 182   (official-adapter.ts production-shaped core)
+  = 190   (official-adapter.ts production-shaped core)
 - accepted narrow bridge/guard physical LOC
   = 95   (progress-bridge.ts + guarded-fetch.ts)
 = estimated net physical LOC deletion
-  = -157
+  = -154
 ```
 
 Net deletion is NOT positive — an Accepted ADR requires positive net deletion (plan §30 "Mark Accepted only if ... future net deletion is positive").

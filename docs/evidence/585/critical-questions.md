@@ -50,12 +50,12 @@ Evidence: tests/spike/clickhouse-client/parity.test.ts retry-safety block
 
 ## Does the client support the proposed minimum?
 
-> Proposed minimum ClickHouse 26.6.2.160 — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.
+> Proposed minimum ClickHouse 26.3.16.10001.altinitystable — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.
 
 Evidence: docs/evidence/585/support-minimum-analysis.md; results.json.matrixRows
 
 ## What production code would be deleted?
 
-> Estimated net executable LOC deletion: -157 (120 eligible - 182 adapter - 95 bridge/guard).
+> Estimated net executable LOC deletion: -154 (131 eligible - 190 adapter - 95 bridge/guard).
 
 Evidence: docs/evidence/585/deletion-estimate.md

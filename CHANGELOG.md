@@ -18,13 +18,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   transport, and recorded ADR-0005's evidence-based **Rejected** decision:
   the supported-server matrix fails on both proposed-oldest ClickHouse
   24.8.x rows (a genuine server-side meta-line gap predating ClickHouse
-  GitHub PR #74181, affecting current production code equally), the browser
-  matrix records one isolated but unclassified WebKit failure (not asserted
-  as a confirmed root cause), and estimated net production-code deletion is
-  **-157 physical LOC** (not positive; every term measured by one
-  consistent comment/blank-stripped metric). Production ClickHouse transport
-  behavior is unchanged — `src/net/ch-client.ts` remains authoritative, and
-  no production cutover occurred.
+  GitHub PR #74181, affecting current production code equally), and
+  estimated net production-code deletion is not positive. Production
+  ClickHouse transport behavior is unchanged — `src/net/ch-client.ts`
+  remains authoritative, and no production cutover occurred. (The original
+  recording also counted a third failing gate, a browser-matrix WebKit
+  failure, and an estimated **-157 physical LOC** deletion figure — both
+  since corrected, see the `### Fixed` entry below and the ADR's own
+  "Evidence correction addendum" section.)
 - **#585 Phase 1: internal transport seam, no behavior change.** Defined a
   narrow SQL Browser ClickHouse-transport contract
   (`src/net/clickhouse-transport.types.ts`: `ClickHouseTransport`,
@@ -347,6 +348,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   adapter refactor — no user-visible behavior changes.
 
 ### Fixed
+- **#585's evidence has been regenerated with the WebKit flaky-test fix in place, and a second, unrelated evidence-generation bug found along the way is also fixed.** Regenerating `docs/evidence/585/` with the flaky-test fix below in place flipped the browser-matrix gate to `pass` (16/16, reproduced across two independent full-matrix reruns) and, as a direct consequence, moved the proposed ClickHouse version minimum from `26.6.2.160` down to the earlier `26.3.16.10001.altinitystable` (that row no longer needs excluding). It also surfaced the net-deletion LOC estimate moving the wrong direction (-157 → -192), traced to a second bug: `run-matrix.mjs`'s symbol-classification regex only ever matched `export`-prefixed declarations, so several helpers that lost their `export` keyword during #585 Phase 1's file restructuring (`isAbort`, `errMessage`, `isCurrentEpoch`, `staleEpochAbort`, `querySystemAware`, `loadDataLakeCatalogTableNames`, plus `chUrl` genuinely relocating to the new `src/net/clickhouse-http-transport.ts`) went uncounted or misattributed with no error raised. The regex now matches top-level declarations whether exported or not, and a new symmetric drift guard throws when a classification-table entry stops matching anything — which immediately caught one more pre-existing dead entry (`OfficialConnection`, a type-only interface never actually matched) and two more always-unexported symbols the old mechanism had always missed (`transportFor`, `DOC_PROBE_TABLE_NAMES`; plus `classifyError`/`flattenHeaders` in the spike's `official-adapter.ts`). The corrected estimate is **-154 physical LOC** (131 eligible − 190 adapter − 95 bridge/guard) — close to the originally-recorded -157, confirming the Rejected conclusion on this gate held for the right reasons all along, not the transient miscounting Phase 1's file split introduced. `docs/ADR-0005-clickhouse-web-client.md` gains an "Evidence correction addendum" documenting both fixes; the Rejected decision itself is unchanged — the supported-server-matrix gate (confirmed-live 24.8.x incompatibility) fails independently of either correction.
 - **#585's "isolated but unclassified" WebKit browser-matrix flake is now understood, and no longer misreported as a blank hard-gate failure.** Root-cause research (0/38 reproductions across a narrow rerun, a full 4-row WebKit rerun, and a rerun under artificial CPU stress) confirmed the one failing cell (`current-altinity-stable`/same-origin/webkit) is Docker-contention flakiness specific to this sandbox's amd64-emulated 4-container boot order — not a genuine WebKit/`@clickhouse/client-web` incompatibility — and that the evidence's blank "Failure detail" column was itself a retrofit-ordering artifact: the capture code was added after the one live run that produced the failure, and `docs/evidence/585/results.json` was never regenerated since. `tests/spike/clickhouse-client/playwright.config.js` now retries (`retries: 2`, `trace: 'retain-on-failure'`), and `run-matrix.mjs`'s evidence generator records a passed-after-retry cell as its own `'flaky'` status with full per-spec detail attached — never silently folded into a clean `'passed'` (which would launder the retry) nor left blank like a `'failed'` with no detail. Also closes three adjacent observability gaps found live during this investigation: `spike-server.mjs` now logs its own caught errors to stderr instead of discarding them (never to the client, never headers/bodies); `run-matrix.mjs` threads Playwright's top-level `pw.errors[]` into whole-project/webServer-level failures; captured error text has ANSI escape codes stripped at capture time. `docs/evidence/585/` and ADR-0005's Rejected decision are unchanged by this fix alone — two other hard gates fail independently (the confirmed 24.8.x server-matrix incompatibility, and the LOC-based deletion estimate) — regenerating the committed evidence with this fix in place is tracked separately.
 - **`sql.demo.altinity.cloud` couldn't reach any host via "Advanced — connect to
   another server."** The chart-default `connectSrc` bounds CSP `connect-src` to
