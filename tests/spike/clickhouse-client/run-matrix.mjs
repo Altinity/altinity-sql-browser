@@ -544,6 +544,56 @@ export function collectBrowserFailureDetail(pw) {
   return out;
 }
 
+/** Classify ONE `results.browserMatrix` cell from a single browser project's
+ * Playwright JSON-report state. Three distinct, never-conflated cases:
+ *
+ *  1. `reportAvailable` is false — the JSON report itself never came into
+ *     existence (e.g. the webServer never came up and Playwright wrote
+ *     nothing). The blanket per-project `allPassed` boolean is the only
+ *     information that exists, so the cell inherits it directly.
+ *  2. The report exists AND contains a suite matching this exact
+ *     `rowOriginKey` (`rowOriginResults` has an own entry for it) — per-cell
+ *     granularity from the report is authoritative.
+ *  3. The report exists but has NO suite for this exact `rowOriginKey` —
+ *     e.g. a whole-file collection/hook error Playwright records as a
+ *     top-level `errors` entry rather than a per-suite failure, so
+ *     `pw.stats.unexpected` can read 0 even though this exact row/origin
+ *     never actually ran.
+ *
+ * A P2 review finding (issue #585 Phase 0) caught case 3 silently falling
+ * into case 1's blanket signal — `results.browserMatrix[key].executed` was
+ * set to `true` and its `status` to the PROJECT-WIDE `allPassed` value even
+ * though this specific row/origin was never corroborated, which let
+ * `selectEarliestPassingVersion` treat a row as having cleared its browser
+ * hard gate on a fabricated per-cell pass. Case 3 must never be reported as
+ * `executed: true` — it is reported `executed: false` with a distinct
+ * `'no-matching-suite-in-report'` status, which `validate-evidence.mjs`'s
+ * existing "has not executed" check already treats as missing evidence
+ * (never a pass), and which `selectEarliestPassingVersion`'s
+ * `v.executed && v.status === 'passed'` gate already excludes. */
+export function classifyBrowserMatrixCell({
+  reportAvailable, rowOriginResults, rowOriginKey, allPassed, failureDetailByRowOrigin,
+}) {
+  if (!reportAvailable) {
+    return { executed: true, status: allPassed ? 'passed' : 'failed' };
+  }
+  if (rowOriginResults && rowOriginKey in rowOriginResults) {
+    const passed = rowOriginResults[rowOriginKey];
+    const cell = { executed: true, status: passed ? 'passed' : 'failed' };
+    // Compact, durable failure record (plan §29's evidence-must-not-discard-
+    // detail rule) — present only for a genuine failure with per-row/origin
+    // detail available; absent (never a misleading empty array) otherwise.
+    if (!passed && failureDetailByRowOrigin?.[rowOriginKey]) {
+      cell.failureDetail = failureDetailByRowOrigin[rowOriginKey];
+    }
+    return cell;
+  }
+  // The report exists, but no suite matched this exact row/origin — this
+  // cell cannot be corroborated per-cell; it must NEVER inherit the
+  // project-wide blanket boolean (that is the exact P2 review finding).
+  return { executed: false, status: 'no-matching-suite-in-report' };
+}
+
 /** Live-only scenario ids (no fault-server fixture — need a real server;
  * plan §17/§22/§23) mapped the same way, against `live-parity.test.ts` /
  * `live-sessions.test.ts`'s full titles. These are NOT in scenarios.ts
@@ -647,7 +697,13 @@ const OFFICIAL_ADAPTER_CORE_CLASSIFICATION = {
   runOfficial: 'official-adapter-core',
 };
 
-async function computeDeletionEstimate() {
+// Exported (matching support-minimum.mjs's own precedent, see the comment
+// above deriveProposedMinimum's import) so a one-off, evidence-only
+// regeneration of docs/evidence/585/deletion-estimate.md — e.g. after
+// official-adapter.ts's production-shaped core changes, with no Docker/
+// Playwright rerun required — can call it directly without booting the
+// entire matrix as a side effect of importing this module.
+export async function computeDeletionEstimate() {
   const chClientPath = join(repoRoot, 'src/net/ch-client.ts');
   const chClientBuckets = await classifyFunctionRanges(chClientPath, CH_CLIENT_CLASSIFICATION);
   const officialAdapterPath = join(spikeDir, 'official-adapter.ts');
@@ -684,7 +740,7 @@ async function computeDeletionEstimate() {
   };
 }
 
-function renderDeletionEstimateMd(d) {
+export function renderDeletionEstimateMd(d) {
   const L = [];
   L.push('# Future production deletion estimate (plan §28)');
   L.push('');
@@ -755,6 +811,38 @@ function renderDeletionEstimateMd(d) {
 // import and call it directly without importing this whole orchestrator
 // (which runs its `main()` unconditionally on import).
 
+/** Compare two ClickHouse version strings ("MAJOR.MINOR.PATCH.BUILD[.suffix]")
+ * numerically, dot-segment by dot-segment — NEVER lexicographically. A P2
+ * review finding (issue #585 Phase 0): `selectEarliestPassingVersion` used to
+ * compare raw version strings with JS `<`, which is plain lexicographic
+ * (character-code) ordering — `'26.10.1.1' < '26.9.1.1'` is `true` as
+ * strings (because `'1' < '9'` character-wise), backwards from the real,
+ * numeric version order. ClickHouse already produces exactly this
+ * digit-count pattern across real minor lines (24.9 -> 24.10 -> 24.11 ->
+ * 24.12 all exist), so this was not a theoretical risk. Each segment is
+ * compared as an integer when BOTH sides parse as one; a segment that
+ * doesn't (e.g. the trailing `altinitystable` suffix) falls back to a plain
+ * string compare for THAT segment only, so `"24.8.14.10547.altinitystable"`
+ * still compares its leading numeric segments numerically. Returns a
+ * negative/zero/positive number exactly like a standard comparator. */
+export function compareClickHouseVersions(a, b) {
+  const as = String(a).split('.');
+  const bs = String(b).split('.');
+  const len = Math.max(as.length, bs.length);
+  for (let i = 0; i < len; i += 1) {
+    const av = as[i] ?? '';
+    const bv = bs[i] ?? '';
+    const an = /^\d+$/.test(av) ? Number(av) : NaN;
+    const bn = /^\d+$/.test(bv) ? Number(bv) : NaN;
+    if (Number.isNaN(an) || Number.isNaN(bn)) {
+      if (av !== bv) return av < bv ? -1 : 1;
+    } else if (an !== bn) {
+      return an - bn;
+    }
+  }
+  return 0;
+}
+
 /** Select the "earliest version that passed every required hard gate" floor
  * (plan §5 step 5) — MUST be called only after BOTH `results.matrixRows`
  * (live-suite + precision corpus, per row) AND `results.browserMatrix`
@@ -794,7 +882,7 @@ export function selectEarliestPassingVersion(results, matrixJson) {
     const browserGatePassed = requiredBrowserEntries.every((v) => v.executed && v.status === 'passed');
     if (!browserGatePassed) continue;
 
-    if (!earliest || rowVersion < earliest) earliest = rowVersion;
+    if (!earliest || compareClickHouseVersions(rowVersion, earliest) < 0) earliest = rowVersion;
   }
   return earliest;
 }
@@ -863,7 +951,7 @@ export function renderCriticalQuestionsMd(r) {
 
 // ── compatibility-matrix.md ──────────────────────────────────────────────────
 
-function renderCompatibilityMatrixMd(matrixJson, matrixRows, browserMatrix) {
+export function renderCompatibilityMatrixMd(matrixJson, matrixRows, browserMatrix) {
   const L = ['# ClickHouse server / browser compatibility matrix (plan §13/§25)', ''];
   L.push('## Server rows');
   L.push('');
@@ -1346,8 +1434,10 @@ async function main() {
       // Fallback ONLY when the JSON report itself is unavailable (e.g. the
       // webServer never came up and Playwright never wrote a report) — a
       // single overall boolean is the best information available in that
-      // case. When the report exists, per-row/origin granularity (below)
-      // is authoritative and this blanket boolean is never used.
+      // case. `classifyBrowserMatrixCell` (below) is the single place that
+      // decides when this blanket boolean may be used; it is NEVER applied
+      // to a row/origin the report exists but has no matching suite for
+      // (a P2 review finding — see that function's own comment).
       let allPassed = pwResult.ok;
       let rowOriginResults = null;
       let failureDetailByRowOrigin = {};
@@ -1363,19 +1453,10 @@ async function main() {
         if (results.browserMatrix[key].browser === browser) {
           const { row, origin } = results.browserMatrix[key];
           const rowOriginKey = `${row}/${origin}`;
-          const passed = rowOriginResults && rowOriginKey in rowOriginResults
-            ? rowOriginResults[rowOriginKey]
-            : allPassed; // no matching suite found in the report — fall back to the blanket signal
-          results.browserMatrix[key].executed = true;
-          results.browserMatrix[key].status = passed ? 'passed' : 'failed';
-          results.browserMatrix[key].browserVersion = browserVersion;
-          // Compact, durable failure record (plan §29's evidence-must-not-
-          // discard-detail rule, extended per the P2 review finding above) —
-          // present only for a genuine failure with per-row/origin detail
-          // available; absent (never a misleading empty array) otherwise.
-          if (!passed && failureDetailByRowOrigin[rowOriginKey]) {
-            results.browserMatrix[key].failureDetail = failureDetailByRowOrigin[rowOriginKey];
-          }
+          const cell = classifyBrowserMatrixCell({
+            reportAvailable: rowOriginResults !== null, rowOriginResults, rowOriginKey, allPassed, failureDetailByRowOrigin,
+          });
+          Object.assign(results.browserMatrix[key], cell, { browserVersion });
         }
       }
       if (browserVersion !== 'unknown') {

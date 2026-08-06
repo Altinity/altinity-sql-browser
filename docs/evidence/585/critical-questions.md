@@ -56,6 +56,6 @@ Evidence: docs/evidence/585/support-minimum-analysis.md; results.json.matrixRows
 
 ## What production code would be deleted?
 
-> Estimated net executable LOC deletion: -103 (240 eligible - 248 adapter - 95 bridge/guard).
+> Estimated net executable LOC deletion: -121 (240 eligible - 266 adapter - 95 bridge/guard).
 
 Evidence: docs/evidence/585/deletion-estimate.md

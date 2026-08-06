@@ -19,7 +19,7 @@ silently under/over-counting.
 
 | Responsibility | Final owner / bucket | Physical LOC |
 |---|---|---|
-| `tests/spike/clickhouse-client/official-adapter.ts` production-shaped core (`OfficialConnection`/`createOfficialConnection`/`officialAuthFor`/`runOfficial`; spike-test-only harness excluded) | estimated official adapter | 248 |
+| `tests/spike/clickhouse-client/official-adapter.ts` production-shaped core (`OfficialConnection`/`createOfficialConnection`/`officialAuthFor`/`runOfficial`; spike-test-only harness excluded) | estimated official adapter | 266 |
 | `tests/spike/clickhouse-client/progress-bridge.ts` | accepted narrow bridge | 40 (34 transformed executable) |
 | `tests/spike/clickhouse-client/guarded-fetch.ts` | accepted narrow guard | 55 (58 transformed executable) |
 | `src/core/stream.ts` (whole file) | retain as SQL Browser policy — normalized meta/row/progress/error representation, unaffected by transport choice | 222 |
@@ -31,11 +31,11 @@ silently under/over-counting.
 current generic executable LOC eligible for deletion
   = 240   (ch-client.ts "delete-after-cutover" bucket)
 - estimated official adapter executable LOC
-  = 248   (official-adapter.ts production-shaped core)
+  = 266   (official-adapter.ts production-shaped core)
 - accepted narrow bridge/guard executable LOC
   = 95   (progress-bridge.ts + guarded-fetch.ts, physical)
 = estimated net executable LOC deletion
-  = -103
+  = -121
 ```
 
 Net deletion is NOT positive — an Accepted ADR requires positive net deletion (plan §30 "Mark Accepted only if ... future net deletion is positive").

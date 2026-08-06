@@ -87,8 +87,8 @@ evidence:
    pass") applies to flakes and unclassified failures alike, so this
    uncertainty changes nothing about the Rejected decision below.
 3. **Net production-code deletion is not positive.** Mechanically computed
-   as **-103 estimated executable LOC** (240 eligible for deletion from
-   `ch-client.ts`'s `delete-after-cutover` bucket, minus 248 for the
+   as **-121 estimated executable LOC** (240 eligible for deletion from
+   `ch-client.ts`'s `delete-after-cutover` bucket, minus 266 for the
    official-adapter production-shaped core, minus 95 for the accepted narrow
    bridge/guard) — see `docs/evidence/585/deletion-estimate.md` for the full
    bucket breakdown and its own caveat that whole-function-granularity
@@ -110,12 +110,13 @@ symptoms a narrower `exec()`-based bridge (already the accepted design,
   request — the official client, the current custom transport, and any
   narrower bridge over either would all observe the same missing meta line.
   Narrowing the bridge changes nothing about what ClickHouse 24.8 sends.
-- The browser-matrix failure is an **environmental flake**, not a code
-  defect a bridge could fix.
+- The browser-matrix failure is an **isolated but unclassified failure**
+  (see the Decision list above — deliberately not asserted as a confirmed
+  root cause), not a code defect a bridge could fix either way.
 - The deletion-estimate failure is a **structural** consequence of this
   package's guaranteed floor (24.8+) forcing a bridge (`progress-bridge.ts` +
   `guarded-fetch.ts`, 95 physical lines) that, combined with a
-  production-shaped official adapter (248 lines) exceeding the 240
+  production-shaped official adapter (266 lines) exceeding the 240
   deletable lines it would replace, produces negative net deletion. A
   smaller bridge would still need to reproduce authentication, epoch
   fencing, and the progress-format parsing that `authedFetch` +
@@ -356,7 +357,7 @@ Quoted verbatim from `docs/evidence/585/critical-questions.md` (plan §27):
 > `results.json.matrixRows` for the executed oldest-row corroboration.
 >
 > **What production code would be deleted?** Estimated net executable LOC
-> deletion: **-103** (240 eligible - 248 adapter - 95 bridge/guard).
+> deletion: **-121** (240 eligible - 266 adapter - 95 bridge/guard).
 
 ## `JSONStringsEachRowWithProgress` disposition
 
@@ -482,11 +483,11 @@ with `absWorkingDir: repoRoot` on every invocation
 
 | | Baseline (normalized) | Candidate (normalized) | Delta |
 |---|---:|---:|---:|
-| JS raw | 1,868,798 B | 1,930,207 B | +61,409 B |
-| JS gzip | 508,283 B | 524,790 B | +16,507 B |
-| Artifact (HTML) raw | 2,125,810 B | 2,198,414 B | +72,604 B |
-| Artifact gzip | 623,569 B | 644,320 B | **+20,751 B (+3.33%)** |
-| Artifact brotli | 527,556 B | 544,405 B | +16,849 B |
+| JS raw | 1,868,798 B | 1,930,228 B | +61,430 B |
+| JS gzip | 508,283 B | 524,818 B | +16,535 B |
+| Artifact (HTML) raw | 2,125,810 B | 2,198,435 B | +72,625 B |
+| Artifact gzip | 623,569 B | 644,345 B | **+20,776 B (+3.33%)** |
+| Artifact brotli | 527,556 B | 544,270 B | +16,714 B |
 
 `@clickhouse/client-web`-attributed bytes in the candidate metafile: 53,846 B
 (2.8% of the candidate artifact, per
@@ -518,9 +519,9 @@ guess:
 
 ```text
 current generic executable LOC eligible for deletion   =  240
-- estimated official adapter executable LOC             =  248
+- estimated official adapter executable LOC             =  266
 - accepted narrow bridge/guard executable LOC            =   95
-= estimated net executable LOC deletion                 = -103
+= estimated net executable LOC deletion                 = -121
 ```
 
 Net deletion is **not positive** — an Accepted ADR requires positive net
@@ -565,7 +566,7 @@ this specific caveat without needing to redo the rest of the spike.
   re-evaluation that lands `@clickhouse/client-web`'s guaranteed minimum on a
   version line where the meta-line gap and any newer server requirement no
   longer separate; or a smaller sub-function deletion-estimate split that
-  turns the -103 LOC figure positive.
+  turns the -121 LOC figure positive.
 
 ## Alternatives considered
 

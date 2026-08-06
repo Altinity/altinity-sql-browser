@@ -12159,7 +12159,7 @@
       "format": "esm"
     },
     "tests/spike/clickhouse-client/official-adapter.ts": {
-      "bytes": 20812,
+      "bytes": 22881,
       "imports": [
         {
           "path": "node_modules/@clickhouse/client-web/dist/index.js",
@@ -12180,6 +12180,11 @@
           "path": "tests/spike/clickhouse-client/progress-bridge.ts",
           "kind": "import-statement",
           "original": "./progress-bridge.js"
+        },
+        {
+          "path": "src/core/format.ts",
+          "kind": "import-statement",
+          "original": "../../../src/core/format.js"
         }
       ],
       "format": "esm"
@@ -13366,7 +13371,7 @@
           "bytesInOutput": 2651
         },
         "tests/spike/clickhouse-client/official-adapter.ts": {
-          "bytesInOutput": 5368
+          "bytesInOutput": 5389
         },
         "tests/spike/clickhouse-client/normalize.ts": {
           "bytesInOutput": 667
@@ -13378,7 +13383,7 @@
           "bytesInOutput": 169
         }
       },
-      "bytes": 1930204
+      "bytes": 1930225
     }
   }
 }

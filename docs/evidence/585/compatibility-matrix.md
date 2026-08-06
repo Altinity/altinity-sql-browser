@@ -12,21 +12,21 @@
 
 ## Browser / origin matrix
 
-| Row | Origin | Browser | Executed | Status |
-|---|---|---|---|---|
-| proposed-oldest-oss | same-origin | chromium | yes | passed |
-| proposed-oldest-oss | same-origin | webkit | yes | passed |
-| proposed-oldest-oss | cross-origin | chromium | yes | passed |
-| proposed-oldest-oss | cross-origin | webkit | yes | passed |
-| proposed-oldest-altinity-stable | same-origin | chromium | yes | passed |
-| proposed-oldest-altinity-stable | same-origin | webkit | yes | passed |
-| proposed-oldest-altinity-stable | cross-origin | chromium | yes | passed |
-| proposed-oldest-altinity-stable | cross-origin | webkit | yes | passed |
-| current-stable-oss | same-origin | chromium | yes | passed |
-| current-stable-oss | same-origin | webkit | yes | passed |
-| current-stable-oss | cross-origin | chromium | yes | passed |
-| current-stable-oss | cross-origin | webkit | yes | passed |
-| current-altinity-stable | same-origin | chromium | yes | passed |
-| current-altinity-stable | same-origin | webkit | yes | failed |
-| current-altinity-stable | cross-origin | chromium | yes | passed |
-| current-altinity-stable | cross-origin | webkit | yes | passed |
+| Row | Origin | Browser | Executed | Status | Failure detail |
+|---|---|---|---|---|---|
+| proposed-oldest-oss | same-origin | chromium | yes | passed | — |
+| proposed-oldest-oss | same-origin | webkit | yes | passed | — |
+| proposed-oldest-oss | cross-origin | chromium | yes | passed | — |
+| proposed-oldest-oss | cross-origin | webkit | yes | passed | — |
+| proposed-oldest-altinity-stable | same-origin | chromium | yes | passed | — |
+| proposed-oldest-altinity-stable | same-origin | webkit | yes | passed | — |
+| proposed-oldest-altinity-stable | cross-origin | chromium | yes | passed | — |
+| proposed-oldest-altinity-stable | cross-origin | webkit | yes | passed | — |
+| current-stable-oss | same-origin | chromium | yes | passed | — |
+| current-stable-oss | same-origin | webkit | yes | passed | — |
+| current-stable-oss | cross-origin | chromium | yes | passed | — |
+| current-stable-oss | cross-origin | webkit | yes | passed | — |
+| current-altinity-stable | same-origin | chromium | yes | passed | — |
+| current-altinity-stable | same-origin | webkit | yes | failed | — |
+| current-altinity-stable | cross-origin | chromium | yes | passed | — |
+| current-altinity-stable | cross-origin | webkit | yes | passed | — |

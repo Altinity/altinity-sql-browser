@@ -121,11 +121,13 @@ Two roadmap tracks are current:
   meta-line gap in ClickHouse's own streaming JSON formats, predating
   ClickHouse GitHub PR #74181, that affects the *current* production code
   identically, not an official-client defect), the browser matrix (one
-  isolated WebKit flake attributed to sandbox Docker contention, not a
-  genuine defect, still recorded as a failed row per the mechanical
-  no-reinterpreting-a-flake-as-a-pass rule), and net production-code deletion
-  (mechanically estimated at **-103 LOC**, not positive). Phase 0 completed
-  as a fully valid outcome — **no production cutover occurred**, and
+  isolated but unclassified WebKit failure — deliberately NOT asserted as a
+  confirmed Docker-contention root cause, per a review finding that the
+  committed evidence didn't back that attribution — still recorded as a
+  failed row per the mechanical no-reinterpreting-a-flake-as-a-pass rule),
+  and net production-code deletion (mechanically estimated at negative,
+  see `docs/evidence/585/deletion-estimate.md` for the current figure). Phase
+  0 completed as a fully valid outcome — **no production cutover occurred**, and
   `src/net/ch-client.ts` (the current custom transport) **remains
   authoritative**. Phase 1 (separating application policy from the concrete
   transport implementation) remains useful and unblocked on its own merits;

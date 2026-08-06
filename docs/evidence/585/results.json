@@ -73,14 +73,14 @@
   "candidate": {
     "normal": {
       "js": {
-        "raw": 1930207,
-        "gzip": 524795,
-        "brotli": 432522
+        "raw": 1930228,
+        "gzip": 524823,
+        "brotli": 432307
       },
       "artifact": {
-        "raw": 2198414,
-        "gzip": 644323,
-        "brotli": 544328
+        "raw": 2198435,
+        "gzip": 644351,
+        "brotli": 544261
       },
       "css": {
         "raw": 236956,
@@ -90,17 +90,17 @@
     },
     "normalized": {
       "js": {
-        "raw": 1930207,
-        "gzip": 524790,
-        "brotli": 432499
+        "raw": 1930228,
+        "gzip": 524818,
+        "brotli": 432593
       },
       "artifact": {
-        "raw": 2198414,
-        "gzip": 644320,
-        "brotli": 544405
+        "raw": 2198435,
+        "gzip": 644345,
+        "brotli": 544270
       },
       "unminifiedJs": {
-        "raw": 3809359
+        "raw": 3809575
       }
     },
     "officialClientAttributedBytes": 53846,
@@ -109,9 +109,9 @@
   "bundleDelta": {
     "gzip": {
       "base": 623569,
-      "current": 644320,
-      "abs": 20751,
-      "pct": 3.327779283447381
+      "current": 644345,
+      "abs": 20776,
+      "pct": 3.3317884628645746
     },
     "officialClientAttributedBytes": 53846
   },
@@ -503,9 +503,9 @@
   },
   "deletionEstimate": {
     "currentGenericLocEligibleForDeletion": 240,
-    "estimatedOfficialAdapterLoc": 248,
+    "estimatedOfficialAdapterLoc": 266,
     "acceptedBridgeGuardLoc": 95,
-    "netExecutableDeletion": -103,
+    "netExecutableDeletion": -121,
     "manifest": {
       "ch-client.ts": {
         "delete-after-cutover": 240,
@@ -514,7 +514,7 @@
         "unrelated-product-operation": 626
       },
       "official-adapter.ts (test-only harness excluded)": {
-        "official-adapter-core": 248
+        "official-adapter-core": 266
       },
       "progress-bridge.ts (physical)": 40,
       "guarded-fetch.ts (physical)": 55,
@@ -3020,7 +3020,7 @@
     },
     {
       "title": "What production code would be deleted?",
-      "answer": "Estimated net executable LOC deletion: -103 (240 eligible - 248 adapter - 95 bridge/guard).",
+      "answer": "Estimated net executable LOC deletion: -121 (240 eligible - 266 adapter - 95 bridge/guard).",
       "evidence": "docs/evidence/585/deletion-estimate.md"
     }
   ]
