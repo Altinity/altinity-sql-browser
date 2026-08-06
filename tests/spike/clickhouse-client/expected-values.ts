@@ -6,9 +6,34 @@
 // is either a well-known numeric/string boundary (computed by hand / from
 // the ClickHouse type documentation) or ClickHouse's own documented exact
 // text-serialization rule for `JSONStringsEachRowWithProgress`
-// (https://clickhouse.com/docs/interfaces/formats/JSONStringsEachRow — every
-// leaf scalar renders as a JSON string, structure (arrays/tuples/maps) keeps
-// normal JSON container syntax).
+// (https://clickhouse.com/docs/interfaces/formats/JSONStringsEachRow).
+//
+// CORRECTED against a real server (live-precision.test.ts's first-ever run,
+// 2026-08-05, against ClickHouse 26.6.2.160 — re-verified 2026-08-06 during
+// issue #585 Phase 0's evidence review): the header comment above ORIGINALLY
+// claimed "every leaf scalar renders as a JSON string, structure
+// (arrays/tuples/maps) keeps normal JSON container syntax" — i.e. that a
+// nested container's own JSON encoding independently re-stringifies every
+// leaf. That is FALSE for `JSONStringsEachRowWithProgress`/
+// `JSONEachRowWithProgress`. What actually happens: each COLUMN's `row.<col>`
+// value is wrapped in exactly one JSON string (so the outer value IS a JS
+// string), but for Array/Tuple/Map/top-level-Nullable/LowCardinality(Nullable)
+// types the CONTENT of that string is ClickHouse's own plain/Pretty-style
+// text syntax, not recursive JSON: unquoted numbers, single-quoted strings,
+// parens for tuples (named tuples render IDENTICALLY to unnamed ones — the
+// field names are NOT reflected in text output), the bare word `NULL` for a
+// null value NESTED inside a container, and the small-caps glyph `ᴺᵁᴸᴸ`
+// (U+1D3A U+1D41 U+1D38 U+1D38) for a null value at the TOP level of a
+// Nullable/LowCardinality(Nullable) column. Verified live (2026-08-06)
+// against ClickHouse 24.8.14.39 and 26.6.2.160 alike — same rendering on
+// both, so this is a stable format property, not a version quirk. The exact
+// digit/character content is preserved bit-for-bit either way (this is a
+// SERIALIZATION-FORMAT correction, never a precision-loss finding — see
+// `runPrecisionCase`'s corpus-wide pass once these literals are corrected).
+// The one genuine partial exception is `json-object` (real ClickHouse `JSON`
+// type): its string content IS real recursive JSON, but leaves are STILL not
+// independently re-stringified (a leaf number stays a JSON number, e.g.
+// `{"a":1}`, not `{"a":"1"}`).
 
 export interface PrecisionCase {
   id: string;
@@ -86,22 +111,22 @@ export const PRECISION_CORPUS: PrecisionCase[] = [
   { id: 'enum8', category: 'enums', select: "CAST('b' AS Enum8('a' = 1, 'b' = 2)) AS v", chType: "Enum8('a'=1,'b'=2)", expected: 'b', because: 'Enum text form round-trips as its label, not its ordinal' },
   { id: 'enum16', category: 'enums', select: "CAST('y' AS Enum16('x' = 1000, 'y' = 2000)) AS v", chType: "Enum16('x'=1000,'y'=2000)", expected: 'y', because: 'same as Enum8, wider ordinal range' },
   // ── Nullable ───────────────────────────────────────────────────────────
-  { id: 'nullable-null', category: 'nullable', select: 'CAST(NULL AS Nullable(Int64)) AS v', chType: 'Nullable(Int64)', expected: null, because: 'JSON null — represented as JS `null`, not the string "null"' },
+  { id: 'nullable-null', category: 'nullable', select: 'CAST(NULL AS Nullable(Int64)) AS v', chType: 'Nullable(Int64)', expected: 'ᴺᵁᴸᴸ', because: 'CORRECTED (verified live against 24.8.14.39/26.6.2.160): a top-level Nullable NULL is NOT JSON null — JSONStringsEachRowWithProgress renders it as the small-caps glyph "ᴺᵁᴸᴸ" (U+1D3A U+1D41 U+1D38 U+1D38), a plain JS string' },
   { id: 'nullable-nonnull', category: 'nullable', select: 'CAST(9223372036854775807 AS Nullable(Int64)) AS v', chType: 'Nullable(Int64)', expected: '9223372036854775807', because: 'a non-null Nullable(Int64) still stringifies like the base type' },
   // ── Arrays ─────────────────────────────────────────────────────────────
-  { id: 'array-large-integers', category: 'arrays', select: "[CAST('18446744073709551615' AS UInt64), CAST('0' AS UInt64)] AS v", chType: 'Array(UInt64)', expected: '["18446744073709551615","0"]', because: 'array of UInt64 — each member stringified, JSON array structure preserved' },
-  { id: 'array-nullable', category: 'arrays', select: "[CAST(1 AS Nullable(Int32)), CAST(NULL AS Nullable(Int32))] AS v", chType: 'Array(Nullable(Int32))', expected: '["1",null]', because: 'nullable array members: non-null stringified, null stays JSON null' },
+  { id: 'array-large-integers', category: 'arrays', select: "[CAST('18446744073709551615' AS UInt64), CAST('0' AS UInt64)] AS v", chType: 'Array(UInt64)', expected: '[18446744073709551615,0]', because: 'CORRECTED (verified live): array member digits are NOT re-quoted — the array renders in plain/Pretty-style text (unquoted numbers) inside the one JSON string wrapping the whole column; digits are still preserved exactly, just unquoted' },
+  { id: 'array-nullable', category: 'arrays', select: "[CAST(1 AS Nullable(Int32)), CAST(NULL AS Nullable(Int32))] AS v", chType: 'Array(Nullable(Int32))', expected: '[1,NULL]', because: 'CORRECTED (verified live): a null nested INSIDE a container renders as the bare word NULL (not JSON null, not the top-level "ᴺᵁᴸᴸ" glyph), and the non-null member is unquoted' },
   // ── Tuples ─────────────────────────────────────────────────────────────
-  { id: 'tuple-unnamed-precision', category: 'tuples', select: "(CAST('18446744073709551615' AS UInt64), CAST('-9223372036854775808' AS Int64)) AS v", chType: 'Tuple(UInt64, Int64)', expected: '["18446744073709551615","-9223372036854775808"]', because: 'unnamed tuple renders as a JSON array of stringified members' },
-  { id: 'tuple-named-precision', category: 'tuples', select: "CAST((CAST('18446744073709551615' AS UInt64), 'x') AS Tuple(big UInt64, label String)) AS v", chType: 'Tuple(big UInt64, label String)', expected: '{"big":"18446744073709551615","label":"x"}', because: 'named tuple renders as a JSON object keyed by field name' },
+  { id: 'tuple-unnamed-precision', category: 'tuples', select: "(CAST('18446744073709551615' AS UInt64), CAST('-9223372036854775808' AS Int64)) AS v", chType: 'Tuple(UInt64, Int64)', expected: '(18446744073709551615,-9223372036854775808)', because: 'CORRECTED (verified live): an unnamed tuple renders as parens with unquoted/plain-text members, not a JSON array of strings' },
+  { id: 'tuple-named-precision', category: 'tuples', select: "CAST((CAST('18446744073709551615' AS UInt64), 'x') AS Tuple(big UInt64, label String)) AS v", chType: 'Tuple(big UInt64, label String)', expected: "(18446744073709551615,'x')", because: "CORRECTED (verified live): a NAMED tuple renders IDENTICALLY to an unnamed one in text output — field names are not reflected at all, and the String member is single-quoted, not a JSON object keyed by field name" },
   // ── Maps ───────────────────────────────────────────────────────────────
-  { id: 'map-string-large-integer', category: 'maps', select: "map('k', CAST('18446744073709551615' AS UInt64)) AS v", chType: 'Map(String, UInt64)', expected: '{"k":"18446744073709551615"}', because: 'Map renders as a JSON object; the value is stringified like any UInt64' },
-  { id: 'map-string-date', category: 'maps', select: "map('k', CAST('2024-06-15' AS Date)) AS v", chType: 'Map(String, Date)', expected: '{"k":"2024-06-15"}', because: 'Map value stringified like the base Date type' },
+  { id: 'map-string-large-integer', category: 'maps', select: "map('k', CAST('18446744073709551615' AS UInt64)) AS v", chType: 'Map(String, UInt64)', expected: "{'k':18446744073709551615}", because: "CORRECTED (verified live): a Map renders with single-quoted string keys and unquoted/plain-text values, not a JSON object with double-quoted string values" },
+  { id: 'map-string-date', category: 'maps', select: "map('k', CAST('2024-06-15' AS Date)) AS v", chType: 'Map(String, Date)', expected: "{'k':'2024-06-15'}", because: "CORRECTED (verified live): Map keys AND Date values are both single-quoted plain text, not a JSON object with double-quoted values" },
   // ── LowCardinality ─────────────────────────────────────────────────────
   { id: 'lowcardinality-string', category: 'lowcardinality', select: "CAST('hello' AS LowCardinality(String)) AS v", chType: 'LowCardinality(String)', expected: 'hello', because: 'LowCardinality is transparent to text serialization' },
-  { id: 'lowcardinality-nullable-string', category: 'lowcardinality', select: 'CAST(NULL AS LowCardinality(Nullable(String))) AS v', chType: 'LowCardinality(Nullable(String))', expected: null, because: 'LowCardinality(Nullable) still yields JSON null for a null value' },
+  { id: 'lowcardinality-nullable-string', category: 'lowcardinality', select: 'CAST(NULL AS LowCardinality(Nullable(String))) AS v', chType: 'LowCardinality(Nullable(String))', expected: 'ᴺᵁᴸᴸ', because: 'CORRECTED (verified live): same top-level-Nullable rule as nullable-null above — LowCardinality is transparent, so this is still the "ᴺᵁᴸᴸ" glyph, not JSON null' },
   // ── JSON/Object (capability-gated) ─────────────────────────────────────
-  { id: 'json-object', category: 'json-object', select: "'{\"a\":1}'::JSON AS v", chType: 'JSON', expected: '{"a":"1"}', capabilityGated: true, because: 'ClickHouse JSON type (>=24.8-ish, version-gated); leaf scalars still stringify under JSONStrings*' },
+  { id: 'json-object', category: 'json-object', select: "'{\"a\":1}'::JSON AS v", chType: 'JSON', expected: '{"a":1}', capabilityGated: true, because: 'CORRECTED (verified live): the real ClickHouse JSON type\'s string content IS recursive JSON syntax (unlike Array/Tuple/Map above), but leaf scalars are still NOT independently re-stringified — a leaf number stays a JSON number' },
   // ── Strings ────────────────────────────────────────────────────────────
   { id: 'string-newline', category: 'strings', select: "'a\\nb' AS v", chType: 'String', expected: 'a\nb', because: 'authored literal containing a real newline byte' },
   { id: 'string-nul', category: 'strings', select: "'a\\0b' AS v", chType: 'String', expected: 'a b', because: 'authored literal containing a real NUL byte — ClickHouse strings are byte strings, not C strings' },
@@ -110,6 +135,6 @@ export const PRECISION_CORPUS: PrecisionCase[] = [
   { id: 'string-tab-cr', category: 'strings', select: "'a\\tb\\rc' AS v", chType: 'String', expected: 'a\tb\rc', because: 'authored literal containing real TAB and CR bytes' },
   { id: 'string-empty', category: 'strings', select: "'' AS v", chType: 'String', expected: '', because: 'the empty string is not the same outcome as JSON null' },
   // ── Nested structures ──────────────────────────────────────────────────
-  { id: 'nested-array-of-tuples', category: 'nested', select: "[(CAST('18446744073709551615' AS UInt64), CAST('2024-06-15' AS Date))] AS v", chType: 'Array(Tuple(UInt64, Date))', expected: '[["18446744073709551615","2024-06-15"]]', because: 'array of unnamed tuples, both precision-sensitive members' },
-  { id: 'nested-map-of-arrays', category: 'nested', select: "map('k', [CAST('18446744073709551615' AS UInt64), CAST('0' AS UInt64)]) AS v", chType: 'Map(String, Array(UInt64))', expected: '{"k":["18446744073709551615","0"]}', because: 'map value is itself an array of large-integer strings' },
+  { id: 'nested-array-of-tuples', category: 'nested', select: "[(CAST('18446744073709551615' AS UInt64), CAST('2024-06-15' AS Date))] AS v", chType: 'Array(Tuple(UInt64, Date))', expected: "[(18446744073709551615,'2024-06-15')]", because: 'CORRECTED (verified live): array-of-tuples nests the same plain-text tuple syntax (parens, unquoted UInt64, single-quoted Date) inside brackets — no JSON re-encoding at any nesting level' },
+  { id: 'nested-map-of-arrays', category: 'nested', select: "map('k', [CAST('18446744073709551615' AS UInt64), CAST('0' AS UInt64)]) AS v", chType: 'Map(String, Array(UInt64))', expected: "{'k':[18446744073709551615,0]}", because: 'CORRECTED (verified live): map-of-arrays nests the same plain-text array syntax (unquoted UInt64 members) inside the single-quoted-key map syntax' },
 ];

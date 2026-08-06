@@ -1,0 +1,17 @@
+{
+  "cases": {
+    "invalid-utf8-raw": {
+      "byteLength": 8,
+      "sha256": "be2fe9f21ab5be3f16444d7341ee83e35805ab45b2d88d09602f63d6e998fa4d"
+    },
+    "raw-tagged-late-exception": {
+      "byteLength": 171,
+      "sha256": "7bd9be807fb0f4420a9db4a2962749d61fa2209da8c4332affc16affb558e3b0"
+    },
+    "raw-legacy-untagged-exception": {
+      "byteLength": 108,
+      "sha256": "b1b6d8a0b674568c33fa3703ead896f463ed471b0aca6d3049c66e312d7f6c30"
+    }
+  },
+  "note": "Full digest-equality proof (current vs. official, both fixture-driven) is asserted in parity.test.ts's raw/export block; recorded here for the numeric byte length/digest values only."
+}

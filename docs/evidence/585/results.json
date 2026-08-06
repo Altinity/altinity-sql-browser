@@ -1,0 +1,3355 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-06T04:13:35.239Z",
+  "dependency": {
+    "name": "@clickhouse/client-web",
+    "declaredRange": "1.23.1",
+    "exact": true,
+    "devOnly": true,
+    "resolved": "https://registry.npmjs.org/@clickhouse/client-web/-/client-web-1.23.1.tgz",
+    "integrity": "sha512-VpYPSnBD7PWmEucp8wfd24u9tkyLwFH2ATyMT9R6J8b4U9snbVX1QjanJt/92YtSjam1GblhM7t3oChmJF/m0Q==",
+    "installedVersion": "1.23.1"
+  },
+  "environment": {
+    "node": "v25.9.0",
+    "npm": "11.12.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "playwright": "1.62.1",
+    "os": "darwin",
+    "arch": "arm64",
+    "chromium": "151.0.7922.34",
+    "webkit": "26.5"
+  },
+  "typeCheck": {
+    "ranTypeCheck": true,
+    "pass": true,
+    "output": ""
+  },
+  "baselineGate": {
+    "ran": true,
+    "pass": true,
+    "tail": "undle-order.ts  |     100 |    97.56 |     100 |     100 | 17                \n  ...d-document.ts |     100 |    94.68 |     100 |     100 | 30,50,104,109,117 \n  ...ndle-codec.ts |     100 |    93.54 |     100 |     100 | 99,121,156,162    \n  ...n-resolver.ts |     100 |    99.02 |     100 |     100 | 160               \n  ...gin-badges.ts |     100 |    92.59 |     100 |     100 | 49,97,107,140     \n  ...-semantics.ts |     100 |    94.19 |     100 |     100 | ...95-398,403,444 \n src/editor        |     100 |    95.74 |     100 |     100 |                   \n  ...or-adapter.ts |     100 |    97.44 |     100 |     100 | 387-388,420-423   \n  ...on-adapter.ts |     100 |    92.59 |     100 |     100 | 85,121,156,239    \n  spec-editor.ts   |     100 |    91.48 |     100 |     100 | ...89,246,257-262 \n  ...on-context.ts |     100 |    96.31 |     100 |     100 | ...17,135,158,274 \n src/net           |     100 |     98.2 |     100 |     100 |                   \n  ch-client.ts     |     100 |    97.48 |     100 |     100 | ...29,543,595,856 \n src/ui            |     100 |    95.52 |     100 |     100 |                   \n  app-shell.ts     |     100 |       95 |     100 |     100 | 127               \n  app.ts           |     100 |    90.41 |     100 |     100 | ...2256,2301-2303 \n  chart-render.ts  |     100 |    98.21 |     100 |     100 | 163               \n  combobox.ts      |     100 |    98.41 |     100 |     100 | 291               \n  ...nteraction.ts |     100 |    93.98 |     100 |     100 | ...66,186,200,230 \n  ...e-gestures.ts |     100 |    97.74 |     100 |     100 | 206,263,299,404   \n  ...board-tree.ts |     100 |    94.67 |     100 |     100 | ...1309,1326-1342 \n  dashboard.ts     |     100 |    91.93 |     100 |     100 | ...2598,2633,2735 \n  dialog-shell.ts  |     100 |    96.22 |     100 |     100 | 113,312           \n  dom.ts           |     100 |    98.38 |     100 |     100 | 122               \n  explain-graph.ts |     100 |    94.97 |     100 |     100 | ...91,546-547,810 \n  file-menu.ts     |     100 |    95.23 |     100 |     100 | ...-748,1041,1182 \n  ...ssign-menu.ts |     100 |    93.75 |     100 |     100 | 112,117           \n  login.ts         |     100 |       93 |     100 |     100 | ...72,483,494-500 \n  panels.ts        |     100 |    96.18 |     100 |     100 | ...78,541,607-609 \n  popover.ts       |     100 |       98 |     100 |     100 | 131               \n  results.ts       |     100 |    94.35 |     100 |     100 | ...1069,1198,1323 \n  schema-detail.ts |     100 |    98.33 |     100 |     100 | 196               \n  shortcuts.ts     |     100 |    93.71 |     100 |     100 | ...15-224,260,277 \n  sidebar-upper.ts |     100 |       90 |     100 |     100 | 70                \n  variable-bar.ts  |     100 |    97.24 |     100 |     100 | 468,504,626       \n src/ui/workbench  |     100 |    98.58 |     100 |     100 |                   \n  ...controller.ts |     100 |    97.95 |     100 |     100 | 336,365           \n  ...ch-session.ts |     100 |    98.55 |     100 |     100 | 342,434,481       \n  ...ench-shell.ts |     100 |    97.56 |     100 |     100 | 222               \n src/workspace     |     100 |     98.1 |     100 |     100 |                   \n  ...rt-planner.ts |     100 |    98.61 |     100 |     100 | 184               \n  ...-workspace.ts |     100 |    96.87 |     100 |     100 | 144,149           \n  ...repository.ts |     100 |    94.82 |     100 |     100 | 151,182-187       \n-------------------|---------|----------|---------|---------|-------------------\n\n=============================== Coverage summary ===============================\nStatements   : 100% ( 20837/20837 )\nBranches     : 97.14% ( 14731/15164 )\nFunctions    : 100% ( 4142/4142 )\nLines        : 100% ( 16861/16861 )\n================================================================================\n\n> altinity-sql-browser@0.7.2 build\n> node build/build.mjs\n\nbuilt dist/sql.html (2125730 bytes, incl. 88660 bytes of inlined woff2)\n"
+  },
+  "baseline": {
+    "selfCheck": {
+      "pass": true,
+      "mismatches": []
+    },
+    "normal": {
+      "js": {
+        "raw": 1868798,
+        "gzip": 508285,
+        "brotli": 418920
+      },
+      "artifact": {
+        "raw": 2125810,
+        "gzip": 623575,
+        "brotli": 527504
+      },
+      "css": {
+        "raw": 236956,
+        "gzip": 109502,
+        "brotli": 105666
+      }
+    },
+    "normalized": {
+      "js": {
+        "raw": 1868798,
+        "gzip": 508283,
+        "brotli": 419085
+      },
+      "artifact": {
+        "raw": 2125810,
+        "gzip": 623569,
+        "brotli": 527556
+      },
+      "unminifiedJs": {
+        "raw": 3672262
+      }
+    }
+  },
+  "measurementStamp": "v0.7.2 (0000000)",
+  "candidate": {
+    "normal": {
+      "js": {
+        "raw": 1930207,
+        "gzip": 524795,
+        "brotli": 432522
+      },
+      "artifact": {
+        "raw": 2198414,
+        "gzip": 644323,
+        "brotli": 544328
+      },
+      "css": {
+        "raw": 236956,
+        "gzip": 109502,
+        "brotli": 105666
+      }
+    },
+    "normalized": {
+      "js": {
+        "raw": 1930207,
+        "gzip": 524790,
+        "brotli": 432499
+      },
+      "artifact": {
+        "raw": 2198414,
+        "gzip": 644320,
+        "brotli": 544405
+      },
+      "unminifiedJs": {
+        "raw": 3809359
+      }
+    },
+    "officialClientAttributedBytes": 53846,
+    "selfContained": true
+  },
+  "bundleDelta": {
+    "gzip": {
+      "base": 623569,
+      "current": 644320,
+      "abs": 20751,
+      "pct": 3.327779283447381
+    },
+    "officialClientAttributedBytes": 53846
+  },
+  "buildStampPolicy": {
+    "absWorkingDirFollowsRepoRoot": true,
+    "sharedNormalizedStamp": "v0.7.2 (0000000)",
+    "baselineAndCandidateShareStamp": true
+  },
+  "metafilePathPolicy": {
+    "baselineNoAbsolutePaths": true,
+    "baselineNoParentPaths": true,
+    "baselineProjectInputsUnderSrc": true,
+    "candidateNoAbsolutePaths": true,
+    "candidateNoParentPaths": true
+  },
+  "scenarios": {
+    "ordinary-query": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "empty-result": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "progressive-first-row": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "malformed-stream": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "truncated-stream": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "server-error-before-headers": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "exception-after-headers-inband": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "post-header-connection-reset": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "repeated-401": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "forbidden-403": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "controlled-headers-and-summary": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "kpi-progress": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-exception-like-text-then-more-data": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-invalid-utf8": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-tagged-late-exception": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-legacy-untagged-exception": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "table-streaming": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "totals-extremes": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "cancel-before-request": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "cancel-awaiting-headers": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "cancel-during-rows": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "timeout-distinct-from-abort": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "offline-vs-http-error": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "settings-serialization": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "role-serialization": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "session-param-serialization": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "query-id-exists-before-execution": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "url-parameters-arrays-and-large-integers": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "forced-multipart": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "automatic-multipart": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "explicit-format-no-duplication": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-tsv-exact": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-csv-exact": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "raw-json-exact": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "no-output-command": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "bearer-auth-exact-header": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "jwt-as-basic-exact-composition": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "refresh-then-retry": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "post-confirmation-401": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "stale-before-request": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "stale-during-refresh": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "stale-response": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "read-reset-retries-once": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "ambiguous-insert-reset-no-retry": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "ambiguous-ddl-reset-no-retry": {
+      "executed": true,
+      "status": "passed",
+      "matchedTestCount": 1
+    },
+    "server-cancellation-kill-query": {
+      "row:proposed-oldest-oss": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 2
+      },
+      "row:proposed-oldest-altinity-stable": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 2
+      },
+      "row:current-stable-oss": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 2
+      },
+      "row:current-altinity-stable": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 2
+      }
+    },
+    "temporary-table-session-scoped": {
+      "row:proposed-oldest-oss": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 4
+      },
+      "row:proposed-oldest-altinity-stable": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 4
+      },
+      "row:current-stable-oss": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 4
+      },
+      "row:current-altinity-stable": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 4
+      }
+    },
+    "session-set-persistence": {
+      "row:proposed-oldest-oss": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 1
+      },
+      "row:proposed-oldest-altinity-stable": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 1
+      },
+      "row:current-stable-oss": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 1
+      },
+      "row:current-altinity-stable": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 1
+      }
+    },
+    "session-is-locked-live-retry": {
+      "row:proposed-oldest-oss": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 4
+      },
+      "row:proposed-oldest-altinity-stable": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 4
+      },
+      "row:current-stable-oss": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 4
+      },
+      "row:current-altinity-stable": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 4
+      }
+    },
+    "progressive-timing-real-server": {
+      "row:proposed-oldest-oss": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 2
+      },
+      "row:proposed-oldest-altinity-stable": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 2
+      },
+      "row:current-stable-oss": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 2
+      },
+      "row:current-altinity-stable": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 2
+      }
+    },
+    "mid-stream-progress-error-real-server": {
+      "row:proposed-oldest-oss": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 2
+      },
+      "row:proposed-oldest-altinity-stable": {
+        "executed": true,
+        "status": "failed",
+        "matchedTestCount": 2
+      },
+      "row:current-stable-oss": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 2
+      },
+      "row:current-altinity-stable": {
+        "executed": true,
+        "status": "passed",
+        "matchedTestCount": 2
+      }
+    }
+  },
+  "deletionEstimate": {
+    "currentGenericLocEligibleForDeletion": 240,
+    "estimatedOfficialAdapterLoc": 248,
+    "acceptedBridgeGuardLoc": 95,
+    "netExecutableDeletion": -103,
+    "manifest": {
+      "ch-client.ts": {
+        "delete-after-cutover": 240,
+        "rewrite-narrow-adapter": 89,
+        "retain-temporary-bridge": 27,
+        "unrelated-product-operation": 626
+      },
+      "official-adapter.ts (test-only harness excluded)": {
+        "official-adapter-core": 248
+      },
+      "progress-bridge.ts (physical)": 40,
+      "guarded-fetch.ts (physical)": 55,
+      "retain-as-sql-browser-policy: src/core/stream.ts (whole file, physical)": 222,
+      "retain-as-sql-browser-policy: src/application/query-execution-service.ts (whole file, physical)": 291
+    },
+    "bridgeLoc": {
+      "physical": 40,
+      "transformedExecutable": 34
+    },
+    "guardLoc": {
+      "physical": 55,
+      "transformedExecutable": 58
+    },
+    "positiveNetDeletion": false
+  },
+  "supportMinimum": {
+    "repositoryPromisesNoPinnedVersion": false,
+    "pinnedVersionScan": {
+      "scanned": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/docker.yml",
+        ".github/workflows/release.yml",
+        "deploy/config.json.example",
+        "deploy/http_handlers.xml",
+        "deploy/install.sh",
+        "deploy/sql-browser.xml",
+        "deploy/uninstall.sh",
+        "docker-compose.yaml",
+        "Dockerfile",
+        "README.md",
+        "docs/ADR-0001-reactivity.md",
+        "docs/ADR-0002-static-typing.md",
+        "docs/ADR-0003-dashboard-viewing.md",
+        "docs/ADR-0004-ui-shell.md",
+        "docs/ARCHITECTURE.md",
+        "docs/ASSET-DISTRIBUTION.md",
+        "docs/CLICKHOUSE-OAUTH.md",
+        "docs/CLICKHOUSE-OPERATIONS-DEMO.md",
+        "docs/CLICKHOUSE-OSS-OAUTH.md",
+        "docs/DEPLOYMENT.md",
+        "docs/DEVELOPMENT.md",
+        "docs/ICEBERG-CATALOG-EXPLORER-DEMO.md",
+        "docs/LOGIN-SCREEN.md",
+        "docs/ONTIME-CHART-DEMO.md",
+        "docs/SHOP-ANALYTICS-DEMO.md",
+        "docs/V2-UX-HANDOVER.md",
+        "docs/drafts/issue-175-setup-role-codex-ready.md",
+        "docs/drafts/saved-query-spec-json-schema.md",
+        "docs/drafts/visualization-spec-authoring-guide.md",
+        "docs/evidence/585/README.md",
+        "docs/evidence/585/baseline/normal-bundle-size-report.md",
+        "docs/evidence/585/baseline/normalized-bundle-size-report.md",
+        "docs/evidence/585/candidate/normal-bundle-size-report.md",
+        "docs/evidence/585/candidate/normalized-bundle-size-report.md",
+        "docs/evidence/585/compatibility-matrix.md",
+        "docs/evidence/585/critical-questions.md",
+        "docs/evidence/585/decision-table.md",
+        "docs/evidence/585/deletion-estimate.md",
+        "docs/evidence/585/support-minimum-analysis.md",
+        "docs/library-json-schema.md",
+        "docs/ui-snapshots/CAPTURE-SPEC.md",
+        "docs/ui-snapshots/README.md",
+        "docs/ui-snapshots/g6410a06/notes.md",
+        "tests/e2e/code-viewer.spec.js",
+        "tests/e2e/dashboard-grid-kpi.spec.js",
+        "tests/e2e/dashboard-grid.spec.js",
+        "tests/e2e/dashboard-kpi-move.spec.js",
+        "tests/e2e/dashboard-membership.spec.js",
+        "tests/e2e/dashboard-mobile.spec.js",
+        "tests/e2e/dashboard-tree.spec.js",
+        "tests/e2e/editor-cm6.spec.js",
+        "tests/e2e/editor-docs.spec.js",
+        "tests/e2e/editor-insert.spec.js",
+        "tests/e2e/import-example-dashboard.spec.js",
+        "tests/e2e/inspector-dock-layout.spec.js",
+        "tests/e2e/kpi.spec.js",
+        "tests/e2e/multi-select.spec.js",
+        "tests/e2e/oauth-document-recovery.spec.js",
+        "tests/e2e/pipeline-graph.spec.js",
+        "tests/e2e/schema-graph.spec.js",
+        "tests/e2e/sidebar-tabs-narrow.spec.js",
+        "tests/e2e/spec-editor.spec.js",
+        "tests/e2e/splitters.spec.js",
+        "tests/e2e/tile-open-workbench.spec.js",
+        "tests/e2e/time-range.spec.js",
+        "tests/e2e/variable-tab.spec.js",
+        "tests/e2e/workbench-var-strip.spec.js",
+        "tests/helpers/auth-fixtures.ts",
+        "tests/helpers/fake-app.ts",
+        "tests/helpers/fake-broadcast.ts",
+        "tests/helpers/fake-idb.ts",
+        "tests/helpers/saved-query.ts",
+        "tests/setup.ts",
+        "tests/types/node-crypto.d.ts",
+        "tests/types/node-fs-url.d.ts",
+        "tests/types/side-panels.test-d.ts",
+        "tests/types/state.test-d.ts",
+        "tests/unit/app-preferences.test.ts",
+        "tests/unit/app-shell.test.ts",
+        "tests/unit/app.test.ts",
+        "tests/unit/authenticated-execution-scope.test.ts",
+        "tests/unit/build-artifact.test.js",
+        "tests/unit/bundle-order.test.ts",
+        "tests/unit/canonical-json.test.ts",
+        "tests/unit/cell.test.ts",
+        "tests/unit/ch-client.test.ts",
+        "tests/unit/ch-lang.test.ts",
+        "tests/unit/ch-session-params.test.ts",
+        "tests/unit/chart-data.test.ts",
+        "tests/unit/chart-render.test.ts",
+        "tests/unit/clickhouse-type.test.ts",
+        "tests/unit/client-web-spike-policy.test.js",
+        "tests/unit/code-viewer.test.ts",
+        "tests/unit/codemirror-adapter.test.ts",
+        "tests/unit/combo-footer.test.ts",
+        "tests/unit/combobox.test.ts",
+        "tests/unit/completions.test.ts",
+        "tests/unit/confirm-menu.test.ts",
+        "tests/unit/conflict-resolution.test.ts",
+        "tests/unit/connection-lifecycle-boundaries.test.js",
+        "tests/unit/connection-lifecycle.test.ts",
+        "tests/unit/connection-session.test.ts",
+        "tests/unit/cross-tab-consistency.test.ts",
+        "tests/unit/csp-contract.test.js",
+        "tests/unit/dashboard-autoscroll.test.ts",
+        "tests/unit/dashboard-boundaries.test.js",
+        "tests/unit/dashboard-chart-interaction.test.ts",
+        "tests/unit/dashboard-commands.test.ts",
+        "tests/unit/dashboard-create.test.ts",
+        "tests/unit/dashboard-delete.test.ts",
+        "tests/unit/dashboard-document.test.ts",
+        "tests/unit/dashboard-export.test.ts",
+        "tests/unit/dashboard-panel-duplicate.test.ts",
+        "tests/unit/dashboard-panel-metadata.test.ts",
+        "tests/unit/dashboard-query-resolver.test.ts",
+        "tests/unit/dashboard-removal.test.ts",
+        "tests/unit/dashboard-repaint-integration.test.ts",
+        "tests/unit/dashboard-repaint-plan.test.ts",
+        "tests/unit/dashboard-tile-gestures.test.ts",
+        "tests/unit/dashboard-title.test.ts",
+        "tests/unit/dashboard-tree-model.test.ts",
+        "tests/unit/dashboard-tree-ui-state.test.ts",
+        "tests/unit/dashboard-tree.test.ts",
+        "tests/unit/dashboard-variable-config.test.ts",
+        "tests/unit/dashboard-variable-store.test.ts",
+        "tests/unit/dashboard-variables.test.ts",
+        "tests/unit/dashboard-viewer-session.test.ts",
+        "tests/unit/dashboard.test.ts",
+        "tests/unit/detached-view.test.ts",
+        "tests/unit/diagnostics.test.ts",
+        "tests/unit/dialog-shell.test.ts",
+        "tests/unit/doc-capability.test.ts",
+        "tests/unit/doc-context.test.ts",
+        "tests/unit/doc-documentation.test.ts",
+        "tests/unit/doc-markdown-view.test.ts",
+        "tests/unit/doc-markdown.test.ts",
+        "tests/unit/doc-pane.test.ts",
+        "tests/unit/dom.test.ts",
+        "tests/unit/dot-layout.test.ts",
+        "tests/unit/dot.test.ts",
+        "tests/unit/drawer.test.ts",
+        "tests/unit/editor-port.test.ts",
+        "tests/unit/enum-field.test.ts",
+        "tests/unit/example-dashboards.test.js",
+        "tests/unit/explain-graph.test.ts",
+        "tests/unit/explain.test.ts",
+        "tests/unit/export-service.test.ts",
+        "tests/unit/export.test.ts",
+        "tests/unit/field-config.test.ts",
+        "tests/unit/file-menu-model.test.ts",
+        "tests/unit/file-menu.test.ts",
+        "tests/unit/flow-layout.test.ts",
+        "tests/unit/format.test.ts",
+        "tests/unit/from-scope.test.ts",
+        "tests/unit/grafana-grid-layout.test.ts",
+        "tests/unit/graph-layout.test.ts",
+        "tests/unit/grid-render.test.ts",
+        "tests/unit/icons.test.ts",
+        "tests/unit/import-planner.test.ts",
+        "tests/unit/indexeddb-workspace-store.test.ts",
+        "tests/unit/inspector-host.test.ts",
+        "tests/unit/json-limits.test.ts",
+        "tests/unit/json-merge-patch.test.ts",
+        "tests/unit/json-schema-validation.test.ts",
+        "tests/unit/jwt.test.ts",
+        "tests/unit/keyboard-owner.test.ts",
+        "tests/unit/kpi-panel.test.ts",
+        "tests/unit/kpi.test.ts",
+        "tests/unit/layout-registry.test.ts",
+        "tests/unit/legacy-bundle.test.ts",
+        "tests/unit/library-assign-menu.test.ts",
+        "tests/unit/library-assignment-service.test.ts",
+        "tests/unit/library-assignment.test.ts",
+        "tests/unit/library-codec.test.ts",
+        "tests/unit/library-drag.test.ts",
+        "tests/unit/library-migrations.test.ts",
+        "tests/unit/login.test.ts",
+        "tests/unit/logs.test.ts",
+        "tests/unit/main-surface.test.ts",
+        "tests/unit/main.test.ts",
+        "tests/unit/menu.test.ts",
+        "tests/unit/multi-select-field.test.ts",
+        "tests/unit/oauth-config.test.ts",
+        "tests/unit/oauth-document-recovery-session.test.ts",
+        "tests/unit/oauth-document-recovery.test.ts",
+        "tests/unit/oauth.test.ts",
+        "tests/unit/optional-blocks.test.ts",
+        "tests/unit/panel-cfg.test.ts",
+        "tests/unit/panel-creation-service.test.ts",
+        "tests/unit/panel-creation.test.ts",
+        "tests/unit/panel-duplication.test.ts",
+        "tests/unit/panel-execution.test.ts",
+        "tests/unit/panel-tile-actions.test.ts",
+        "tests/unit/panel-widen.test.ts",
+        "tests/unit/panels.test.ts",
+        "tests/unit/panzoom.test.ts",
+        "tests/unit/param-comparison.test.ts",
+        "tests/unit/param-pipeline.test.ts",
+        "tests/unit/param-scan.test.ts",
+        "tests/unit/param-serialize.test.ts",
+        "tests/unit/param-type.test.ts",
+        "tests/unit/param-validate.test.ts",
+        "tests/unit/pkce.test.ts",
+        "tests/unit/placeholder.test.ts",
+        "tests/unit/popover.test.ts",
+        "tests/unit/portable-bundle-codec.test.ts",
+        "tests/unit/portable-limits.test.ts",
+        "tests/unit/presentation-resolver.test.ts",
+        "tests/unit/query-document-session.test.ts",
+        "tests/unit/query-execution-service.test.ts",
+        "tests/unit/query-ownership.test.ts",
+        "tests/unit/query-params.test.ts",
+        "tests/unit/query-source.test.ts",
+        "tests/unit/query-time-range.test.ts",
+        "tests/unit/quoted-span.test.ts",
+        "tests/unit/recent-field.test.ts",
+        "tests/unit/recent-values.test.ts",
+        "tests/unit/relative-time-field.test.ts",
+        "tests/unit/relative-time.test.ts",
+        "tests/unit/result-choice.test.ts",
+        "tests/unit/results.test.ts",
+        "tests/unit/save-controller.test.ts",
+        "tests/unit/saved-history.test.ts",
+        "tests/unit/saved-io.test.ts",
+        "tests/unit/saved-query-service.test.ts",
+        "tests/unit/saved-query.test.ts",
+        "tests/unit/schema-build.test.js",
+        "tests/unit/schema-cards.test.ts",
+        "tests/unit/schema-catalog-service.test.ts",
+        "tests/unit/schema-detail.test.ts",
+        "tests/unit/schema-graph-session.test.ts",
+        "tests/unit/schema-graph.test.ts",
+        "tests/unit/schema.test.ts",
+        "tests/unit/script-result.test.ts",
+        "tests/unit/select-columns.test.ts",
+        "tests/unit/share.test.ts",
+        "tests/unit/shortcuts.test.ts",
+        "tests/unit/side-panel-registry.test.ts",
+        "tests/unit/side-panel-source-contract.test.ts",
+        "tests/unit/side-panels.test.ts",
+        "tests/unit/sidebar-upper.test.ts",
+        "tests/unit/size-report.test.js",
+        "tests/unit/sort.test.ts",
+        "tests/unit/spec-completion.test.ts",
+        "tests/unit/spec-draft.test.ts",
+        "tests/unit/spec-editor.test.ts",
+        "tests/unit/spec-examples.test.js",
+        "tests/unit/spec-json-context.test.ts",
+        "tests/unit/spec-schema.test.ts",
+        "tests/unit/splitters.test.ts",
+        "tests/unit/sql-lex.test.ts",
+        "tests/unit/sql-reference.test.ts",
+        "tests/unit/sql-route.test.ts",
+        "tests/unit/sql-spans.test.ts",
+        "tests/unit/sql-split.test.ts",
+        "tests/unit/state-codec.test.ts",
+        "tests/unit/state.test.ts",
+        "tests/unit/storage.test.ts",
+        "tests/unit/stored-workspace-ownership.test.ts",
+        "tests/unit/stored-workspace.test.ts",
+        "tests/unit/stream.test.ts",
+        "tests/unit/surface-accessor-contracts.test.ts",
+        "tests/unit/surface-lifecycle-arch.test.ts",
+        "tests/unit/surface-lifecycle.test.ts",
+        "tests/unit/surface-navigation.test.ts",
+        "tests/unit/tab-origin-badges.test.ts",
+        "tests/unit/tabs.test.ts",
+        "tests/unit/target.test.ts",
+        "tests/unit/theme-toggle.test.ts",
+        "tests/unit/tile-membership.test.ts",
+        "tests/unit/tile-reorder.test.ts",
+        "tests/unit/time-range-field.test.ts",
+        "tests/unit/time-range.test.ts",
+        "tests/unit/toast.test.ts",
+        "tests/unit/tree-click-arbiter.test.ts",
+        "tests/unit/type-display.test.ts",
+        "tests/unit/typography-contract.test.js",
+        "tests/unit/var-field.test.ts",
+        "tests/unit/variable-bar.test.ts",
+        "tests/unit/variable-option-field.test.ts",
+        "tests/unit/variable-options.test.ts",
+        "tests/unit/variable-selection.test.ts",
+        "tests/unit/variable-strip.test.ts",
+        "tests/unit/variable-width.test.ts",
+        "tests/unit/workbench-parameter-session.test.ts",
+        "tests/unit/workbench-session.test.ts",
+        "tests/unit/workbench-shell.test.ts",
+        "tests/unit/workspace-dashboards.test.ts",
+        "tests/unit/workspace-diagnostics.test.ts",
+        "tests/unit/workspace-key.test.ts",
+        "tests/unit/workspace-operations.test.ts",
+        "tests/unit/workspace-repository.test.ts",
+        "tests/unit/workspace-semantics.test.ts",
+        "tests/unit/workspace-session.test.ts",
+        "tests/unit/workspace-sync.test.ts",
+        "tests/vitest.config.ts"
+      ],
+      "findings": [
+        {
+          "file": "docs/evidence/585/candidate/normal-bundle-size-report.md",
+          "line": 26,
+          "text": "| `@clickhouse/client-web` | 52.6 KiB | 2.8% |",
+          "tokens": [
+            "52.6"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/candidate/normalized-bundle-size-report.md",
+          "line": 26,
+          "text": "| `@clickhouse/client-web` | 52.6 KiB | 2.8% |",
+          "tokens": [
+            "52.6"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/compatibility-matrix.md",
+          "line": 7,
+          "text": "| `proposed-oldest-oss` | proposed oldest OSS ClickHouse | 24.8.14.39 | sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b | yes | 24.8.14.39 | failed |",
+          "tokens": [
+            "24.8.14.39",
+            "24.8.14.39"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/compatibility-matrix.md",
+          "line": 9,
+          "text": "| `current-stable-oss` | current stable OSS ClickHouse | 26.6.2.160 | sha256:a63a90ffdcb574683ebfe96e4c53e2dbe401864add7bb06dc244eb935d828e7f | yes | 26.6.2.160 | failed |",
+          "tokens": [
+            "26.6.2.160",
+            "26.6.2.160"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/critical-questions.md",
+          "line": 53,
+          "text": "> Proposed minimum ClickHouse 24.8 — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 10,
+          "text": "YES — [{\"file\":\"docs/evidence/585/candidate/normal-bundle-size-report.md\",\"line\":26,\"text\":\"| `@clickhouse/client-web` | 52.6 KiB | 2.8% |\",\"tokens\":[\"52.6\"]},{\"file\":\"docs/evidence/585/candidate/normalized-bundle-size-report.md\",\"line\":26,\"text\":\"| `@clickhouse/client-web` | 52.6 KiB | 2.8% |\",\"tokens\":[\"52.6\"]},{\"file\":\"docs/evidence/585/compatibility-matrix.md\",\"line\":7,\"text\":\"| `proposed-oldest-oss` | proposed oldest OSS ClickHouse | 24.8.14.39 | sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b | yes | 24.8.14.39 | failed |\",\"tokens\":[\"24.8.14.39\",\"24.8.14.39\"]},{\"file\":\"docs/evidence/585/compatibility-matrix.md\",\"line\":9,\"text\":\"| `current-stable-oss` | current stable OSS ClickHouse | 26.6.2.160 | sha256:a63a90ffdcb574683ebfe96e4c53e2dbe401864add7bb06dc244eb935d828e7f | yes | 26.6.2.160 | failed |\",\"tokens\":[\"26.6.2.160\",\"26.6.2.160\"]},{\"file\":\"docs/evidence/585/critical-questions.md\",\"line\":53,\"text\":\"> Proposed minimum ClickHouse 24.8 — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":10,\"text\":\"YES — [{\\\"file\\\":\\\"docs/evidence/585/candidate/normal-bundle-size-report.md\\\",\\\"line\\\":26,\\\"text\\\":\\\"| `@clickhouse/client-web` | 52.6 KiB | 2.8% |\\\",\\\"tokens\\\":[\\\"52.6\\\"]},{\\\"file\\\":\\\"docs/evidence/585/candidate/normalized-bundle-size-report.md\\\",\\\"line\\\":26,\\\"text\\\":\\\"| `@clickhouse/client-web` | 52.6 KiB | 2.8% |\\\",\\\"tokens\\\":[\\\"52.6\\\"]}]\",\"tokens\":[\"52.6\",\"52.6\",\"52.6\",\"52.6\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":16,\"text\":\"| JSONStringsEachRowWithProgress (Table streaming format) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts chUrl(): \\\"const format = opts.format || 'JSONStringsEachRowWithProgress'\\\" |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":17,\"text\":\"| JSONEachRowWithProgress (KPI streaming format) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts / src/dashboard — KPI execution path (CLAUDE.md \\\"KPI execution uses JSONEachRowWithProgress\\\") |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":18,\"text\":\"| totals/extremes lines (rows_before_limit_at_least, totals, extremes) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/stream.ts applyStreamLine — lines without meta/row/progress/exception are ignored |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":19,\"text\":\"| HTTP settings sent by ch-client.ts (max_result_rows, result_overflow_mode, add_http_cors_header, enable_http_compression) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts chUrl()/runQuery() |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":20,\"text\":\"| wait_end_of_query (non-streaming reads only) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts runQuery(): \\\"wait_end_of_query buffers the whole response server-side...\\\" |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":21,\"text\":\"| enable_http_compression=1 (gzip/br response compression negotiation) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts chUrl() |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":22,\"text\":\"| X-ClickHouse-Summary response header | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/application/export-service.ts and core/stream.ts summary handling |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":23,\"text\":\"| X-ClickHouse-Exception-Tag header + tagged late-exception frame | capability-gated | 24.11 | no | README.md \\\"Export\\\" section: \\\"CH ≥ 24.11; older servers fall back to a plain-text scan\\\" — src/core/stream.ts findExceptionFrame(tailLatin1, tag) |\",\"tokens\":[\"24.11\",\"24.11\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":24,\"text\":\"| Legacy untagged late-exception detection (plain-text \\\"Code: N. DB::Exception:\\\" scan) | required (as the fallback path for pre-24.11 servers) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/stream.ts findExceptionFrame — untagged branch |\",\"tokens\":[\"24.11\",\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":25,\"text\":\"| Native query parameters (param_<name> query-string args) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts queryJson()/runQuery() params; README.md \\\"Query variables\\\" |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":26,\"text\":\"| Roles (role=<name> query-string arg) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | tests/spike/clickhouse-client/current-adapter.ts nativeParamsForCurrent() role handling |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":27,\"text\":\"| Sessions (session_id query-string arg) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/application/query-execution-service.ts ScriptStatement.params session_id |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":28,\"text\":\"| SESSION_IS_LOCKED (code 373) retry classification | required (for the retry-safety invariant, whenever a session IS used) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/application/query-execution-service.ts SESSION_BUSY regex |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":29,\"text\":\"| KILL QUERY WHERE query_id = ... ASYNC | optional (best-effort cancellation only) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts killQuery()/killQueryWithLease() |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":31,\"text\":\"| Older system-table fallback shape generally (system.tables/system.columns queried without the data-lake setting) | required (as the universal fallback) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts querySystemAware() plain() branch |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":32,\"text\":\"| KPI named-tuple detection (Tuple(value, delta) returned as a JSON object vs. a positional array/string) | capability-gated | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/kpi.ts readKpiFields() — kpi-server-named-tuple-unsupported diagnostic; tests/unit/kpi.test.ts serverVersion display case |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":33,\"text\":\"| Variable-option batch reads (tupleElement(tuple(*), n) positional projection for __variable_name/__variable_value/__variable_label) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/variable-options.ts — \\\"Both functions have existed since ClickHouse 20.4 ... the alternative, a positional wire format, first shipped in 25.2 and would have made the whole feature fail on anything older.\\\" |\",\"tokens\":[\"24.8\",\"20.4\",\"25.2\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":34,\"text\":\"| Authentication error code/message forms (401/403, AUTHENTICATION_FAILED code 516, isAuthExpiredBody text matching) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts authedFetch(); src/core/stream.ts isAuthExpiredBody() |\",\"tokens\":[\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":38,\"text\":\"`@clickhouse/client-web` (node_modules/@clickhouse/client-web/README.md, \\\"## Compatibility with ClickHouse\\\" table row \\\"1.12.0+ | 24.8+\\\") documents a guaranteed floor of ClickHouse **24.8+**.\",\"tokens\":[\"24.8\",\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":43,\"text\":\"- Official client node_modules/@clickhouse/client-web/README.md, \\\"## Compatibility with ClickHouse\\\" table row \\\"1.12.0+ | 24.8+\\\" documents a guaranteed floor of ClickHouse 24.8+.\",\"tokens\":[\"24.8\",\"24.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":44,\"text\":\"- No inventoried server-sensitive dependency raises the floor above the official client's own guaranteed minimum — every capability newer than that floor (X-ClickHouse-Exception-Tag/24.11, DataLakeCatalog visibility/25.8) has a working fallback for older servers, so none is REQUIRED.\",\"tokens\":[\"24.11\",\"25.8\"]},{\"file\":\"docs/evidence/585/support-minimum-analysis.md\",\"line\":48,\"text\":\"**Proposed minimum: ClickHouse 24.8** (binding source: pinned official-client guaranteed minimum).\",\"tokens\":[\"24.8\"]}]",
+          "tokens": [
+            "52.6",
+            "52.6",
+            "52.6",
+            "52.6",
+            "24.8.14.39",
+            "24.8.14.39",
+            "24.8.14.39",
+            "24.8.14.39",
+            "26.6.2.160",
+            "26.6.2.160",
+            "26.6.2.160",
+            "26.6.2.160",
+            "24.8",
+            "24.8",
+            "52.6",
+            "52.6",
+            "52.6",
+            "52.6",
+            "52.6",
+            "52.6",
+            "52.6",
+            "52.6",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.11",
+            "24.11",
+            "24.11",
+            "24.11",
+            "24.11",
+            "24.8",
+            "24.11",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "20.4",
+            "25.2",
+            "24.8",
+            "20.4",
+            "25.2",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.8",
+            "24.11",
+            "25.8",
+            "24.11",
+            "25.8",
+            "24.8",
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 16,
+          "text": "| JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns) | required | NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6) | yes | src/core/stream.ts applyStreamLine(): \"if (json.meta) { result.columns = ... } else if (json.row) { ... result.columns.map((c) => row[c.name]) }\" — no meta-less fallback; live reproduction: tests/spike/clickhouse-client/live-sessions.test.ts (temporary-table/session-SET row-value assertions) and the KILL QUERY system.processes probe in live-parity.test.ts both fail on both 24.8 rows for exactly this reason (issue #585 Phase 0 evidence review, 2026-08-06) |",
+          "tokens": [
+            "24.8.14.39",
+            "24.8.14.10547",
+            "26.6.2.160",
+            "26.3.16.10001",
+            "24.8.14",
+            "26.3",
+            "26.6",
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 18,
+          "text": "| totals/extremes lines (rows_before_limit_at_least, totals, extremes) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/stream.ts applyStreamLine — lines without meta/row/progress/exception are ignored |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 19,
+          "text": "| HTTP settings sent by ch-client.ts (max_result_rows, result_overflow_mode, add_http_cors_header, enable_http_compression) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts chUrl()/runQuery() |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 20,
+          "text": "| wait_end_of_query (non-streaming reads only) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts runQuery(): \"wait_end_of_query buffers the whole response server-side...\" |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 21,
+          "text": "| enable_http_compression=1 (gzip/br response compression negotiation) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts chUrl() |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 22,
+          "text": "| X-ClickHouse-Summary response header | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/application/export-service.ts and core/stream.ts summary handling |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 23,
+          "text": "| X-ClickHouse-Exception-Tag header + tagged late-exception frame | capability-gated | 24.11 | no | README.md \"Export\" section: \"CH ≥ 24.11; older servers fall back to a plain-text scan\" — src/core/stream.ts findExceptionFrame(tailLatin1, tag) |",
+          "tokens": [
+            "24.11",
+            "24.11"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 24,
+          "text": "| Legacy untagged late-exception detection (plain-text \"Code: N. DB::Exception:\" scan) | required (as the fallback path for pre-24.11 servers) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/stream.ts findExceptionFrame — untagged branch |",
+          "tokens": [
+            "24.11",
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 25,
+          "text": "| Native query parameters (param_<name> query-string args) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts queryJson()/runQuery() params; README.md \"Query variables\" |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 26,
+          "text": "| Roles (role=<name> query-string arg) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | tests/spike/clickhouse-client/current-adapter.ts nativeParamsForCurrent() role handling |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 27,
+          "text": "| Sessions (session_id query-string arg) | optional | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/application/query-execution-service.ts ScriptStatement.params session_id |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 28,
+          "text": "| SESSION_IS_LOCKED (code 373) retry classification | required (for the retry-safety invariant, whenever a session IS used) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/application/query-execution-service.ts SESSION_BUSY regex |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 29,
+          "text": "| KILL QUERY WHERE query_id = ... ASYNC | optional (best-effort cancellation only) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts killQuery()/killQueryWithLease() |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 31,
+          "text": "| Older system-table fallback shape generally (system.tables/system.columns queried without the data-lake setting) | required (as the universal fallback) | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts querySystemAware() plain() branch |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 32,
+          "text": "| KPI named-tuple detection (Tuple(value, delta) returned as a JSON object vs. a positional array/string) | capability-gated | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/kpi.ts readKpiFields() — kpi-server-named-tuple-unsupported diagnostic; tests/unit/kpi.test.ts serverVersion display case |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 33,
+          "text": "| Variable-option batch reads (tupleElement(tuple(*), n) positional projection for __variable_name/__variable_value/__variable_label) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/core/variable-options.ts — \"Both functions have existed since ClickHouse 20.4 ... the alternative, a positional wire format, first shipped in 25.2 and would have made the whole feature fail on anything older.\" |",
+          "tokens": [
+            "24.8",
+            "20.4",
+            "25.2"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 34,
+          "text": "| Authentication error code/message forms (401/403, AUTHENTICATION_FAILED code 516, isAuthExpiredBody text matching) | required | not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8) | no | src/net/ch-client.ts authedFetch(); src/core/stream.ts isAuthExpiredBody() |",
+          "tokens": [
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 38,
+          "text": "`@clickhouse/client-web` (node_modules/@clickhouse/client-web/README.md, \"## Compatibility with ClickHouse\" table row \"1.12.0+ | 24.8+\") documents a guaranteed floor of ClickHouse **24.8+**.",
+          "tokens": [
+            "24.8",
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 43,
+          "text": "- Official client node_modules/@clickhouse/client-web/README.md, \"## Compatibility with ClickHouse\" table row \"1.12.0+ | 24.8+\" documents a guaranteed floor of ClickHouse 24.8+.",
+          "tokens": [
+            "24.8",
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 44,
+          "text": "- Application inventory raises the floor to NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6) via: JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns).",
+          "tokens": [
+            "24.8.14.39",
+            "24.8.14.10547",
+            "26.6.2.160",
+            "26.3.16.10001",
+            "24.8.14",
+            "26.3",
+            "26.6"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 45,
+          "text": "- Proposed minimum = max(pinned official-client guaranteed minimum=24.8, application feature/fallback minimum=NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6)) = 24.8 (binding source: pinned official-client guaranteed minimum).",
+          "tokens": [
+            "24.8",
+            "24.8.14.39",
+            "24.8.14.10547",
+            "26.6.2.160",
+            "26.3.16.10001",
+            "24.8.14",
+            "26.3",
+            "26.6",
+            "24.8"
+          ]
+        },
+        {
+          "file": "docs/evidence/585/support-minimum-analysis.md",
+          "line": 48,
+          "text": "**Proposed minimum: ClickHouse 24.8** (binding source: pinned official-client guaranteed minimum).",
+          "tokens": [
+            "24.8"
+          ]
+        }
+      ],
+      "benignExclusions": [
+        {
+          "file": "deploy/http_handlers.xml",
+          "line": 20,
+          "text": "26.3.x rejects a <name> child with \"Unknown element in config:",
+          "tokens": [
+            "26.3"
+          ],
+          "reason": "A deployment-config authoring note explaining why `name=` is an XML ATTRIBUTE rather than a child element (dodges ClickHouse config.d merge bug #70636) — a compatibility workaround note, not a minimum-version promise or requirement."
+        },
+        {
+          "file": "docs/ADR-0003-dashboard-viewing.md",
+          "line": 295,
+          "text": "ClickHouse 26.6.",
+          "tokens": [
+            "26.6"
+          ],
+          "reason": "An architecture-decision-record note about WHEN an upstream ClickHouse capability became available, for engineering-decision context — not a repository support promise."
+        },
+        {
+          "file": "docs/ADR-0003-dashboard-viewing.md",
+          "line": 303,
+          "text": "implemented first and then reverted: it first shipped in ClickHouse **25.2**, so",
+          "tokens": [
+            "25.2"
+          ],
+          "reason": "Same ADR historical-context note as above — records upstream feature-shipping history that INFORMED a decision to avoid depending on it (see the matching src/core/variable-options.ts inventory entry, which deliberately uses pre-20.4 functions instead), not a version requirement."
+        },
+        {
+          "file": "docs/drafts/visualization-spec-authoring-guide.md",
+          "line": 1667,
+          "text": "- ClickHouse 24.7 named-tuple aliases: <https://clickhouse.com/blog/clickhouse-release-24-07>",
+          "tokens": [
+            "24.7"
+          ],
+          "reason": "A citation link to ClickHouse's own upstream release-blog post, for authoring-guide background — not a repository version requirement."
+        },
+        {
+          "file": "docs/ui-snapshots/CAPTURE-SPEC.md",
+          "line": 57,
+          "text": "\"clickhouse_version\": \"26.3.10\",",
+          "tokens": [
+            "26.3.10"
+          ],
+          "reason": "An example literal inside a spec describing what METADATA FIELDS a UI screenshot capture should record (read from the running server's own version() at capture time) — not a pin of which version to run."
+        },
+        {
+          "file": "docs/ui-snapshots/g6410a06/notes.md",
+          "line": 5,
+          "text": "ClickHouse `26.3.10.20001.altinityantalya`.",
+          "tokens": [
+            "26.3.10.20001"
+          ],
+          "reason": "A historical provenance note recording which server version happened to be used for ONE past snapshot capture session — not an ongoing supported-version promise."
+        },
+        {
+          "file": "docs/ui-snapshots/g6410a06/notes.md",
+          "line": 26,
+          "text": "header shows a short version chip (`ClickHouse 26.3.10`) and a short username",
+          "tokens": [
+            "26.3.10"
+          ],
+          "reason": "Describes the UI's OWN version-chip DISPLAY behavior (it echoes whatever version() the connected server reports) in a specific past capture, not a pinned/required server version."
+        },
+        {
+          "file": "tests/unit/dashboard-viewer-session.test.ts",
+          "line": 1939,
+          "text": "// special wire format is needed (and none is available before ClickHouse 25.2).",
+          "tokens": [
+            "25.2"
+          ],
+          "reason": "Tests the already-inventoried \"variable-option batch reads\" entry (see SERVER_SENSITIVE_INVENTORY) — this comment documents that the app DELIBERATELY avoided the 25.2+-only wire format in favor of tupleElement(tuple(*), n) (functions since 20.4), specifically so the floor is NOT raised to 25.2."
+        },
+        {
+          "file": "tests/unit/kpi.test.ts",
+          "line": 136,
+          "text": "expect(tupleString.diagnostics[0].message).toContain('ClickHouse 24.3');",
+          "tokens": [
+            "24.3"
+          ],
+          "reason": "Tests the already-inventoried capability-gated named-tuple diagnostic (see SERVER_SENSITIVE_INVENTORY: \"KPI named-tuple detection\") — the diagnostic MESSAGE echoes whatever serverVersion string the caller supplies for display; this test line does not pin or require CH 24.3, and the feature has a graceful fallback (a warning diagnostic, never a crash) regardless of server version."
+        },
+        {
+          "file": "tests/unit/schema-graph.test.ts",
+          "line": 8,
+          "text": "// Fixtures are the *actual* outputs captured from ClickHouse 26.5.1 (Docker) for a",
+          "tokens": [
+            "26.5.1"
+          ],
+          "reason": "Fixture-provenance comment (which real server produced these committed sample outputs) — schema-graph parsing itself is version-agnostic text parsing, not gated on this or any other server version."
+        }
+      ],
+      "pinned": true
+    },
+    "officialClientGuaranteedMinimum": {
+      "clientVersionFloor": "1.12.0",
+      "clickhouseVersionFloor": "24.8",
+      "citation": "node_modules/@clickhouse/client-web/README.md, \"## Compatibility with ClickHouse\" table row \"1.12.0+ | 24.8+\"",
+      "caveat": null
+    },
+    "serverSensitiveInventory": [
+      {
+        "feature": "JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns)",
+        "status": "required",
+        "fallback": "none — core/stream.ts applyStreamLine() has no fallback: without a prior {\"meta\":[...]} line, result.columns stays empty and EVERY row silently maps to an empty array, discarding all column values",
+        "earliestDocumentedSupport": "NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6)",
+        "citation": "src/core/stream.ts applyStreamLine(): \"if (json.meta) { result.columns = ... } else if (json.row) { ... result.columns.map((c) => row[c.name]) }\" — no meta-less fallback; live reproduction: tests/spike/clickhouse-client/live-sessions.test.ts (temporary-table/session-SET row-value assertions) and the KILL QUERY system.processes probe in live-parity.test.ts both fail on both 24.8 rows for exactly this reason (issue #585 Phase 0 evidence review, 2026-08-06)",
+        "raisesFloor": true
+      },
+      {
+        "feature": "JSONEachRowWithProgress (KPI streaming format)",
+        "status": "required",
+        "fallback": "none — KPI tiles use this format unconditionally",
+        "earliestDocumentedSupport": "NOT long-standing — same ClickHouse GitHub PR #74181 (merged 2025-01-06) that added the meta line to JSONStringsEachRowWithProgress applies to this sibling format too (both share the underlying progress-format implementation); not independently re-verified for the KPI path specifically by this spike (no KPI-shaped live case in the corpus), but the underlying format change is the same one",
+        "citation": "src/net/ch-client.ts / src/dashboard — KPI execution path (CLAUDE.md \"KPI execution uses JSONEachRowWithProgress\"); see the JSONStringsEachRowWithProgress entry above for the verified root cause this shares",
+        "raisesFloor": false
+      },
+      {
+        "feature": "totals/extremes lines (rows_before_limit_at_least, totals, extremes)",
+        "status": "optional",
+        "fallback": "silently tolerated as a no-op if present; never requested by a setting the app requires",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/core/stream.ts applyStreamLine — lines without meta/row/progress/exception are ignored",
+        "raisesFloor": false
+      },
+      {
+        "feature": "HTTP settings sent by ch-client.ts (max_result_rows, result_overflow_mode, add_http_cors_header, enable_http_compression)",
+        "status": "required",
+        "fallback": "none — sent on every request",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts chUrl()/runQuery()",
+        "raisesFloor": false
+      },
+      {
+        "feature": "wait_end_of_query (non-streaming reads only)",
+        "status": "optional",
+        "fallback": "only set for the non-streaming (rowLimit-less) branch; streaming Table/KPI reads never set it",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts runQuery(): \"wait_end_of_query buffers the whole response server-side...\"",
+        "raisesFloor": false
+      },
+      {
+        "feature": "enable_http_compression=1 (gzip/br response compression negotiation)",
+        "status": "required",
+        "fallback": "none",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts chUrl()",
+        "raisesFloor": false
+      },
+      {
+        "feature": "X-ClickHouse-Summary response header",
+        "status": "optional",
+        "fallback": "summary is read best-effort; absence does not fail a query",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/application/export-service.ts and core/stream.ts summary handling",
+        "raisesFloor": false
+      },
+      {
+        "feature": "X-ClickHouse-Exception-Tag header + tagged late-exception frame",
+        "status": "capability-gated",
+        "fallback": "plain-text scan (legacy untagged exception detection) on servers that never send the header",
+        "earliestDocumentedSupport": "24.11",
+        "citation": "README.md \"Export\" section: \"CH ≥ 24.11; older servers fall back to a plain-text scan\" — src/core/stream.ts findExceptionFrame(tailLatin1, tag)",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Legacy untagged late-exception detection (plain-text \"Code: N. DB::Exception:\" scan)",
+        "status": "required (as the fallback path for pre-24.11 servers)",
+        "fallback": "n/a — this IS the fallback",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/core/stream.ts findExceptionFrame — untagged branch",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Native query parameters (param_<name> query-string args)",
+        "status": "optional",
+        "fallback": "omitted entirely when a query defines none",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts queryJson()/runQuery() params; README.md \"Query variables\"",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Roles (role=<name> query-string arg)",
+        "status": "optional",
+        "fallback": "omitted when the user has no role selection",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "tests/spike/clickhouse-client/current-adapter.ts nativeParamsForCurrent() role handling",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Sessions (session_id query-string arg)",
+        "status": "optional",
+        "fallback": "session-less by default; only multi-statement scripts opt in",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/application/query-execution-service.ts ScriptStatement.params session_id",
+        "raisesFloor": false
+      },
+      {
+        "feature": "SESSION_IS_LOCKED (code 373) retry classification",
+        "status": "required (for the retry-safety invariant, whenever a session IS used)",
+        "fallback": "none — the regex is the detection mechanism itself; no server-version branch",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/application/query-execution-service.ts SESSION_BUSY regex",
+        "raisesFloor": false
+      },
+      {
+        "feature": "KILL QUERY WHERE query_id = ... ASYNC",
+        "status": "optional (best-effort cancellation only)",
+        "fallback": "errors are swallowed — killQuery() never throws",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts killQuery()/killQueryWithLease()",
+        "raisesFloor": false
+      },
+      {
+        "feature": "DataLakeCatalog visibility setting (show_data_lake_catalogs_in_system_tables / renamed show_remote_databases_in_system_tables)",
+        "status": "capability-gated",
+        "fallback": "plain system.tables/system.columns query on \"Unknown setting\", latched per-connection (dataLakeCatalogSettingUnsupported)",
+        "earliestDocumentedSupport": "25.8",
+        "citation": "src/net/ch-client.ts querySystemAware() docstring",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Older system-table fallback shape generally (system.tables/system.columns queried without the data-lake setting)",
+        "status": "required (as the universal fallback)",
+        "fallback": "n/a — this IS the fallback used by every server below 25.8",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts querySystemAware() plain() branch",
+        "raisesFloor": false
+      },
+      {
+        "feature": "KPI named-tuple detection (Tuple(value, delta) returned as a JSON object vs. a positional array/string)",
+        "status": "capability-gated",
+        "fallback": "a \"kpi-server-named-tuple-unsupported\" warning diagnostic (never a crash) when the server/query returns a positional tuple instead of a named one — e.g. a tuple literal without enable_named_columns_in_function_tuple or an explicit named-type CAST; see README.md \"KPI\" section",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/core/kpi.ts readKpiFields() — kpi-server-named-tuple-unsupported diagnostic; tests/unit/kpi.test.ts serverVersion display case",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Variable-option batch reads (tupleElement(tuple(*), n) positional projection for __variable_name/__variable_value/__variable_label)",
+        "status": "required",
+        "fallback": "n/a — this IS the app's own fallback: it deliberately uses tuple()/tupleElement() (functions available since ClickHouse 20.4) instead of the newer positional wire format ClickHouse first shipped in 25.2, specifically so this feature does not require 25.2+",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/core/variable-options.ts — \"Both functions have existed since ClickHouse 20.4 ... the alternative, a positional wire format, first shipped in 25.2 and would have made the whole feature fail on anything older.\"",
+        "raisesFloor": false
+      },
+      {
+        "feature": "Authentication error code/message forms (401/403, AUTHENTICATION_FAILED code 516, isAuthExpiredBody text matching)",
+        "status": "required",
+        "fallback": "none — this IS the retry/sign-out policy",
+        "earliestDocumentedSupport": "not independently documented; long-standing ClickHouse HTTP-interface behavior, predates every evaluated matrix row (oldest evaluated: 24.8)",
+        "citation": "src/net/ch-client.ts authedFetch(); src/core/stream.ts isAuthExpiredBody()",
+        "raisesFloor": false
+      }
+    ],
+    "inventoryFeaturesThatRaiseFloor": [
+      "JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns)"
+    ],
+    "applicationFeatureMinimum": "NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6)",
+    "liveGateCorroboration": {
+      "evaluated": true,
+      "earliestPassingVersion": "26.3.16.10001.altinitystable"
+    },
+    "floors": [
+      {
+        "source": "pinned official-client guaranteed minimum",
+        "value": "24.8"
+      },
+      {
+        "source": "application feature/fallback minimum",
+        "value": "NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6)"
+      },
+      {
+        "source": "earliest version that passed every required hard gate (live matrix)",
+        "value": "26.3.16.10001.altinitystable"
+      }
+    ],
+    "proposedMinimum": "26.3.16.10001.altinitystable",
+    "proposedMinimumSource": "earliest version that passed every required hard gate (live matrix)",
+    "rationale": [
+      "Repository scan found 28 genuine pinned-version mention(s) — see pinnedVersionScan.findings.",
+      "Official client node_modules/@clickhouse/client-web/README.md, \"## Compatibility with ClickHouse\" table row \"1.12.0+ | 24.8+\" documents a guaranteed floor of ClickHouse 24.8+.",
+      "Application inventory raises the floor to NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6) via: JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns).",
+      "Proposed minimum = max(pinned official-client guaranteed minimum=24.8, application feature/fallback minimum=NOT long-standing — ClickHouse GitHub PR #74181 (\"JSONEachRowWithProgress format will include meta, totals, and extremes\", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6), earliest version that passed every required hard gate (live matrix)=26.3.16.10001.altinitystable) = 26.3.16.10001.altinitystable (binding source: earliest version that passed every required hard gate (live matrix)).",
+      "Live-gate corroboration (step 5 of the plan's derivation) has run and is folded in above."
+    ]
+  },
+  "cloud": {
+    "status": "not evaluated — no ClickHouse Cloud credentials in this environment"
+  },
+  "startupParse": {
+    "status": "not applicable — repository has no existing startup parse/evaluation harness or budget"
+  },
+  "matrixRows": {
+    "proposed-oldest-oss": {
+      "requested": true,
+      "executed": true,
+      "status": "failed",
+      "imageRef": "clickhouse/clickhouse-server@sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b",
+      "digest": "sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b",
+      "tag": "24.8.14.39",
+      "serverVersion": "24.8.14.39",
+      "liveSuite": {
+        "success": false,
+        "numTotalTests": 15
+      }
+    },
+    "proposed-oldest-altinity-stable": {
+      "requested": true,
+      "executed": true,
+      "status": "failed",
+      "imageRef": "altinity/clickhouse-server@sha256:d0c456453ddc5220bc96e37c9b1f81eb210ca22fc0d6877dc9e71722ff43fa8f",
+      "digest": "sha256:d0c456453ddc5220bc96e37c9b1f81eb210ca22fc0d6877dc9e71722ff43fa8f",
+      "tag": "24.8.14.10547.altinitystable",
+      "serverVersion": "24.8.14.10547.altinitystable",
+      "liveSuite": {
+        "success": false,
+        "numTotalTests": 15
+      }
+    },
+    "current-stable-oss": {
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "imageRef": "clickhouse/clickhouse-server@sha256:a63a90ffdcb574683ebfe96e4c53e2dbe401864add7bb06dc244eb935d828e7f",
+      "digest": "sha256:a63a90ffdcb574683ebfe96e4c53e2dbe401864add7bb06dc244eb935d828e7f",
+      "tag": "26.6.2.160",
+      "serverVersion": "26.6.2.160",
+      "liveSuite": {
+        "success": true,
+        "numTotalTests": 15
+      }
+    },
+    "current-altinity-stable": {
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "imageRef": "altinity/clickhouse-server@sha256:8526a7742e6ef707dee68107876b18d45570b0448f284d3c785eb2d2e4417a5e",
+      "digest": "sha256:8526a7742e6ef707dee68107876b18d45570b0448f284d3c785eb2d2e4417a5e",
+      "tag": "26.3.16.10001.altinitystable",
+      "serverVersion": "26.3.16.10001.altinitystable",
+      "liveSuite": {
+        "success": true,
+        "numTotalTests": 15
+      }
+    },
+    "cloud": {
+      "status": "not evaluated — no ClickHouse Cloud credentials in this environment",
+      "requested": false,
+      "executed": false,
+      "kind": "cloud"
+    }
+  },
+  "precision": {
+    "uint64-max": {
+      "category": "unsigned-integers",
+      "chType": "UInt64",
+      "expected": "18446744073709551615",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "18446744073709551615",
+          "officialValue": "18446744073709551615",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "18446744073709551615",
+          "officialValue": "18446744073709551615",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "uint64-above-safe-integer": {
+      "category": "unsigned-integers",
+      "chType": "UInt64",
+      "expected": "9007199254740993",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "9007199254740993",
+          "officialValue": "9007199254740993",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "9007199254740993",
+          "officialValue": "9007199254740993",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "uint128-max": {
+      "category": "unsigned-integers",
+      "chType": "UInt128",
+      "expected": "340282366920938463463374607431768211455",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "340282366920938463463374607431768211455",
+          "officialValue": "340282366920938463463374607431768211455",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "340282366920938463463374607431768211455",
+          "officialValue": "340282366920938463463374607431768211455",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "uint256-max": {
+      "category": "unsigned-integers",
+      "chType": "UInt256",
+      "expected": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "officialValue": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "officialValue": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "int64-min": {
+      "category": "signed-integers",
+      "chType": "Int64",
+      "expected": "-9223372036854775808",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "-9223372036854775808",
+          "officialValue": "-9223372036854775808",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "-9223372036854775808",
+          "officialValue": "-9223372036854775808",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "int64-max": {
+      "category": "signed-integers",
+      "chType": "Int64",
+      "expected": "9223372036854775807",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "9223372036854775807",
+          "officialValue": "9223372036854775807",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "9223372036854775807",
+          "officialValue": "9223372036854775807",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "int128-min": {
+      "category": "signed-integers",
+      "chType": "Int128",
+      "expected": "-170141183460469231731687303715884105728",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "-170141183460469231731687303715884105728",
+          "officialValue": "-170141183460469231731687303715884105728",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "-170141183460469231731687303715884105728",
+          "officialValue": "-170141183460469231731687303715884105728",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "int256-max": {
+      "category": "signed-integers",
+      "chType": "Int256",
+      "expected": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
+          "officialValue": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
+          "officialValue": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "decimal32-trailing-zeros": {
+      "category": "decimals",
+      "chType": "Decimal32(4)",
+      "expected": "1.2",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "1.2",
+          "officialValue": "1.2",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "1.2",
+          "officialValue": "1.2",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "decimal64-negative": {
+      "category": "decimals",
+      "chType": "Decimal64(6)",
+      "expected": "-123456789.123456",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "-123456789.123456",
+          "officialValue": "-123456789.123456",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "-123456789.123456",
+          "officialValue": "-123456789.123456",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "decimal128-large": {
+      "category": "decimals",
+      "chType": "Decimal128(12)",
+      "expected": "123456789012345678901234.123456789012",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "123456789012345678901234.123456789012",
+          "officialValue": "123456789012345678901234.123456789012",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "123456789012345678901234.123456789012",
+          "officialValue": "123456789012345678901234.123456789012",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "decimal256-large": {
+      "category": "decimals",
+      "chType": "Decimal256(40)",
+      "expected": "1234567890123456789012345678.1234567890123456789012345678901234567891",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "1234567890123456789012345678.1234567890123456789012345678901234567891",
+          "officialValue": "1234567890123456789012345678.1234567890123456789012345678901234567891",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "1234567890123456789012345678.1234567890123456789012345678901234567891",
+          "officialValue": "1234567890123456789012345678.1234567890123456789012345678901234567891",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "date-ordinary": {
+      "category": "dates",
+      "chType": "Date",
+      "expected": "2024-02-29",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "2024-02-29",
+          "officialValue": "2024-02-29",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "2024-02-29",
+          "officialValue": "2024-02-29",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "date32-pre-epoch": {
+      "category": "dates",
+      "chType": "Date32",
+      "expected": "1950-06-15",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "1950-06-15",
+          "officialValue": "1950-06-15",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "1950-06-15",
+          "officialValue": "1950-06-15",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "datetime-tz": {
+      "category": "datetime",
+      "chType": "DateTime('UTC')",
+      "expected": "2024-06-15 12:34:56",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "2024-06-15 12:34:56",
+          "officialValue": "2024-06-15 12:34:56",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "2024-06-15 12:34:56",
+          "officialValue": "2024-06-15 12:34:56",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "datetime64-fractional-tz": {
+      "category": "datetime",
+      "chType": "DateTime64(6, 'UTC')",
+      "expected": "2024-06-15 12:34:56.123456",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "2024-06-15 12:34:56.123456",
+          "officialValue": "2024-06-15 12:34:56.123456",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "2024-06-15 12:34:56.123456",
+          "officialValue": "2024-06-15 12:34:56.123456",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "uuid": {
+      "category": "identifiers-network",
+      "chType": "UUID",
+      "expected": "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
+          "officialValue": "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
+          "officialValue": "61f0c404-5cb3-11e7-907b-a6006ad3dba0",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "ipv4": {
+      "category": "identifiers-network",
+      "chType": "IPv4",
+      "expected": "192.168.1.100",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "192.168.1.100",
+          "officialValue": "192.168.1.100",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "192.168.1.100",
+          "officialValue": "192.168.1.100",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "ipv6": {
+      "category": "identifiers-network",
+      "chType": "IPv6",
+      "expected": "2001:db8::ff00:42:8329",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "2001:db8::ff00:42:8329",
+          "officialValue": "2001:db8::ff00:42:8329",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "2001:db8::ff00:42:8329",
+          "officialValue": "2001:db8::ff00:42:8329",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "enum8": {
+      "category": "enums",
+      "chType": "Enum8('a'=1,'b'=2)",
+      "expected": "b",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "b",
+          "officialValue": "b",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "b",
+          "officialValue": "b",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "enum16": {
+      "category": "enums",
+      "chType": "Enum16('x'=1000,'y'=2000)",
+      "expected": "y",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "y",
+          "officialValue": "y",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "y",
+          "officialValue": "y",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "nullable-null": {
+      "category": "nullable",
+      "chType": "Nullable(Int64)",
+      "expected": "ᴺᵁᴸᴸ",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "ᴺᵁᴸᴸ",
+          "officialValue": "ᴺᵁᴸᴸ",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "ᴺᵁᴸᴸ",
+          "officialValue": "ᴺᵁᴸᴸ",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "nullable-nonnull": {
+      "category": "nullable",
+      "chType": "Nullable(Int64)",
+      "expected": "9223372036854775807",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "9223372036854775807",
+          "officialValue": "9223372036854775807",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "9223372036854775807",
+          "officialValue": "9223372036854775807",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "array-large-integers": {
+      "category": "arrays",
+      "chType": "Array(UInt64)",
+      "expected": "[18446744073709551615,0]",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "[18446744073709551615,0]",
+          "officialValue": "[18446744073709551615,0]",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "[18446744073709551615,0]",
+          "officialValue": "[18446744073709551615,0]",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "array-nullable": {
+      "category": "arrays",
+      "chType": "Array(Nullable(Int32))",
+      "expected": "[1,NULL]",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "[1,NULL]",
+          "officialValue": "[1,NULL]",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "[1,NULL]",
+          "officialValue": "[1,NULL]",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "tuple-unnamed-precision": {
+      "category": "tuples",
+      "chType": "Tuple(UInt64, Int64)",
+      "expected": "(18446744073709551615,-9223372036854775808)",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "(18446744073709551615,-9223372036854775808)",
+          "officialValue": "(18446744073709551615,-9223372036854775808)",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "(18446744073709551615,-9223372036854775808)",
+          "officialValue": "(18446744073709551615,-9223372036854775808)",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "tuple-named-precision": {
+      "category": "tuples",
+      "chType": "Tuple(big UInt64, label String)",
+      "expected": "(18446744073709551615,'x')",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "(18446744073709551615,'x')",
+          "officialValue": "(18446744073709551615,'x')",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "(18446744073709551615,'x')",
+          "officialValue": "(18446744073709551615,'x')",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "map-string-large-integer": {
+      "category": "maps",
+      "chType": "Map(String, UInt64)",
+      "expected": "{'k':18446744073709551615}",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "{'k':18446744073709551615}",
+          "officialValue": "{'k':18446744073709551615}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "{'k':18446744073709551615}",
+          "officialValue": "{'k':18446744073709551615}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "map-string-date": {
+      "category": "maps",
+      "chType": "Map(String, Date)",
+      "expected": "{'k':'2024-06-15'}",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "{'k':'2024-06-15'}",
+          "officialValue": "{'k':'2024-06-15'}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "{'k':'2024-06-15'}",
+          "officialValue": "{'k':'2024-06-15'}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "lowcardinality-string": {
+      "category": "lowcardinality",
+      "chType": "LowCardinality(String)",
+      "expected": "hello",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "hello",
+          "officialValue": "hello",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "hello",
+          "officialValue": "hello",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "lowcardinality-nullable-string": {
+      "category": "lowcardinality",
+      "chType": "LowCardinality(Nullable(String))",
+      "expected": "ᴺᵁᴸᴸ",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "ᴺᵁᴸᴸ",
+          "officialValue": "ᴺᵁᴸᴸ",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "ᴺᵁᴸᴸ",
+          "officialValue": "ᴺᵁᴸᴸ",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "json-object": {
+      "category": "json-object",
+      "chType": "JSON",
+      "expected": "{\"a\":1}",
+      "capabilityGated": true,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": false,
+          "skippedReason": "current adapter: {\"row\":{\"exception\": \"Code: 44. DB::Exception: Cannot create column with type 'JSON' because experimental JSON type is not allowed. Set setting allow_experimental_json_type = 1 in order to allow it: In scope SELECT CAST('{\\\"a\\\":1}', 'JSON') AS v. (ILLEGAL_COLUMN) (version 24.8.14.39 (official build))\"}}\n"
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": false,
+          "skippedReason": "current adapter: {\"row\":{\"exception\": \"Code: 44. DB::Exception: Cannot create column with type 'JSON' because experimental JSON type is not allowed. Set setting allow_experimental_json_type = 1 in order to allow it: In scope SELECT CAST('{\\\"a\\\":1}', 'JSON') AS v. (ILLEGAL_COLUMN) (version 24.8.14.10547.altinitystable (altinity build))\"}}\n"
+        },
+        "current-stable-oss": {
+          "currentValue": "{\"a\":1}",
+          "officialValue": "{\"a\":1}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "{\"a\":1}",
+          "officialValue": "{\"a\":1}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "string-newline": {
+      "category": "strings",
+      "chType": "String",
+      "expected": "a\nb",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "a\nb",
+          "officialValue": "a\nb",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "a\nb",
+          "officialValue": "a\nb",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "string-nul": {
+      "category": "strings",
+      "chType": "String",
+      "expected": "a\u0000b",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "a\u0000b",
+          "officialValue": "a\u0000b",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "a\u0000b",
+          "officialValue": "a\u0000b",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "string-non-bmp-unicode": {
+      "category": "strings",
+      "chType": "String",
+      "expected": "a😀b",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "a😀b",
+          "officialValue": "a😀b",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "a😀b",
+          "officialValue": "a😀b",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "string-backslash-quotes": {
+      "category": "strings",
+      "chType": "String",
+      "expected": "a\\b\"c",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "a\\b\"c",
+          "officialValue": "a\\b\"c",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "a\\b\"c",
+          "officialValue": "a\\b\"c",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "string-tab-cr": {
+      "category": "strings",
+      "chType": "String",
+      "expected": "a\tb\rc",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "a\tb\rc",
+          "officialValue": "a\tb\rc",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "a\tb\rc",
+          "officialValue": "a\tb\rc",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "string-empty": {
+      "category": "strings",
+      "chType": "String",
+      "expected": "",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "",
+          "officialValue": "",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "",
+          "officialValue": "",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "nested-array-of-tuples": {
+      "category": "nested",
+      "chType": "Array(Tuple(UInt64, Date))",
+      "expected": "[(18446744073709551615,'2024-06-15')]",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "[(18446744073709551615,'2024-06-15')]",
+          "officialValue": "[(18446744073709551615,'2024-06-15')]",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "[(18446744073709551615,'2024-06-15')]",
+          "officialValue": "[(18446744073709551615,'2024-06-15')]",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    },
+    "nested-map-of-arrays": {
+      "category": "nested",
+      "chType": "Map(String, Array(UInt64))",
+      "expected": "{'k':[18446744073709551615,0]}",
+      "capabilityGated": false,
+      "rows": {
+        "proposed-oldest-oss": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "proposed-oldest-altinity-stable": {
+          "currentValue": "null",
+          "officialValue": "null",
+          "currentMatchesExpected": false,
+          "officialMatchesExpected": false,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-stable-oss": {
+          "currentValue": "{'k':[18446744073709551615,0]}",
+          "officialValue": "{'k':[18446744073709551615,0]}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        },
+        "current-altinity-stable": {
+          "currentValue": "{'k':[18446744073709551615,0]}",
+          "officialValue": "{'k':[18446744073709551615,0]}",
+          "currentMatchesExpected": true,
+          "officialMatchesExpected": true,
+          "currentMatchesOfficial": true,
+          "skippedReason": null
+        }
+      }
+    }
+  },
+  "timing": {
+    "deterministic": {
+      "current": {
+        "firstRowMs": 126,
+        "completedMs": 1263
+      },
+      "official": {
+        "firstRowMs": 125,
+        "completedMs": 1259
+      }
+    },
+    "fixture": "delayed-headers-scheduled-rows"
+  },
+  "hashes": {
+    "cases": {
+      "invalid-utf8-raw": {
+        "byteLength": 8,
+        "sha256": "be2fe9f21ab5be3f16444d7341ee83e35805ab45b2d88d09602f63d6e998fa4d"
+      },
+      "raw-tagged-late-exception": {
+        "byteLength": 171,
+        "sha256": "7bd9be807fb0f4420a9db4a2962749d61fa2209da8c4332affc16affb558e3b0"
+      },
+      "raw-legacy-untagged-exception": {
+        "byteLength": 108,
+        "sha256": "b1b6d8a0b674568c33fa3703ead896f463ed471b0aca6d3049c66e312d7f6c30"
+      }
+    },
+    "note": "Full digest-equality proof (current vs. official, both fixture-driven) is asserted in parity.test.ts's raw/export block; recorded here for the numeric byte length/digest values only."
+  },
+  "browserMatrix": {
+    "proposed-oldest-oss/same-origin/chromium": {
+      "row": "proposed-oldest-oss",
+      "origin": "same-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "proposed-oldest-oss/same-origin/webkit": {
+      "row": "proposed-oldest-oss",
+      "origin": "same-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    },
+    "proposed-oldest-oss/cross-origin/chromium": {
+      "row": "proposed-oldest-oss",
+      "origin": "cross-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "proposed-oldest-oss/cross-origin/webkit": {
+      "row": "proposed-oldest-oss",
+      "origin": "cross-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    },
+    "proposed-oldest-altinity-stable/same-origin/chromium": {
+      "row": "proposed-oldest-altinity-stable",
+      "origin": "same-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "proposed-oldest-altinity-stable/same-origin/webkit": {
+      "row": "proposed-oldest-altinity-stable",
+      "origin": "same-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    },
+    "proposed-oldest-altinity-stable/cross-origin/chromium": {
+      "row": "proposed-oldest-altinity-stable",
+      "origin": "cross-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "proposed-oldest-altinity-stable/cross-origin/webkit": {
+      "row": "proposed-oldest-altinity-stable",
+      "origin": "cross-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    },
+    "current-stable-oss/same-origin/chromium": {
+      "row": "current-stable-oss",
+      "origin": "same-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "current-stable-oss/same-origin/webkit": {
+      "row": "current-stable-oss",
+      "origin": "same-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    },
+    "current-stable-oss/cross-origin/chromium": {
+      "row": "current-stable-oss",
+      "origin": "cross-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "current-stable-oss/cross-origin/webkit": {
+      "row": "current-stable-oss",
+      "origin": "cross-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    },
+    "current-altinity-stable/same-origin/chromium": {
+      "row": "current-altinity-stable",
+      "origin": "same-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "current-altinity-stable/same-origin/webkit": {
+      "row": "current-altinity-stable",
+      "origin": "same-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "failed",
+      "browserVersion": "26.5"
+    },
+    "current-altinity-stable/cross-origin/chromium": {
+      "row": "current-altinity-stable",
+      "origin": "cross-origin",
+      "browser": "chromium",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "151.0.7922.34"
+    },
+    "current-altinity-stable/cross-origin/webkit": {
+      "row": "current-altinity-stable",
+      "origin": "cross-origin",
+      "browser": "webkit",
+      "requested": true,
+      "executed": true,
+      "status": "passed",
+      "browserVersion": "26.5"
+    }
+  },
+  "gates": {
+    "exact-value parity": "pass",
+    "progressive first-row parity": "pass",
+    "mid-stream error parity": "pass",
+    "auth/epoch parity": "pass",
+    "raw/export bytes": "pass",
+    "supported-server matrix": "fail",
+    "browser matrix": "fail",
+    "single-file build": "pass",
+    "bundle delta": "measured",
+    "net production-code deletion": "fail"
+  },
+  "decision": {
+    "status": "Rejected",
+    "rationale": [
+      "at least one hard gate failed — see gates in results.json"
+    ]
+  },
+  "criticalQuestions": [
+    {
+      "title": "Can the client request or expose JSONStringsEachRowWithProgress safely?",
+      "answer": "No — rejected by the installed 1.23.1 public type surface (compile-time @ts-expect-error probe, format-type-probe.ts); a narrow exec()-based bridge is used instead.",
+      "evidence": "tests/spike/clickhouse-client/format-type-probe.ts (compile-time @ts-expect-error proof); tsc --noEmit result recorded in results.json.typeCheck"
+    },
+    {
+      "title": "If not, how many bridge lines are required?",
+      "answer": "40 physical / 34 transformed executable lines (progress-bridge.ts) + 55 physical / 58 transformed executable (guarded-fetch.ts)",
+      "evidence": "docs/evidence/585/bridge-loc.json"
+    },
+    {
+      "title": "Does exec() expose raw bytes without text decoding?",
+      "answer": "Yes — proven by the invalid-UTF-8 SHA-256 digest-equality scenario.",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts \"raw export: invalid-UTF-8 bytes hash identically\""
+    },
+    {
+      "title": "Can mid-stream exception behavior be preserved?",
+      "answer": "Yes on the deterministic fault-server fixture; see results.json.matrixRows for the real-server corroboration per row.",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts in-band exception test; live-parity.test.ts real-server exception test"
+    },
+    {
+      "title": "Can per-request auth work without mutation or reconstruction?",
+      "answer": "Evidence recorded per the alternating-credentials/constructor-count test in parity.test.ts.",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts \"alternating Basic user A / user B / invalid / valid\""
+    },
+    {
+      "title": "Can epoch fencing occur immediately before fetch?",
+      "answer": "Evidence recorded per the deliberate epoch-flip race test in parity.test.ts (guarded-fetch.ts).",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts credential-epoch fencing block; tests/spike/clickhouse-client/guarded-fetch.ts"
+    },
+    {
+      "title": "How are abort, timeout, and ClickHouse errors distinguished?",
+      "answer": "Evidence recorded per the four-way taxonomy tests (cancel/timeout/offline/HTTP-error).",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts cancellation + timeout/offline blocks"
+    },
+    {
+      "title": "Are code and message retained for current policy?",
+      "answer": "Evidence recorded per the 401/403/SESSION_IS_LOCKED/reset error-taxonomy tests.",
+      "evidence": "tests/spike/clickhouse-client/parity.test.ts retry-safety block"
+    },
+    {
+      "title": "Does the client support the proposed minimum?",
+      "answer": "Proposed minimum ClickHouse 26.3.16.10001.altinitystable — see docs/evidence/585/support-minimum-analysis.md and results.json.matrixRows for the executed oldest-row corroboration.",
+      "evidence": "docs/evidence/585/support-minimum-analysis.md; results.json.matrixRows"
+    },
+    {
+      "title": "What production code would be deleted?",
+      "answer": "Estimated net executable LOC deletion: -103 (240 eligible - 248 adapter - 95 bridge/guard).",
+      "evidence": "docs/evidence/585/deletion-estimate.md"
+    }
+  ]
+}

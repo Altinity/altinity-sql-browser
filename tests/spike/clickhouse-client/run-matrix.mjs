@@ -440,6 +440,46 @@ const DETERMINISTIC_SCENARIO_TEST_SUBSTRINGS = {
   'ambiguous-ddl-reset-no-retry': ['ambiguous DDL reset: no retry'],
 };
 
+/** Walk a Playwright JSON reporter report's `suites` tree looking for
+ * `browser.spec.js`'s `row=<rowKey> origin=<mode>` describe blocks
+ * (`browser.spec.js`'s own `test.describe(\`row=${rowKey} origin=${mode}\`, ...)`)
+ * and return `{ "<rowKey>/<mode>": boolean }` — true only when EVERY spec
+ * under that one row/origin suite passed (`spec.ok`).
+ *
+ * DISCOVERED BY A REAL RUN (2026-08-06): the caller used to derive ONE
+ * pass/fail boolean from `pw.stats.unexpected === 0` for the WHOLE
+ * Playwright invocation (which covers ALL requested rows x both origins in
+ * a single project run) and then blanket-applied that ONE boolean to EVERY
+ * row/origin `browserMatrix` entry for that browser. A single flaky/failing
+ * test ANYWHERE in that run (e.g. one `beforeEach` hook timeout on one
+ * row/origin, observed live under this sandbox's Docker-emulation
+ * contention) therefore marked ALL 8 row/origin combinations for that
+ * browser as "failed" even when 7 of 8 (or all 8) genuinely passed — the
+ * exact shape of a real "16/16 webkit rows failed while chromium passed
+ * 16/16" evidence anomaly that turned out to be this aggregation bug, not a
+ * genuine per-row WebKit incompatibility (issue #585 Phase 0 evidence
+ * review). This function restores the granularity the JSON report already
+ * contains instead of collapsing it. */
+function computeBrowserRowOriginResults(pw) {
+  const out = {};
+  const fileSuites = pw.suites || [];
+  const rowOriginRe = /^row=(.+) origin=(.+)$/;
+  const walk = (suites) => {
+    for (const s of suites) {
+      const m = rowOriginRe.exec(s.title || '');
+      if (m) {
+        const [, rowKey, mode] = m;
+        const specs = s.specs || [];
+        const allOk = specs.length > 0 && specs.every((spec) => spec.ok === true);
+        out[`${rowKey}/${mode}`] = allOk;
+      }
+      if (s.suites) walk(s.suites);
+    }
+  };
+  walk(fileSuites);
+  return out;
+}
+
 /** Live-only scenario ids (no fault-server fixture — need a real server;
  * plan §17/§22/§23) mapped the same way, against `live-parity.test.ts` /
  * `live-sessions.test.ts`'s full titles. These are NOT in scenarios.ts
@@ -1213,17 +1253,29 @@ async function main() {
         'playwright', 'test', '--config', join(spikeDir, 'playwright.config.js'), `--project=${browser}`, '--reporter=json',
       ], { cwd: repoRoot, env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: jsonOutFile, ASB_SPIKE_BROWSER_ROWS: browserRowKeys.join(',') }, timeout: 580_000 });
       let browserVersion = 'unknown';
+      // Fallback ONLY when the JSON report itself is unavailable (e.g. the
+      // webServer never came up and Playwright never wrote a report) — a
+      // single overall boolean is the best information available in that
+      // case. When the report exists, per-row/origin granularity (below)
+      // is authoritative and this blanket boolean is never used.
       let allPassed = pwResult.ok;
+      let rowOriginResults = null;
       if (existsSync(jsonOutFile)) {
         const pw = await readJson(jsonOutFile);
         const versionMatch = /asb585 browser matrix: \S+ (.+)/.exec(pwResult.stdout);
         if (versionMatch) browserVersion = versionMatch[1].trim();
         allPassed = pw.stats ? pw.stats.unexpected === 0 : pwResult.ok;
+        rowOriginResults = computeBrowserRowOriginResults(pw);
       }
       for (const key of Object.keys(results.browserMatrix)) {
         if (results.browserMatrix[key].browser === browser) {
+          const { row, origin } = results.browserMatrix[key];
+          const rowOriginKey = `${row}/${origin}`;
+          const passed = rowOriginResults && rowOriginKey in rowOriginResults
+            ? rowOriginResults[rowOriginKey]
+            : allPassed; // no matching suite found in the report — fall back to the blanket signal
           results.browserMatrix[key].executed = true;
-          results.browserMatrix[key].status = allPassed ? 'passed' : 'failed';
+          results.browserMatrix[key].status = passed ? 'passed' : 'failed';
           results.browserMatrix[key].browserVersion = browserVersion;
         }
       }

@@ -32,44 +32,18 @@ function envVar(name: string): string | undefined {
 
 const CH_URL = envVar('ASB_SPIKE_CH_URL');
 
-// ── KNOWN incorrect expected-values.ts literals for container/JSON/NULL
-// types, discovered by THIS FILE'S FIRST-EVER real run (2026-08-05, against
-// clickhouse/clickhouse-server 26.6.2.160) — flagged here rather than
-// silently "fixed" with a guessed literal, because the fix requires design
-// judgment outside this sub-task's file scope (expected-values.ts belongs
-// to a different sub-task; see the final report for the full writeup):
-//
-// `JSONStringsEachRowWithProgress` wraps each COLUMN in exactly one JSON
-// string, but for Array/Tuple/Map/top-level-Nullable/LowCardinality(Nullable)
-// values the CONTENT of that string is ClickHouse's own native/Pretty-style
-// text syntax — unquoted numbers, single-quoted strings, parens for tuples,
-// the literal word "NULL" for a null INSIDE a container, and the special
-// small-caps glyph "ᴺᵁᴸᴸ" (U+1D3A U+1D41 U+1D38 U+1D38) for a null at the
-// TOP level of a Nullable column — NOT recursive JSON encoding with every
-// leaf independently stringified, which is what `expected-values.ts`'s
-// header comment and these specific cases assumed (never having been run
-// against a real server before). The genuine JSON column type is a partial
-// exception again (`json-object`): its string content IS real JSON syntax,
-// but leaves are NOT independently re-stringified either.
-//
-// Critically: for every one of these ids, `currentValue === officialValue`
-// (BOTH adapters observe the identical wire bytes and disagree with the
-// SAME stale expectation) — this is exclusively an authoring error in the
-// independent literal, not an adapter defect or a parity gap, which is the
-// one thing this sub-task's harness actually needs to prove for these cases.
-const KNOWN_INCORRECT_EXPECTED_LITERAL_IDS = [
-  'nullable-null',
-  'lowcardinality-nullable-string',
-  'array-large-integers',
-  'array-nullable',
-  'tuple-unnamed-precision',
-  'tuple-named-precision',
-  'map-string-large-integer',
-  'map-string-date',
-  'nested-array-of-tuples',
-  'nested-map-of-arrays',
-  'json-object',
-];
+// NOTE on history: this file's first-ever real run (2026-08-05, against
+// clickhouse/clickhouse-server 26.6.2.160) found that 11 of the corpus's
+// container/JSON/NULL-typed cases disagreed with `expected-values.ts`'s
+// literals even though `currentValue === officialValue` on every one of
+// them (both adapters observing the identical wire bytes) — proving the
+// literals themselves were authored from an incorrect assumption about
+// `JSONStringsEachRowWithProgress`'s container serialization (documented in
+// full in `expected-values.ts`'s header comment and each corrected case's
+// own `because` field), not an adapter defect or a parity gap. Those 11
+// literals are now corrected there (issue #585 Phase 0 evidence review,
+// 2026-08-06), so this file asserts a single, unqualified full-corpus match
+// with no exclusion list.
 
 describe.skipIf(!CH_URL)('live precision corpus against a real ClickHouse server (plan §17)', () => {
   let conn: OfficialConnection;
@@ -97,9 +71,8 @@ describe.skipIf(!CH_URL)('live precision corpus against a real ClickHouse server
     expect(conn.constructorCalls).toBe(1);
   });
 
-  it('every non-capability-gated case, EXCLUDING the known-incorrect-literal ids above, matches the independent expectation on BOTH adapters, and both adapters agree with each other', () => {
-    const relevant = results.filter((r) => !KNOWN_INCORRECT_EXPECTED_LITERAL_IDS.includes(r.id));
-    const hardFailures = relevant.filter((r) => !r.skippedReason
+  it('every non-capability-gated case matches the independent expectation on BOTH adapters, and both adapters agree with each other', () => {
+    const hardFailures = results.filter((r) => !r.skippedReason
       && (!r.currentMatchesExpected || !r.officialMatchesExpected || !r.currentMatchesOfficial));
     if (hardFailures.length) {
       // Not silently swallowed into a boolean — the exact case id, expected
@@ -108,29 +81,6 @@ describe.skipIf(!CH_URL)('live precision corpus against a real ClickHouse server
       console.error('live precision corpus failures:', JSON.stringify(hardFailures, null, 2));
     }
     expect(hardFailures).toEqual([]);
-  });
-
-  it('the known-incorrect-literal ids above still prove ADAPTER PARITY (both wire-format-identical), even though the independent literal itself is stale', () => {
-    const known = results.filter((r) => KNOWN_INCORRECT_EXPECTED_LITERAL_IDS.includes(r.id));
-    // Every id in the list must actually exist in the corpus and actually be
-    // exercised — a stale/typo'd id here would otherwise silently exclude
-    // nothing and mask a real regression.
-    expect(known.map((r) => r.id).sort()).toEqual([...KNOWN_INCORRECT_EXPECTED_LITERAL_IDS].sort());
-    for (const r of known) {
-      expect(r.currentMatchesOfficial, `case "${r.id}": current and official adapters disagree with EACH OTHER, not just with the known-stale literal — this IS a real regression, investigate immediately`).toBe(true);
-    }
-  });
-
-  it('the known-incorrect-literal list is EXACTLY the current set of mismatches — no case silently added to or removed from it', () => {
-    // A tripwire, not a suppression: if this ClickHouse version's behavior
-    // (or a future expected-values.ts correction) changes which ids
-    // mismatch, THIS test fails and forces a re-review of the list above,
-    // rather than the exclusion silently growing or shrinking unnoticed.
-    const actualMismatchIds = results
-      .filter((r) => !r.skippedReason && (!r.currentMatchesExpected || !r.officialMatchesExpected))
-      .map((r) => r.id)
-      .sort();
-    expect(actualMismatchIds).toEqual([...KNOWN_INCORRECT_EXPECTED_LITERAL_IDS].sort());
   });
 
   it('every capability-gated omission is recorded, never a case that was simply expected to match and silently didn\'t (plan §17 point 8)', () => {

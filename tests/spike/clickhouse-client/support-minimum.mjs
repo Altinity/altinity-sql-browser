@@ -272,19 +272,19 @@ const PREDATES_EVERY_EVALUATED_ROW = 'not independently documented; long-standin
 
 export const SERVER_SENSITIVE_INVENTORY = [
   {
-    feature: 'JSONStringsEachRowWithProgress (Table streaming format)',
+    feature: 'JSONStringsEachRowWithProgress meta line (column name/type header the streaming Table parser needs to map row values to columns)',
     status: 'required',
-    fallback: 'none — this is the current adapter\'s own default Table format (ch-client.ts chUrl default)',
-    earliestDocumentedSupport: PREDATES_EVERY_EVALUATED_ROW,
-    citation: 'src/net/ch-client.ts chUrl(): "const format = opts.format || \'JSONStringsEachRowWithProgress\'"',
-    raisesFloor: false,
+    fallback: 'none — core/stream.ts applyStreamLine() has no fallback: without a prior {"meta":[...]} line, result.columns stays empty and EVERY row silently maps to an empty array, discarding all column values',
+    earliestDocumentedSupport: 'NOT long-standing — ClickHouse GitHub PR #74181 ("JSONEachRowWithProgress format will include meta, totals, and extremes", merged 2025-01-06) added this; empirically CONFIRMED ABSENT live against both 24.8.14.39 and 24.8.14.10547.altinitystable (every query tested, including a bare SELECT 1, returns only progress/row lines, never a meta line) and PRESENT on 26.6.2.160/26.3.16.10001.altinitystable — this spike did not test an intermediate 25.x row, so the exact earliest passing release line is not independently confirmed, only bounded (fails on 24.8.14.x, passes by 26.3/26.6)',
+    citation: 'src/core/stream.ts applyStreamLine(): "if (json.meta) { result.columns = ... } else if (json.row) { ... result.columns.map((c) => row[c.name]) }" — no meta-less fallback; live reproduction: tests/spike/clickhouse-client/live-sessions.test.ts (temporary-table/session-SET row-value assertions) and the KILL QUERY system.processes probe in live-parity.test.ts both fail on both 24.8 rows for exactly this reason (issue #585 Phase 0 evidence review, 2026-08-06)',
+    raisesFloor: true,
   },
   {
     feature: 'JSONEachRowWithProgress (KPI streaming format)',
     status: 'required',
     fallback: 'none — KPI tiles use this format unconditionally',
-    earliestDocumentedSupport: PREDATES_EVERY_EVALUATED_ROW,
-    citation: 'src/net/ch-client.ts / src/dashboard — KPI execution path (CLAUDE.md "KPI execution uses JSONEachRowWithProgress")',
+    earliestDocumentedSupport: 'NOT long-standing — same ClickHouse GitHub PR #74181 (merged 2025-01-06) that added the meta line to JSONStringsEachRowWithProgress applies to this sibling format too (both share the underlying progress-format implementation); not independently re-verified for the KPI path specifically by this spike (no KPI-shaped live case in the corpus), but the underlying format change is the same one',
+    citation: 'src/net/ch-client.ts / src/dashboard — KPI execution path (CLAUDE.md "KPI execution uses JSONEachRowWithProgress"); see the JSONStringsEachRowWithProgress entry above for the verified root cause this shares',
     raisesFloor: false,
   },
   {
