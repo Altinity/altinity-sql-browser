@@ -232,9 +232,14 @@ async function proxyToRow(req, res) {
   let upstream;
   try {
     upstream = await fetch(target, { method: req.method, headers, body });
-  } catch {
-    // Never include the caught error's message verbatim — it could embed
-    // request details; a generic 502 is sufficient for this test harness.
+  } catch (err) {
+    // Log the caught error's own message to stderr only (Playwright's
+    // `webServer` captures this as `[WebServer]` output — issue #585
+    // observability-gap fix, so a real proxy-level failure isn't as
+    // unrecoverable as it used to be); never send it to the CLIENT, and
+    // never log request/response headers or bodies (this proxy carries real
+    // ClickHouse traffic) — a generic 502 remains the client-facing response.
+    process.stderr.write(`spike-server: proxy fetch to row "${rowKey}" failed: ${err instanceof Error ? err.message : String(err)}\n`);
     res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end('spike-server: upstream fetch failed');
     return;
   }
@@ -314,9 +319,14 @@ const server = createServer(async (req, res) => {
       return;
     }
     await serveStatic(req, res, pathname);
-  } catch {
-    // A generic 500 — never forward a caught error's message, which could
-    // embed request details from proxyToRow's own body.
+  } catch (err) {
+    // Log the caught error's own message to stderr only (Playwright's
+    // `webServer` captures this as `[WebServer]` output — issue #585
+    // observability-gap fix); never forward it to the CLIENT, and never log
+    // request/response headers or bodies, which could embed real request
+    // details from proxyToRow's own body — a generic 500 remains the
+    // client-facing response.
+    process.stderr.write(`spike-server: request handler error: ${err instanceof Error ? err.message : String(err)}\n`);
     if (!res.headersSent) res.writeHead(500).end('internal error');
   }
 });

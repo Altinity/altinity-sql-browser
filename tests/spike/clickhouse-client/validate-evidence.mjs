@@ -276,6 +276,17 @@ export function checkCompleteness(results, deterministicIds, precisionCases) {
         const entry = results.browserMatrix?.[key];
         if (!entry || entry.executed !== true) {
           missing(`missing browser-matrix row: "${key}" has not executed (results.browserMatrix["${key}"] is ${entry ? `present but executed=${entry.executed}` : 'absent'})`);
+        } else if (entry.status === 'flaky') {
+          // A cell that passed only after a retry (issue #585 Docker-
+          // contention flake fix, `run-matrix.mjs`'s `classifyBrowserMatrixCell`)
+          // still clears the browser-matrix hard gate — it is NOT a finding
+          // by itself — but, like a genuine failure, it must be backed by a
+          // compact, durable detail record; a 'flaky' status with nothing
+          // behind it would be exactly the same "trust the prose" gap this
+          // whole rule exists to close.
+          if (!Array.isArray(entry.failureDetail) || entry.failureDetail.length === 0) {
+            addFinding(findings, `browser-matrix row "${key}" is flaky (passed only after retry) with no compact failureDetail record (plan §29 "evidence must not discard failure detail") — a flaky pass claim is not backed by a committed, machine-checked artifact`);
+          }
         } else if (entry.status !== 'passed') {
           addFinding(findings, `browser-matrix row "${key}" executed but did not pass (status=${entry.status})`);
           // P2 review finding (issue #585 Phase 0): a failed browser-matrix

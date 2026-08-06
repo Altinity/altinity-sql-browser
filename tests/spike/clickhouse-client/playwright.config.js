@@ -72,8 +72,20 @@ export default defineConfig({
     // this sandbox's amd64-emulated Docker runtime.
     gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
   },
+  // Isolated Docker-contention flakes verified live in this sandbox (4
+  // emulated ClickHouse containers booting simultaneously; whichever row
+  // boots last, under peak load) must be retried and recorded as flaky, not
+  // reported as a hard browser-matrix gate failure (issue #585 Phase 0
+  // rejection root-cause fix) — `run-matrix.mjs`'s `collectBrowserFailureDetail`/
+  // `classifyBrowserMatrixCell` still surface every retry as a distinct
+  // 'flaky' cell with full detail, so this is a corroborated pass, never a
+  // silently laundered one. `trace: 'retain-on-failure'` keeps a debuggable
+  // trace for whichever attempt(s) do fail, without paying trace overhead on
+  // a clean pass.
+  retries: 2,
   use: {
     baseURL: BASE_URL,
+    trace: 'retain-on-failure',
   },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },

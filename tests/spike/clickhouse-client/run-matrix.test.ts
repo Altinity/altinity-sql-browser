@@ -38,6 +38,7 @@ interface BrowserMatrixCell {
   executed: boolean;
   status: string;
   failureDetail?: BrowserFailureRecord[];
+  projectErrors?: string[];
 }
 const classifyBrowserMatrixCell = classifyBrowserMatrixCellUntyped as (args: {
   reportAvailable: boolean;
@@ -45,6 +46,7 @@ const classifyBrowserMatrixCell = classifyBrowserMatrixCellUntyped as (args: {
   rowOriginKey: string;
   allPassed: boolean;
   failureDetailByRowOrigin: Record<string, BrowserFailureRecord[]>;
+  pwErrors?: string[];
 }) => BrowserMatrixCell;
 
 const classifyFunctionRangesFromSource = classifyFunctionRangesFromSourceUntyped as (
@@ -185,6 +187,26 @@ describe('selectEarliestPassingVersion (P1 review finding: derive only after the
     // still corroborates.
     expect(selectEarliestPassingVersion(results, matrixJson)).toBe('26.6.2.160');
   });
+
+  it('a "flaky" browser-matrix cell (passed only after a retry — the playwright.config.js retries:2 fix) still clears the browser hard gate, same as a clean "passed"', () => {
+    const results = {
+      matrixRows: {
+        'current-altinity-stable': { status: 'passed', serverVersion: '26.3.16.10001.altinitystable' },
+      },
+      browserMatrix: {
+        'current-altinity-stable/same-origin/webkit': {
+          row: 'current-altinity-stable', origin: 'same-origin', browser: 'webkit', requested: true, executed: true,
+          status: 'flaky',
+          failureDetail: [{ title: 'renders without runtime errors', attempts: 2, lastStatus: 'passed', lastError: '' }],
+        },
+      },
+    };
+    // Before this fix, a flaky cell either laundered into a bare 'passed'
+    // (losing the retry signal) or would have needed to be misclassified as
+    // 'failed' to preserve it — neither is correct. It DID pass, just not on
+    // attempt 1, and the row must still be named as having cleared the gate.
+    expect(selectEarliestPassingVersion(results, matrixJson)).toBe('26.3.16.10001.altinitystable');
+  });
 });
 
 describe('collectBrowserFailureDetail (P2 review finding: preserve a compact failure record)', () => {
@@ -264,6 +286,77 @@ describe('collectBrowserFailureDetail (P2 review finding: preserve a compact fai
 
   it('returns an empty object for a report with no suites at all', () => {
     expect(collectBrowserFailureDetail({})).toEqual({});
+  });
+
+  // Issue #585 Docker-contention flake fix (playwright.config.js retries:2):
+  // a spec that failed once and then passed on retry used to be silently
+  // discarded here (the old `if (spec.ok === true) continue` guard saw only
+  // the spec's FINAL, passing outcome) — a real flake laundered into a
+  // clean, silent pass. This is the exact scenario that makes the
+  // `attempts: 2` shape below meaningful now: with real retries:2 configured,
+  // Playwright's OWN JSON report can genuinely contain 2 results for one
+  // test, the second of which passed.
+  it('collects a compact record for a FLAKY spec — passed only after a retry (attempts>1, final status passed, spec.ok true)', () => {
+    const pw = pwReportWith([
+      {
+        title: 'row=current-altinity-stable origin=same-origin',
+        specs: [
+          {
+            title: 'renders without runtime errors',
+            ok: true, // the spec DID pass in the end — this is NOT a failure
+            tests: [
+              {
+                results: [
+                  { status: 'failed', error: { message: 'TimeoutError: waiting for selector (attempt 1)' } },
+                  { status: 'passed' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const detail = collectBrowserFailureDetail(pw);
+    // Before the fix, this row/origin would have been entirely absent from
+    // `detail` (spec.ok === true short-circuited the whole spec) even though
+    // it needed a real retry to get there.
+    expect(detail['current-altinity-stable/same-origin']).toEqual([
+      { title: 'renders without runtime errors', attempts: 2, lastStatus: 'passed', lastError: '' },
+    ]);
+  });
+
+  it('still omits a spec that passed cleanly on its very first attempt, even alongside a flaky one in the same row/origin', () => {
+    const pw = pwReportWith([
+      {
+        title: 'row=current-stable-oss origin=same-origin',
+        specs: [
+          { title: 'clean pass', ok: true, tests: [{ results: [{ status: 'passed' }] }] },
+          { title: 'flaky pass', ok: true, tests: [{ results: [{ status: 'failed', error: { message: 'boom' } }, { status: 'passed' }] }] },
+        ],
+      },
+    ]);
+    const detail = collectBrowserFailureDetail(pw);
+    expect(detail['current-stable-oss/same-origin']).toEqual([
+      { title: 'flaky pass', attempts: 2, lastStatus: 'passed', lastError: '' },
+    ]);
+  });
+
+  // Observability-gap fix (issue #585): a captured `lastError` retained raw
+  // ANSI escape codes live (verified: a literal `\x1b[2m...` sequence) —
+  // stripped at CAPTURE time here, not just when rendering, so a committed
+  // compatibility-matrix.md can never contain a terminal escape code.
+  it('strips ANSI escape sequences from a captured lastError at capture time', () => {
+    const rawMessage = '[2mgray context[22m real error text';
+    const pw = pwReportWith([
+      {
+        title: 'row=current-altinity-stable origin=same-origin',
+        specs: [
+          { title: 'spec A', ok: false, tests: [{ results: [{ status: 'failed', error: { message: rawMessage } }] }] },
+        ],
+      },
+    ]);
+    const detail = collectBrowserFailureDetail(pw);
+    expect(detail['current-altinity-stable/same-origin'][0].lastError).toBe('gray context real error text');
   });
 });
 
@@ -373,6 +466,64 @@ describe('classifyBrowserMatrixCell (P2 review finding: a missing suite must nev
     });
     expect(cell).toEqual({ executed: true, status: 'failed' });
     expect(cell.failureDetail).toBeUndefined();
+  });
+
+  // Issue #585 Docker-contention flake fix: a row/origin whose specs' FINAL
+  // attempts all passed (rowOriginResults[key] === true) but which has
+  // non-empty collected detail (i.e. at least one spec needed a retry) must
+  // be reported as its own 'flaky' status — never a silent 'passed' that
+  // discards the retry, and never 'failed', which it isn't.
+  it('case 2 — a row/origin that passed overall but has non-empty detail (a flaky pass) is reported as "flaky", with the SAME detail attached', () => {
+    const flakyDetail = [{ title: 'renders without runtime errors', attempts: 2, lastStatus: 'passed', lastError: '' }];
+    const cell = classifyBrowserMatrixCell({
+      reportAvailable: true,
+      rowOriginResults: { 'current-altinity-stable/same-origin': true },
+      rowOriginKey: 'current-altinity-stable/same-origin',
+      allPassed: true,
+      failureDetailByRowOrigin: { 'current-altinity-stable/same-origin': flakyDetail },
+    });
+    expect(cell).toEqual({ executed: true, status: 'flaky', failureDetail: flakyDetail });
+  });
+
+  it('case 2 — a row/origin that passed with NO detail (a genuinely clean pass) stays "passed", not "flaky"', () => {
+    const cell = classifyBrowserMatrixCell({
+      reportAvailable: true,
+      rowOriginResults: { 'current-stable-oss/same-origin': true },
+      rowOriginKey: 'current-stable-oss/same-origin',
+      allPassed: true,
+      failureDetailByRowOrigin: {},
+    });
+    expect(cell).toEqual({ executed: true, status: 'passed' });
+  });
+
+  // Observability-gap fix (issue #585): a whole-project/webServer-level
+  // failure (Playwright's own top-level `pw.errors[]`) used to attach no
+  // detail at all in cases 1 and 3 — as blank as a clean pass. `pwErrors` is
+  // pre-extracted by the caller (ANSI-stripped, truncated) and threaded
+  // through here as `projectErrors`.
+  it('case 1 — report unavailable but pwErrors provided: attaches projectErrors alongside the blanket signal', () => {
+    const cell = classifyBrowserMatrixCell({
+      reportAvailable: false, rowOriginResults: null, rowOriginKey: 'current-stable-oss/same-origin', allPassed: false, failureDetailByRowOrigin: {},
+      pwErrors: ['Timed out waiting 240000ms from config.webServer.'],
+    });
+    expect(cell).toEqual({ executed: true, status: 'failed', projectErrors: ['Timed out waiting 240000ms from config.webServer.'] });
+  });
+
+  it('case 3 — report exists with no matching suite at all, and pwErrors provided (a whole-project failure): attaches projectErrors, never blank', () => {
+    const cell = classifyBrowserMatrixCell({
+      reportAvailable: true, rowOriginResults: {}, rowOriginKey: 'current-altinity-stable/same-origin', allPassed: true, failureDetailByRowOrigin: {},
+      pwErrors: ['globalSetup failed: ECONNREFUSED 127.0.0.1:5680'],
+    });
+    expect(cell).toEqual({ executed: false, status: 'no-matching-suite-in-report', projectErrors: ['globalSetup failed: ECONNREFUSED 127.0.0.1:5680'] });
+  });
+
+  it('pwErrors defaults to empty — no projectErrors field fabricated when omitted or empty', () => {
+    expect(classifyBrowserMatrixCell({
+      reportAvailable: false, rowOriginResults: null, rowOriginKey: 'x/y', allPassed: true, failureDetailByRowOrigin: {},
+    })).toEqual({ executed: true, status: 'passed' });
+    expect(classifyBrowserMatrixCell({
+      reportAvailable: true, rowOriginResults: {}, rowOriginKey: 'x/y', allPassed: false, failureDetailByRowOrigin: {}, pwErrors: [],
+    })).toEqual({ executed: false, status: 'no-matching-suite-in-report' });
   });
 });
 
