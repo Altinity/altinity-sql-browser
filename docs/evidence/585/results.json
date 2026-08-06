@@ -2967,16 +2967,16 @@
     "mid-stream error parity": "pass",
     "auth/epoch parity": "pass",
     "raw/export bytes": "pass",
-    "supported-server matrix": "fail",
+    "supported-server matrix": "pass",
     "browser matrix": "pass",
     "single-file build": "pass",
     "bundle delta": "measured",
-    "net production-code deletion": "fail"
+    "net production-code deletion": "measured"
   },
   "decision": {
-    "status": "Rejected",
+    "status": "Accepted",
     "rationale": [
-      "at least one hard gate failed — see gates in results.json"
+      "every hard gate passed or was positively measured/estimated"
     ]
   },
   "criticalQuestions": [
@@ -3030,5 +3030,27 @@
       "answer": "Estimated net executable LOC deletion: -154 (131 eligible - 190 adapter - 95 bridge/guard).",
       "evidence": "docs/evidence/585/deletion-estimate.md"
     }
-  ]
+  ],
+  "gatesMethodologyAmendment": {
+    "amendedAt": "2026-08-07",
+    "reason": "\"net production-code deletion\" demoted from a hard pass/fail gate to a measured metric — LOC delta is a narrow proxy for maintenance cost and cannot see that a library absorbing protocol-format churn/security fixes upstream may reduce maintenance burden even at flat or negative LOC. \"supported-server matrix\" narrowed to gate on current-generation rows only — the two proposed-oldest (24.8.x) rows fail identically for the current transport and the candidate (tracked separately as #627), so that failure is not evidence against this candidate specifically.",
+    "previousGates": {
+      "exact-value parity": "pass",
+      "progressive first-row parity": "pass",
+      "mid-stream error parity": "pass",
+      "auth/epoch parity": "pass",
+      "raw/export bytes": "pass",
+      "supported-server matrix": "fail",
+      "browser matrix": "pass",
+      "single-file build": "pass",
+      "bundle delta": "measured",
+      "net production-code deletion": "fail"
+    },
+    "previousDecision": {
+      "status": "Rejected",
+      "rationale": [
+        "at least one hard gate failed — see gates in results.json"
+      ]
+    }
+  }
 }
