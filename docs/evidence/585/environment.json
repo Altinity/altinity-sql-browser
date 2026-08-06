@@ -1,0 +1,11 @@
+{
+  "node": "v25.9.0",
+  "npm": "11.12.1",
+  "typescript": "7.0.2",
+  "vitest": "4.1.10",
+  "playwright": "1.62.1",
+  "os": "darwin",
+  "arch": "arm64",
+  "chromium": "151.0.7922.34",
+  "webkit": "26.5"
+}

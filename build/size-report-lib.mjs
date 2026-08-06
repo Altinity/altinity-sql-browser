@@ -95,8 +95,12 @@ export function entryChunks(metafile) {
 
 // Assemble the full machine-readable report from measured sizes + the metafile.
 // `sizes` carries the three whole-artifact measurements; `outputKey` names the JS
-// output chunk inside the metafile whose inputs we attribute.
-export function buildReport({ sizes, metafile, outputKey }) {
+// output chunk inside the metafile whose inputs we attribute. `unminifiedJsBytes`
+// is optional (issue #585 Phase 0's `--include-unminified-js`): when given, its
+// raw UTF-8 byte count is recorded as `unminifiedJs.raw` alongside the normal
+// (minified) `js` figure — omitted entirely when absent, so a report generated
+// without the flag is byte-for-byte identical to today's shape.
+export function buildReport({ sizes, metafile, outputKey, unminifiedJsBytes }) {
   const output = metafile.outputs[outputKey];
   const modules = attributeModules(output);
   const { totalBytes, ownership, packages } = summarize(modules);
@@ -105,6 +109,7 @@ export function buildReport({ sizes, metafile, outputKey }) {
     artifact: triple(sizes.artifact.raw, sizes.artifact.gzip, sizes.artifact.brotli),
     js: triple(sizes.js.raw, sizes.js.gzip, sizes.js.brotli),
     css: triple(sizes.css.raw, sizes.css.gzip, sizes.css.brotli),
+    ...(unminifiedJsBytes === undefined ? {} : { unminifiedJs: { raw: unminifiedJsBytes } }),
     totalOutputBytes: totalBytes,
     entryPoints: entryChunks(metafile),
     ownership,

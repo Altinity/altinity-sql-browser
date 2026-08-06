@@ -1,0 +1,10 @@
+{
+  "progressBridge": {
+    "physical": 40,
+    "transformedExecutable": 34
+  },
+  "guardedFetch": {
+    "physical": 55,
+    "transformedExecutable": 58
+  }
+}

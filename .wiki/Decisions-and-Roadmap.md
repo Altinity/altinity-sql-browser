@@ -105,19 +105,39 @@ Two roadmap tracks are current:
   repaint extraction), Phase 6 #590 (implemented on `wip/590-reactive-workspace`
   — `app.currentWorkspace`/`app.mainSurface` are signal-backed accessor pairs,
   `dashboardTreeRevision` is retired; see `docs/ADR-0001-reactivity.md`'s #590
-  addendum), Phase 7 #585/ADR-0005
-  (`@clickhouse/client-web` transport spike — independent of the shell
-  track; a "Rejected" outcome still completes the phase). #592 (extend
+  addendum), Phase 7 #585/ADR-0005 — **decided 2026-08-06: Rejected** (the
+  `@clickhouse/client-web` transport spike; independent of the shell track;
+  Phase 0 completed with no production cutover — see below). #592 (extend
   `check-boundaries` to lock in the shell primitives) is a guardrail issue
   alongside the phases. All are labeled `refactor`; re-check
   `gh issue list --label refactor` for the current phase status before
   planning shell work.
-- **#585 / ADR-0005** — adopt `@clickhouse/client-web` behind the SQL Browser
-  transport adapter; Phase 7 of the #593 umbrella above.
+- **#585 / ADR-0005 — Rejected (2026-08-06).** The Phase 0 validation spike
+  (`docs/ADR-0005-clickhouse-web-client.md`) compared
+  `@clickhouse/client-web@1.23.1` against the current custom transport over a
+  reusable parity/precision harness (`tests/spike/clickhouse-client/`) and
+  found three of ten hard gates fail: the supported-server matrix (both
+  proposed-oldest ClickHouse 24.8.x rows fail — a genuine, version-specific
+  meta-line gap in ClickHouse's own streaming JSON formats, predating
+  ClickHouse GitHub PR #74181, that affects the *current* production code
+  identically, not an official-client defect), the browser matrix (one
+  isolated but unclassified WebKit failure — deliberately NOT asserted as a
+  confirmed Docker-contention root cause, per a review finding that the
+  committed evidence didn't back that attribution — still recorded as a
+  failed row per the mechanical no-reinterpreting-a-flake-as-a-pass rule),
+  and net production-code deletion (mechanically estimated at negative,
+  see `docs/evidence/585/deletion-estimate.md` for the current figure). Phase
+  0 completed as a fully valid outcome — **no production cutover occurred**, and
+  `src/net/ch-client.ts` (the current custom transport) **remains
+  authoritative**. Phase 1 (separating application policy from the concrete
+  transport implementation) remains useful and unblocked on its own merits;
+  Phases 2–4 (production adoption, cutover, and custom-transport deletion) do
+  not proceed without a new decision.
 
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).
 
 Canonical decision records: [`docs/ADR-0001-reactivity.md`](../docs/ADR-0001-reactivity.md),
-[`docs/ADR-0004-ui-shell.md`](../docs/ADR-0004-ui-shell.md). Historical roadmap
-context is summarized in [[Operations-Memory]].
+[`docs/ADR-0004-ui-shell.md`](../docs/ADR-0004-ui-shell.md),
+[`docs/ADR-0005-clickhouse-web-client.md`](../docs/ADR-0005-clickhouse-web-client.md).
+Historical roadmap context is summarized in [[Operations-Memory]].

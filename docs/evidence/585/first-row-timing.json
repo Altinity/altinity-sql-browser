@@ -1,0 +1,13 @@
+{
+  "deterministic": {
+    "current": {
+      "firstRowMs": 126,
+      "completedMs": 1263
+    },
+    "official": {
+      "firstRowMs": 125,
+      "completedMs": 1259
+    }
+  },
+  "fixture": "delayed-headers-scheduled-rows"
+}

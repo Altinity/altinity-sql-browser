@@ -15,13 +15,23 @@ import { buildFontFaces } from './fonts.mjs';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const compressBrotli = promisify(brotliCompress);
 const compressGzip = promisify(gzip);
 const compressZstd = promisify(zstdCompress);
+
+// Strip characters that could break out of the single/double-quoted string
+// literal `__ASB_BUILD__` sits in once spliced verbatim into the minified
+// bundle (see buildArtifact below). Git commit hashes and package versions
+// never contain these, so this only matters for an explicit `override` (issue
+// #585 Phase 0 measurement stamp) — a caller-supplied literal that must not be
+// able to inject a syntax break or a multi-line value into the emitted JS.
+function sanitizeStamp(value) {
+  return value.replace(/[`'"\\\r\n]/g, '');
+}
 
 // The build stamp shown in the UI (user menu) and grep-able in dist/sql.html, so
 // a bug report can be tied to an exact build: `v<version> (<short-commit>)`, or
@@ -30,14 +40,24 @@ const compressZstd = promisify(zstdCompress);
 // `kubectl cp dist/sql.html`) is never mistaken for the clean commit it sits on.
 // Version source: $ASB_VERSION when set (bundle.sh passes the release tag so the
 // stamp and the bundle's VERSION file stay in lockstep), else package.json.
-async function buildStamp() {
+//
+// `repoRoot` (default: this script's own repository) is where package.json is
+// read and where `git rev-parse`/`git status` run — so a caller measuring a
+// DIFFERENT worktree (issue #585 Phase 0's baseline-vs-candidate bundle
+// comparison) gets that worktree's own version/commit/dirty state, never this
+// script's. `override`, when provided, is returned verbatim (sanitized) instead
+// of deriving anything — the Phase 0 stamp-normalized comparison reports use one
+// shared literal so commit text and dirty state can't create a false size delta.
+// This is measurement-only: `override` must never become a default.
+export async function buildStamp({ repoRoot = root, override } = {}) {
+  if (override !== undefined) return sanitizeStamp(override);
   const version = process.env.ASB_VERSION
-    || JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')).version;
+    || JSON.parse(await readFile(resolve(repoRoot, 'package.json'), 'utf8')).version;
   let commit = '';
   try {
-    commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root }).toString().trim();
+    commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repoRoot }).toString().trim();
     // `git status --porcelain` is empty iff the tree exactly matches HEAD.
-    if (execFileSync('git', ['status', '--porcelain'], { cwd: root }).toString().trim()) commit += '-dirty';
+    if (execFileSync('git', ['status', '--porcelain'], { cwd: repoRoot }).toString().trim()) commit += '-dirty';
   } catch {
     // Not a git checkout (e.g. the Docker build context ships no .git) — use an
     // injected commit if one was passed, so the stamp stays `v<version> (<sha>)`
@@ -50,16 +70,39 @@ async function buildStamp() {
 
 // The esbuild options for the single production entry point. Shared verbatim by
 // the release build (`main`) and the bundle-size report (build/size-report.mjs)
-// so the report measures the artifact users actually receive. `metafile` is the
-// only knob: the report needs esbuild's input→output byte attribution, and it is
-// pure metadata that never changes the emitted bytes.
-export function esbuildOptions({ metafile = false } = {}) {
+// so the report measures the artifact users actually receive.
+//
+//   repoRoot   - default: this script's own repository. Every esbuild
+//                invocation MUST set `absWorkingDir: repoRoot` (issue #585
+//                Phase 0) — otherwise esbuild relates metafile input/output/
+//                entry-point paths to the *process* working directory, not the
+//                repository being measured, and running the report from
+//                another shell directory would silently move project files
+//                into the metafile's unattributed bucket. This is the one
+//                place that knob is set; every caller (normal build, baseline,
+//                candidate, unminified-JS measurement) goes through here.
+//   entryPoint - default: `<repoRoot>/src/main.ts`. May be absolute or
+//                relative to `repoRoot`; either way, with `absWorkingDir` set,
+//                esbuild reports it (and every input path) relative to
+//                `repoRoot` in the metafile — this function never needs to
+//                repair paths after the fact.
+//   metafile   - the report needs esbuild's input→output byte attribution; it
+//                is pure metadata that never changes the emitted bytes.
+//   jsMinify   - default true (the shipped artifact). The size report's
+//                supplemental unminified-JS measurement flips only this to
+//                `false`, reusing every other option verbatim so the two
+//                builds differ in exactly one respect.
+export function esbuildOptions({ repoRoot = root, entryPoint, metafile = false, jsMinify = true } = {}) {
+  const entry = entryPoint === undefined
+    ? resolve(repoRoot, 'src/main.ts')
+    : (isAbsolute(entryPoint) ? entryPoint : resolve(repoRoot, entryPoint));
   return {
-    entryPoints: [resolve(root, 'src/main.ts')],
+    absWorkingDir: repoRoot,
+    entryPoints: [entry],
     bundle: true,
     format: 'iife',
     target: 'es2020',
-    minify: true,
+    minify: jsMinify,
     write: false,
     legalComments: 'none',
     metafile,
@@ -72,20 +115,52 @@ export function esbuildOptions({ metafile = false } = {}) {
 // substituted), `styles` (minified CSS), `thirdParty` (the notices comment) — and
 // the esbuild `metafile` when requested (undefined otherwise). Keeping this the
 // single builder is what guarantees the report and the release stay byte-identical.
-export async function buildArtifact({ metafile = false } = {}) {
-  const result = await build(esbuildOptions({ metafile }));
+//
+// `repoRoot`/`entryPoint`/`metafile`/`jsMinify` pass straight through to
+// esbuildOptions() (see there for what each does and why `absWorkingDir` is
+// pinned to `repoRoot`). Every OTHER source-relative read below — styles,
+// notices, package.json (via buildStamp) — resolves against `repoRoot` too,
+// for the same reason: a caller measuring a worktree other than this script's
+// own (issue #585 Phase 0's baseline vs. candidate bundle comparison) must get
+// THAT worktree's files, not this script's. `build/template.html` is the one
+// exception that stays anchored to `here` (this script's own directory) —
+// it's the report tool's own template, not repository source under test.
+//
+// `noticesPath` overrides the default `<repoRoot>/THIRD-PARTY-NOTICES.md`.
+// `additionalNotices`, when given, is appended after it — the Phase 0 spike
+// uses this to attach a candidate-only notice fragment for a devDependency
+// that is bundled ONLY in the isolated candidate artifact, never in the
+// normal production build. `buildStampOverride` passes through to
+// buildStamp() (see there); omitted, normal stamp derivation is unchanged.
+export async function buildArtifact({
+  repoRoot = root,
+  entryPoint,
+  metafile = false,
+  jsMinify = true,
+  noticesPath,
+  additionalNotices,
+  buildStampOverride,
+} = {}) {
+  const result = await build(esbuildOptions({ repoRoot, entryPoint, metafile, jsMinify }));
   // Replace the `__ASB_BUILD__` placeholder (a string literal in src/main.ts)
   // with the build stamp before the bundle is inlined — same token-replace seam
   // as the styles/script splices below. replaceAll is robust to either quote
   // style minify may emit around the literal.
-  const script = result.outputFiles[0].text.replaceAll('__ASB_BUILD__', await buildStamp());
+  const stamp = await buildStamp({ repoRoot, override: buildStampOverride });
+  const script = result.outputFiles[0].text.replaceAll('__ASB_BUILD__', stamp);
   // esbuild's CSS transform (same minifier as the JS path above) — src/styles.css
   // was previously inlined raw, shipping every source comment/indent to the browser.
   // The `/*__FONTS__*/` token at the top of the stylesheet is replaced first with
   // the base64 @font-face rules (see build/fonts.mjs): the artifact must carry the
   // typefaces DESIGN.md specifies, and it may not fetch them. Splicing pre-minified
   // rules in before the transform keeps the font bytes inside the same single pass.
-  const stylesSrc = await readFile(resolve(root, 'src/styles.css'), 'utf8');
+  const stylesSrc = await readFile(resolve(repoRoot, 'src/styles.css'), 'utf8');
+  // NOTE: buildFontFaces() reads node_modules/@fontsource-variable/* relative
+  // to build/fonts.mjs's OWN location, not `repoRoot` — it has no repoRoot
+  // parameter (out of scope for issue #585 Phase 0's build-tooling change).
+  // In practice this only matters when `repoRoot` names a worktree other than
+  // this script's own; the pinned exact devDependency versions in a checked-
+  // out lockfile mean the font bytes are identical either way.
   const fonts = await buildFontFaces();
   const styles = (await transform(
     stylesSrc.replace('/*__FONTS__*/', () => fonts.css),
@@ -97,8 +172,9 @@ export async function buildArtifact({ metafile = false } = {}) {
   // so the artifact must carry their notices. esbuild strips legal comments
   // (legalComments: 'none'), so embed THIRD-PARTY-NOTICES.md as a leading HTML
   // comment — sanitized so its text can't close the comment early.
-  const notices = (await readFile(resolve(root, 'THIRD-PARTY-NOTICES.md'), 'utf8')).replace(/--+>?/g, '-');
-  const thirdParty = '<!--\n' + notices.trim() + '\n-->';
+  const baseNotices = await readFile(noticesPath ?? resolve(repoRoot, 'THIRD-PARTY-NOTICES.md'), 'utf8');
+  const noticesText = additionalNotices ? `${baseNotices.trim()}\n\n${additionalNotices.trim()}` : baseNotices;
+  const thirdParty = '<!--\n' + noticesText.replace(/--+>?/g, '-').trim() + '\n-->';
 
   const html = template
     .replace('<!--__THIRDPARTY__-->', () => thirdParty)
@@ -112,8 +188,22 @@ export async function buildArtifact({ metafile = false } = {}) {
 // ship only sql.html. The container image additionally gets these immutable
 // sidecars, so Caddy can negotiate Content-Encoding without doing CPU work for
 // each request.
-export async function writeArtifact({ outDir = resolve(root, 'dist') } = {}) {
-  const { html, fonts } = await buildArtifact();
+//
+// `outDir` defaults to `<repoRoot>/dist` (unchanged for every caller that
+// omits `repoRoot` too); the rest of the options pass straight through to
+// buildArtifact().
+export async function writeArtifact({
+  repoRoot = root,
+  entryPoint,
+  jsMinify = true,
+  noticesPath,
+  additionalNotices,
+  buildStampOverride,
+  outDir = resolve(repoRoot, 'dist'),
+} = {}) {
+  const { html, fonts } = await buildArtifact({
+    repoRoot, entryPoint, jsMinify, noticesPath, additionalNotices, buildStampOverride,
+  });
   const source = Buffer.from(html);
   await mkdir(outDir, { recursive: true });
   await Promise.all([
