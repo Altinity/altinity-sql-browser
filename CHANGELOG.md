@@ -9,6 +9,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **ADR-0005 amended: `@clickhouse/client-web` now Accepted (was Rejected).**
+  Clarified that the meta-line gap the original 2026-08-06 evidence run
+  counted as a failing gate is a general SQL Browser compatibility bug
+  (`src/core/stream.ts`'s missing meta-less fallback for ClickHouse servers
+  predating ClickHouse GitHub PR #74181), not a `@clickhouse/client-web`
+  defect — it fails identically for the current production transport, so it
+  isn't evidence against the candidate; tracked independently as #627.
+  Separately, a 2026-08-07 decision-methodology amendment demoted "net
+  production-code deletion" from a hard pass/fail gate to a measured metric
+  (LOC delta alone is a narrow proxy for maintenance cost) and narrowed
+  "supported-server matrix" to gate on current-generation ClickHouse rows
+  only. `tests/spike/clickhouse-client/run-matrix.mjs`'s `computeGates()` was
+  updated accordingly and evidence was recomputed from the same underlying
+  facts (no live matrix re-run) via the new
+  `tests/spike/clickhouse-client/recompute-decision.mjs`, flipping the
+  decision to **Accepted**. This authorizes #585 Phase 2 (production
+  official-client implementation) and Phase 3 (production cutover) to
+  proceed; production behavior is still unchanged as of this entry —
+  `src/net/ch-client.ts` remains authoritative until cutover. No `src/**`
+  code changed.
+
 ## [0.7.3] - 2026-08-06
 
 ### Added

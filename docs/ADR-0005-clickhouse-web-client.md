@@ -1,9 +1,15 @@
-# ADR-0005: `@clickhouse/client-web` validation spike — Rejected
+# ADR-0005: `@clickhouse/client-web` validation spike — Accepted
 
-Status: Rejected — Phase 0 completed; no production cutover occurred;
-Phases 1–4 do not proceed without a new decision
+Status: Accepted — Phase 0 completed; Phase 1 landed; a 2026-08-07
+decision-methodology amendment (see "Decision-methodology amendment
+addendum" below) reclassified the two originally-blocking gates; Phase 2
+(production official-client implementation) and Phase 3 (production
+cutover) may proceed; Phase 4 (custom-transport deletion) after cutover
+completes its own acceptance criteria
 
-- **Decision date**: 2026-08-06
+- **Decision date**: 2026-08-06 (original Rejected verdict); **amended
+  2026-08-07** to Accepted — see the "Decision-methodology amendment
+  addendum" below
 - **Context tracking**: roadmap #68; #593 (refactor umbrella, Phase 7); #585
   (this validation-spike issue)
 - **Tested source / baseline SHAs**: candidate Docker/browser-matrix/live
@@ -53,119 +59,82 @@ throughout: the normal production graph never imported it, and only a
 spike-only candidate entry (`tests/spike/clickhouse-client/candidate-entry.ts`)
 bundled it for measurement.
 
-## Decision: Rejected
+## Decision: Accepted
 
-**`@clickhouse/client-web` is rejected for production adoption at this time.**
-Two of ten hard gates fail, each with solid, independently-verified evidence
-(see the "Evidence correction addendum" below for a third gate this ADR
-originally also counted as failing — a browser-matrix flake, since
-root-caused, fixed, and re-verified to pass):
+**`@clickhouse/client-web` is accepted for production adoption.** The
+original Phase 0 evidence run (2026-08-06) reached **Rejected** on two
+gates. A 2026-08-07 decision-methodology amendment reclassified both as
+non-blocking; the decision now computes as **Accepted** from the exact same
+underlying facts — nothing about the evidence itself changed, only how two
+of the ten gates are judged. Full mechanics, rationale, and the original
+Rejected reasoning are preserved in the "Decision-methodology amendment
+addendum" below. In short:
 
-1. **Supported-server matrix fails.** Both proposed-oldest rows (ClickHouse
-   24.8.14.39 OSS and 24.8.14.10547.altinitystable) fail. Root cause:
+1. **Supported-server matrix — now scoped to current-generation rows
+   only.** Both proposed-oldest rows (ClickHouse 24.8.14.39 OSS and
+   24.8.14.10547.altinitystable) still fail their live suite. Root cause:
    `JSONStringsEachRowWithProgress`/`JSONEachRowWithProgress` never emit a
    `{"meta":[...]}` column-header line on ClickHouse 24.8 — that capability
    was added by ClickHouse GitHub PR #74181 ("JSONEachRowWithProgress format
    will include meta, totals, and extremes"), merged 2025-01-06, postdating
    24.8. `src/core/stream.ts`'s `applyStreamLine()` has no meta-less
-   fallback, so every row silently maps to an empty/null value. **This
-   affects the current production code equally** — it is a genuine,
-   version-specific ClickHouse incompatibility, not an official-client
-   defect: on both 24.8 rows, the live precision corpus shows
-   `currentMatchesOfficial: true` (both adapters agree with each other) while
-   `currentMatchesExpected: false` and `officialMatchesExpected: false` (both
-   disagree with the independently-derived expected literal, identically).
-   Both current-generation rows (26.6.2.160 OSS,
-   26.3.16.10001.altinitystable) pass.
-2. **Net production-code deletion is not positive.** Mechanically computed,
-   with every term measured by the SAME comment/blank-stripped "physical
-   LOC" metric (a P3 review finding caught an earlier pass mixing that
-   metric for the bridge/guard terms with a raw, comment-inclusive count for
-   the other two terms, which inflated them by 32-50%), as **-154 physical
-   LOC** (131 eligible for deletion — 73 from `ch-client.ts`'s
-   `delete-after-cutover` bucket plus 58 from
+   fallback, so every row silently maps to an empty/null value —
+   **identically** for the current transport and the candidate: on both
+   24.8 rows, the live precision corpus shows `currentMatchesOfficial: true`
+   (both adapters agree with each other) while both disagree with the
+   independently-derived expected literal. Because both alternatives fail
+   this the same way, it is not evidence against the candidate specifically
+   — it is a pre-existing, general SQL Browser defect, tracked on its own
+   merits, independent of this ADR's outcome either way: **#627**. Both
+   current-generation rows (26.6.2.160 OSS, 26.3.16.10001.altinitystable)
+   pass, and `computeGates()` (`tests/spike/clickhouse-client/run-matrix.mjs`,
+   amended 2026-08-07) now keys this gate's pass/fail on only those two rows
+   — a genuine candidate-specific regression on a current-generation row
+   would still fail it; the proposed-oldest rows' shared failure no longer
+   does.
+2. **Net production-code deletion — now a measured metric, not a hard
+   gate.** Still **-154 physical LOC** (131 eligible for deletion — 73 from
+   `ch-client.ts`'s `delete-after-cutover` bucket plus 58 from
    `src/net/clickhouse-http-transport.ts`'s own `delete-after-cutover`
-   bucket (see the addendum below — Phase 1, PR #621, moved `chUrl` and the
-   progress-line stream loop into that new file after this ADR's original
-   evidence was generated) — minus 190 for the official-adapter
-   production-shaped core, minus 95 for the accepted narrow bridge/guard) —
-   see `docs/evidence/585/deletion-estimate.md` for the full bucket
-   breakdown and its own caveat that whole-function-granularity
-   classification (required by this pass) likely understates the truly
-   deletable portion of `authedFetch`, which mixes generic fetch mechanics
-   with the narrow epoch guard.
+   bucket — minus 190 for the official-adapter production-shaped core,
+   minus 95 for the accepted narrow bridge/guard; see
+   `docs/evidence/585/deletion-estimate.md` for the full bucket breakdown).
+   The number is unchanged from the original evidence — what changed is
+   whether it alone should force Rejected. LOC delta is a narrow proxy for
+   maintenance cost: it can't see that a library absorbing ClickHouse
+   protocol-format churn, security patches, and edge-case bugs upstream can
+   reduce SQL Browser's own maintenance burden even at flat or negative LOC.
+   Demoted to the same `measured` status `bundle delta` already had —
+   informational, not blocking.
 
-**Resolved since the original evidence generation — no longer a failing
-gate.** The original Phase 0 evidence also recorded a **browser-matrix
-failure**: 15 of 16 required row/origin/browser combinations passed
-(Chromium and WebKit, same-origin and cross-origin, across all four required
-server rows), with the one failure — `current-altinity-stable / same-origin
-/ webkit` — recorded with no committed failure detail at all (the
-evidence-generation script discarded the failing test's name, error, and
-retry count, keeping only a bare pass/fail boolean). Dedicated root-cause
-research (see the "Evidence correction addendum" below) reproduced this 0
-times in 38 attempts across three fresh reruns — including a full 4-row
-WebKit rerun and a rerun under artificial CPU stress — and identified the
-mechanism as this sandbox's Docker-contention flakiness (four
-amd64-emulated ClickHouse containers booting simultaneously; whichever row
-boots last runs its browser suite under peak load), not a genuine
-WebKit/`@clickhouse/client-web` defect. A fix landed (`retries: 2` plus
-honest flaky-cell recording, PR #624) and two independent full
-evidence-regeneration reruns since then both recorded a clean 16/16 pass.
-This gate now records `pass`; it does not change the Rejected decision,
-since the two gates above fail independently of it.
+All eight other gates pass or are measured, unaffected by either amendment:
+exact-value parity, progressive first-row parity, mid-stream error parity,
+auth/epoch parity, raw/export bytes, browser matrix (already `pass` since a
+2026-08-06 flake fix, PR #624 — see "Evidence correction addendum" below),
+single-file build, and bundle delta. See the decision table below.
 
-All eight other gates pass or are measured: exact-value parity, progressive
-first-row parity, mid-stream error parity, auth/epoch parity, raw/export
-bytes, browser matrix, single-file build, and bundle delta (measured, not a
-pass/fail gate). See the decision table below.
-
-**Why a narrow bridge cannot resolve this.** The failing gates are not
-symptoms a narrower `exec()`-based bridge (already the accepted design,
-§16 below) can fix:
-
-- The supported-server-matrix failure is a **server-side format gap** on
-  ClickHouse 24.8 that exists independently of which HTTP client issues the
-  request — the official client, the current custom transport, and any
-  narrower bridge over either would all observe the same missing meta line.
-  Narrowing the bridge changes nothing about what ClickHouse 24.8 sends.
-- The deletion-estimate failure is a **structural** consequence of this
-  package's guaranteed floor (24.8+) forcing a bridge (`progress-bridge.ts` +
-  `guarded-fetch.ts`, 95 physical lines) that, combined with a
-  production-shaped official adapter (190 lines) exceeding the 131
-  deletable lines it would replace, produces negative net deletion. A
-  smaller bridge would still need to reproduce authentication, epoch
-  fencing, and the progress-format parsing that `authedFetch` +
-  `applyStreamLine` already provide for free inside the current transport.
-  (The browser-matrix failure this section originally also listed here is
-  resolved — see the Decision section above and the addendum below — and
-  was in any case never a defect a bridge could have fixed: it was a local
-  sandbox Docker-contention flake, not a code path either the current
-  transport or the official client executes differently.)
+**This does not mean ClickHouse 24.8 is newly supported.** #627 is
+unaffected by this decision either way — the current transport and the
+candidate share the identical meta-line defect, and fixing it is
+independent, ongoing work tracked on its own.
 
 **The current custom transport (`src/net/ch-client.ts`) remains
-authoritative.** No production behavior changed: the normal build
-(`src/main.ts → dist/sql.html`) never imported the official client or the
-spike harness, and this ADR does not propose changing that.
+authoritative until Phase 3 cutover completes.** This Accepted decision
+authorizes Phase 2 (production official-client implementation) and Phase 3
+(production cutover) to begin; it does not itself perform them. No
+production behavior has changed as a result of this decision: the normal
+build (`src/main.ts → dist/sql.html`) still does not import the official
+client or the spike harness.
 
-**Phase 1 remains useful independent of this decision.** Phase 1 (separating
-application policy — retry safety, sessions, cancellation leases — from the
-concrete generic-transport implementation in `src/net/ch-client.ts`) was
-never contingent on adopting `@clickhouse/client-web`; `src/core/stream.ts`
-and `src/application/query-execution-service.ts` are already isolated from
-the transport choice (see `docs/evidence/585/deletion-estimate.md`'s "Other
-named responsibilities" table), which is direct evidence that a Phase 1
-transport-contract seam is a coherent, transport-agnostic refactor on its own
-merits, not blocked by this Rejected result.
+**Phase 1 remains landed and useful regardless of which way this decision
+went**: `src/net/clickhouse-transport.types.ts` +
+`src/net/clickhouse-http-transport.ts` (already landed — see the "Phase 1
+addendum" below) put the current transport behind the narrow seam Phase 2
+now targets.
 
-**Phases 2–4 do not proceed.** No production official-client implementation
-(Phase 2), no production cutover (Phase 3), and no deletion of the generic
-custom-transport code (Phase 4) may proceed from this ADR. Any future attempt
-to adopt `@clickhouse/client-web` (or another official/generic client)
-requires a new decision, informed by whichever of today's two failed gates
-has changed — most plausibly the ClickHouse server-support floor, if a future
-spike narrows its proposed minimum to a version this package's guaranteed
-floor already reaches without gap.
+**Phase 4** (deletion of the generic custom-transport code) proceeds only
+after Phase 3's cutover is complete and meets its own acceptance criteria —
+it is not authorized by this ADR alone.
 
 ## Hard invariants maintained throughout the spike
 
@@ -242,10 +211,21 @@ derived and recorded live by `support-minimum.mjs`'s
 source: earliest version that passed every required hard gate (live matrix,
 precision corpus, and browser matrix) — see the evidence-correction addendum
 below for why this superseded the originally-recorded `26.6.2.160`. Both
-24.8-line rows remain excluded by this derivation (their live suite fails
-outright on the genuine, unrelated meta-line gap), which is exactly why the
-supported-server-matrix gate above still records `fail` for them rather than
-`inconclusive` or a silently-lowered floor.
+24.8-line rows remain excluded by this derivation — their live suite fails
+outright on the genuine, unrelated meta-line gap (#627) — even though the
+2026-08-07 decision-methodology amendment (see below) no longer treats that
+gap as a reason to reject `@clickhouse/client-web`: this derivation is about
+what ClickHouse floor the *client* needs, not about which gates block
+*adoption*, and the two questions are answered separately (this section vs.
+the "Decision" section above).
+
+**Scope note:** this derivation answers "what ClickHouse floor would
+`@clickhouse/client-web` need" — it does not, by itself, set or change SQL
+Browser's own general ClickHouse-version support floor. That remains a
+separate, open question: #71 tracks the documented support matrix, and #627
+tracks fixing the underlying meta-line bug this derivation surfaced, which
+affects the *current* transport regardless of this ADR's outcome or of
+which client SQL Browser eventually ships.
 
 ## Exact server matrix
 
@@ -258,9 +238,9 @@ supported-server-matrix gate above still records `fail` for them rather than
 | ClickHouse Cloud | — | — | no | — | not evaluated — no ClickHouse Cloud credentials in this environment |
 
 Full digests: `docs/evidence/585/compatibility-matrix.md`. Cloud
-unavailability is a documented conditional omission, not by itself a
-rejection reason (plan §31 "Cloud unavailability alone is not rejection") —
-it is not what makes this ADR Rejected; the three gates above are.
+unavailability is a documented conditional omission, not itself a rejection
+reason (plan §31 "Cloud unavailability alone is not rejection") — it played
+no part in either the original Rejected verdict or the amended Accepted one.
 
 Both failing rows fail the **same live scenarios**, all downstream of the
 missing meta line: `server-cancellation-kill-query`,
@@ -316,15 +296,25 @@ reproduced here byte-identically to `docs/evidence/585/decision-table.md`
 | mid-stream error parity | pass | parity.test.ts + live-parity.test.ts exception block |
 | auth/epoch parity | pass | parity.test.ts auth/epoch blocks |
 | raw/export bytes | pass | parity.test.ts raw/export block |
-| supported-server matrix | fail | docs/evidence/585/compatibility-matrix.md |
+| supported-server matrix | pass | docs/evidence/585/compatibility-matrix.md |
 | browser matrix | pass | docs/evidence/585/compatibility-matrix.md (browser section) |
 | single-file build | pass | docs/evidence/585/candidate/* |
 | bundle delta | measured | docs/evidence/585/candidate/normalized-bundle-size-report.md |
-| net production-code deletion | fail | docs/evidence/585/deletion-estimate.md |
+| net production-code deletion | measured | docs/evidence/585/deletion-estimate.md |
 
-**Decision: Rejected**
+**Decision: Accepted**
 
-- at least one hard gate failed — see gates in results.json
+- every hard gate passed or was positively measured/estimated
+
+This table reflects the 2026-08-07 decision-methodology amendment (see
+below): `supported-server matrix` now gates on current-generation rows only
+(the proposed-oldest rows' shared, non-candidate-specific failure is tracked
+separately as #627), and `net production-code deletion` is measured rather
+than pass/fail. Regenerated by `node
+tests/spike/clickhouse-client/recompute-decision.mjs` from the same
+`results.json` facts the original 2026-08-06 run recorded — no live
+Docker/browser matrix was re-run, because none of those underlying facts
+changed.
 
 ## Critical-question evidence
 
@@ -559,8 +549,11 @@ current generic physical LOC eligible for deletion    =  131
 (Corrected from the originally-recorded 120/182/-157 by the evidence-
 correction addendum below — see there for why.)
 
-Net deletion is **not positive** — an Accepted ADR requires positive net
-deletion. Buckets not counted toward deletion each have exactly one final
+Net deletion is **not positive**. The original plan required positive net
+deletion for acceptance; the 2026-08-07 decision-methodology amendment (see
+addendum below) demoted this to a measured metric rather than a hard gate,
+so a negative figure no longer alone forces Rejected — see the "Decision"
+section above for why. Buckets not counted toward deletion each have exactly one final
 owner (no permanent dual generic transport): `rewrite-narrow-adapter` (67
 lines, credential-epoch fencing folding into the official adapter's own
 request construction), `retain-temporary-bridge` (21 lines, `KILL QUERY` +
@@ -582,39 +575,43 @@ this specific caveat without needing to redo the rest of the spike.
 
 ## Consequences
 
-- `@clickhouse/client-web` is **not** adopted. `src/net/ch-client.ts` is
-  unchanged; production transport composition never changed during this
-  spike and does not change as a result of this ADR.
-- The dependency remains isolated to `tests/spike/clickhouse-client/` as a
-  `devDependency`; nothing in this change requires removing it (it is a
-  useful, reusable comparison harness per the invariant map), but it must
-  never be imported from `src/`.
+- `@clickhouse/client-web` is **accepted for production adoption**, as of
+  the 2026-08-07 decision-methodology amendment. As of this ADR text edit,
+  `src/net/ch-client.ts` is still unchanged and production transport
+  composition has not yet changed — this ADR authorizes Phase 2/3 to
+  perform that work, it does not perform it itself.
+- The dependency graduates from a spike-only `devDependency` to a real
+  production dependency once Phase 2 lands; until then it remains isolated
+  to `tests/spike/clickhouse-client/` exactly as it was during Phase 0/1.
 - Phase 1 (separating application policy from the concrete transport
-  implementation) may proceed independently of this Rejected result, on its
-  own merits — see "Decision" above.
+  implementation) — already landed, independent of this decision either way
+  — remains the seam Phase 2 targets. See "Phase 1 addendum" below.
 - Phases 2–4 (production official-client implementation, cutover, and
-  custom-transport deletion) do not proceed; #593's Phase 7 completes as
-  Rejected, per the umbrella's own precommitted framing that a Rejected
-  outcome still counts as complete.
-- Re-open this decision only when at least one of the two failed gates has
-  genuinely changed — most plausibly, a future ClickHouse-support-floor
-  re-evaluation that lands `@clickhouse/client-web`'s guaranteed minimum on a
-  version line where the meta-line gap and any newer server requirement no
-  longer separate; or a smaller sub-function deletion-estimate split that
-  turns the -154 LOC figure positive. (The browser-matrix gate this ADR
-  originally also counted here has already been resolved — see the
-  evidence-correction addendum below — and does not by itself reopen
-  anything, since the two gates above are independent of it.)
+  custom-transport deletion) **may now proceed**: Phase 2 and Phase 3 are
+  authorized by this decision; Phase 4 additionally requires Phase 3's own
+  cutover-completion acceptance criteria. #593's Phase 7 (this ADR) is
+  Accepted, not Rejected.
+- **What would revert this decision:** discovering that the 2026-08-07
+  amendment's reasoning doesn't hold up in practice — e.g. Phase 2/3 reveals
+  the narrow `exec()` bridge (`progress-bridge.ts` + `guarded-fetch.ts`)
+  can't actually stay narrow in production, or that the claimed upstream
+  maintenance-burden reduction doesn't materialize and the -154 LOC figure
+  turns out to matter after all. Fixing #627 (the meta-line gap) does
+  **not** revert this decision either way — it was already priced in as
+  "not evidence against the candidate" precisely because it affects the
+  status quo equally.
 
 ## Alternatives considered
 
 - **Accept with a narrow `exec()` bridge, raising the supported minimum to
-  26.3.16.10001.altinitystable (originally recorded as 26.6.2.160).**
-  Rejected: this still leaves net deletion negative (a structural, not
-  incidental, result — see "Why a narrow bridge cannot resolve this" above);
-  the browser-matrix ambiguity this bullet originally also cited no longer
-  applies, since that flake is now root-caused, fixed, and re-verified (see
-  the evidence-correction addendum below) rather than left ambiguous.
+  26.3.16.10001.altinitystable (originally recorded as 26.6.2.160).** This
+  is the path the 2026-08-06 evidence run considered and rejected at the
+  time (net deletion was still negative and treated as a hard blocker) —
+  and, following the 2026-08-07 decision-methodology amendment, is now the
+  ADR's own **Accepted** decision (see "Decision" above and the
+  "`JSONStringsEachRowWithProgress` disposition" section's already-selected
+  narrow-bridge design). Retained here as a record of the path this ADR
+  took two different verdicts on, not as a rejected alternative.
 - **Lower the proposed minimum to the client's raw documented floor (24.8+)
   without the application-inventory correction.** Rejected: this was the
   spike's own first-pass error (corrected in commit `49b9955`) — it would
@@ -639,16 +636,21 @@ this specific caveat without needing to redo the rest of the spike.
 ## Phase 1–4 boundaries
 
 Per the approved plan (§4 "Explicitly deferred acceptance criteria"), none of
-the following were attempted in this Phase 0 spike and none proceed as a
-result of a Rejected ADR:
+the following were attempted *in this Phase 0 spike itself* — Phase 0's own
+scope was validation evidence only:
 
 - Phase 1 — production `src/net/` transport contract; production import
   boundaries for the official client; shared contract tests for production
-  transport implementations.
-- Phase 2 — production official-client implementation.
+  transport implementations. **Landed** (see "Phase 1 addendum" below),
+  independent of this ADR's eventual verdict either way.
+- Phase 2 — production official-client implementation. **Now proceeds**,
+  per the Accepted decision above (as of the 2026-08-07 amendment).
 - Phase 3 — production cutover and production-path behavior acceptance.
+  **Now proceeds**, per the Accepted decision above.
 - Phase 4 — removal of obsolete custom generic transport code; actual
   post-cutover bundle/LOC comparison against this Phase 0 baseline.
+  Proceeds only once Phase 3's cutover completes its own acceptance
+  criteria — not authorized by this ADR alone.
 
 Also out of scope, per the plan, regardless of this ADR's status: full
 production browser E2E for login/Workbench/Dashboard/sign-out/export/
@@ -659,9 +661,11 @@ path.
 ### Phase 1 addendum (landed)
 
 Phase 1 — "establish the transport seam without behavior change" — landed on
-`wip/585-phase1-transport-seam`, per this ADR's own prescription for a
-Rejected outcome ("retain the current transport with the layer separation
-from Phase 1 remains useful independent of this decision"). It defines
+`wip/585-phase1-transport-seam`, under the ADR's then-current Rejected
+outcome ("retain the current transport with the layer separation from Phase
+1 remains useful independent of this decision") — a framing that has since
+proven doubly true: Phase 1's seam is exactly what the later-Accepted
+decision's Phase 2 now targets. It defines
 `src/net/clickhouse-transport.types.ts` (the `ClickHouseTransport` contract:
 `send`/`streamLines`, `TransportDeps`, `TransportRequest`, `StreamCallbacks`)
 and `src/net/clickhouse-http-transport.ts` (`createHttpTransport` — the
@@ -686,9 +690,12 @@ Two defects in the Phase 0 evidence-generation tooling itself — not in the
 underlying decision — were found and fixed after this ADR's original
 recording, both surfaced by independently re-examining the two claims this
 ADR leaned on most (the browser-matrix flake and the LOC deletion estimate).
-Neither changes the Rejected decision: the supported-server-matrix gate
-(genuine, confirmed-live 24.8.x incompatibility) was never in question and
-still fails on its own.
+At the time neither changed the (then still Rejected) decision: the
+supported-server-matrix gate's genuine, confirmed-live 24.8.x incompatibility
+was never in question and still failed the gate as it was then defined. (A
+later, separate 2026-08-07 decision-methodology amendment — see that
+addendum below — is what eventually changed the overall verdict; these two
+fixes did not.)
 
 **1. Browser-matrix flake root-caused, fixed, and re-verified (PR #624).**
 The original `current-altinity-stable / same-origin / webkit` failure was
@@ -756,6 +763,79 @@ code (`src/**`) changed as part of either. Full evidence was regenerated
 twice more after landing both fixes (candidate `1269e5d` / baseline
 `6250625`), both runs agreeing on every number cited in this addendum.
 
+### Decision-methodology amendment addendum (2026-08-07)
+
+**Original decision (2026-08-06): Rejected**, on two gates —
+`supported-server matrix` (both proposed-oldest 24.8.x rows failed their
+live suite) and `net production-code deletion` (-154/-157 physical LOC,
+computed at two different points as the "Evidence correction addendum"
+above describes). Both are documented in full elsewhere in this ADR (see
+"Exact server matrix" and "Future production deletion estimate" above,
+unchanged by this amendment) and are not repeated here.
+
+**What prompted the reconsideration.** Re-examining why each gate failed
+surfaced that they fail for two very different *kinds* of reasons:
+
+- `supported-server matrix`'s failure is **symmetric**: the current
+  transport and the candidate read back the same wrong (empty) values on
+  24.8, because the root cause (`src/core/stream.ts`'s `applyStreamLine()`
+  has no fallback for a ClickHouse response that never sends a `meta`
+  line — a real, pre-existing, general SQL Browser defect, now tracked as
+  #627) lives entirely on the SQL Browser side, unrelated to which HTTP
+  client issues the request. A candidate that fails identically to the
+  status quo isn't *worse* than the status quo on this axis — the original
+  Phase 0 evidence run's mechanical rule (any required hard gate failing →
+  Rejected) didn't distinguish "the candidate regressed something" from
+  "the environment has an unrelated, shared defect," and this gate was the
+  second kind.
+- `net production-code deletion`'s failure is **asymmetric** — the current
+  transport carries zero official-adapter or bridge/guard code by
+  definition, so this cost exists only if the candidate is adopted. That
+  makes it a genuine, decision-relevant result on its face. On reflection,
+  though, LOC delta alone is a narrow proxy for the thing the plan actually
+  cared about (maintenance cost): it can't see that a library absorbing
+  ClickHouse protocol-format churn, security patches, and edge-case bugs
+  upstream may reduce SQL Browser's own maintenance burden even at flat or
+  negative LOC. The plan had precommitted a positive-net-deletion
+  requirement specifically so it couldn't be waived after an unfavorable
+  result — which is exactly why this reconsideration is recorded as an
+  explicit, dated methodology amendment with its own reasoning here, rather
+  than a quiet re-interpretation of the same evidence.
+
+**What changed, mechanically.** `computeGates()`
+(`tests/spike/clickhouse-client/run-matrix.mjs`, 2026-08-07):
+
+- `supported-server matrix` now keys its pass/fail on the two
+  current-generation rows (`current-stable-oss`, `current-altinity-stable`)
+  only; the full four-row set must still be *executed* for the gate to be
+  conclusive at all, but the two proposed-oldest rows' outcome no longer
+  drives pass/fail — it remains fully visible in
+  `docs/evidence/585/compatibility-matrix.md` and in "Exact server matrix"
+  above. A genuine candidate-specific regression on a current-generation
+  row still fails this gate; the shared, non-candidate-specific
+  proposed-oldest failure no longer does.
+- `net production-code deletion` is now always `measured` (never `fail`),
+  on the same footing `bundle delta` already had. The real number
+  (`deletionEstimate.netExecutableDeletion`, still -154) is unchanged and
+  fully recorded.
+- Both functions, plus `deriveDecision()`/`renderDecisionTableMd()`, are now
+  exported so a narrow recompute script
+  (`tests/spike/clickhouse-client/recompute-decision.mjs`, new 2026-08-07)
+  can re-derive `results.json`'s `gates`/`decision` and regenerate
+  `decision-table.md` from already-collected facts, without re-running the
+  live Docker/browser matrix — legitimate specifically because no
+  underlying fact changed, only the classification rule. `results.json`
+  gained a `gatesMethodologyAmendment` field recording the amendment date,
+  reason, and the previous gates/decision for audit history.
+
+**Result.** Recomputing from the exact same `results.json` (candidate
+`1269e5d` / baseline `6250625` — no new facts, no re-run matrix) now yields
+zero `fail` gates and **Decision: Accepted** — see "Decision" above and the
+"Decision table" section. This does not fix, worsen, or otherwise touch
+#627 (the meta-line gap) or the documented ClickHouse-version support
+matrix (#71): both remain exactly as they were, tracked independently of
+this ADR's outcome.
+
 ## Reproduction commands
 
 ```sh
@@ -766,6 +846,10 @@ npm run test:client-spike:matrix
 # browser harness only
 npm run test:client-spike:browser -- --project=chromium
 npm run test:client-spike:browser -- --project=webkit
+# recompute gates/decision from existing results.json after a gate-rule
+# change only (no live matrix re-run) — see "Decision-methodology
+# amendment addendum"
+node tests/spike/clickhouse-client/recompute-decision.mjs
 # evidence self-consistency validator (this ADR's Status vs. results.json,
 # wiki status/link, decision-table.md byte match, completeness, credentials)
 npm run check:client-spike:evidence

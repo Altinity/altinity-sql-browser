@@ -19,7 +19,12 @@ import {
   classifyBrowserMatrixCell as classifyBrowserMatrixCellUntyped,
   classifyFunctionRangesFromSource as classifyFunctionRangesFromSourceUntyped,
   computeDeletionEstimate,
+  computeGates as computeGatesUntyped,
+  deriveDecision as deriveDecisionUntyped,
 } from './run-matrix.mjs';
+
+const computeGates = computeGatesUntyped as (r: unknown) => Record<string, string>;
+const deriveDecision = deriveDecisionUntyped as (gates: Record<string, string>) => { status: string; rationale: string[] };
 
 // `run-matrix.mjs` is a deliberately untyped `.mjs` orchestration module (plan
 // §8) — `tsc`'s allowJs/checkJs:false interop infers its exports' shapes only
@@ -683,5 +688,80 @@ describe('computeDeletionEstimate (P3 review finding: the whole-formula regressi
 
   it('does not throw for the real ch-client.ts / clickhouse-http-transport.ts / official-adapter.ts files under the broadened boundary regex and the new symmetric drift guard — the real-file proof that CH_CLIENT_CLASSIFICATION and HTTP_TRANSPORT_CLASSIFICATION stay exhaustive in both directions', async () => {
     await expect(computeDeletionEstimate()).resolves.toBeDefined();
+  });
+});
+
+describe('computeGates / deriveDecision (2026-08-07 decision-methodology amendment: net-deletion demoted to measured; supported-server matrix narrowed to current-generation rows)', () => {
+  const passedScenario = { status: 'passed', executed: true };
+  const buildScenarios = (extra: Record<string, unknown> = {}) => ({
+    'ordinary-query': passedScenario, 'table-streaming': passedScenario, 'empty-result': passedScenario, 'url-parameters-arrays-and-large-integers': passedScenario,
+    'progressive-first-row': passedScenario, 'kpi-progress': passedScenario,
+    'exception-after-headers-inband': passedScenario, 'malformed-stream': passedScenario, 'truncated-stream': passedScenario,
+    'bearer-auth-exact-header': passedScenario, 'jwt-as-basic-exact-composition': passedScenario, 'refresh-then-retry': passedScenario,
+    'stale-before-request': passedScenario, 'stale-during-refresh': passedScenario, 'stale-response': passedScenario,
+    'raw-invalid-utf8': passedScenario, 'raw-tagged-late-exception': passedScenario, 'raw-legacy-untagged-exception': passedScenario,
+    'raw-tsv-exact': passedScenario, 'raw-csv-exact': passedScenario, 'raw-json-exact': passedScenario,
+    ...extra,
+  });
+  const baseResults = (matrixRows: Record<string, { executed: boolean; status: string }>, deletionEstimate: { netExecutableDeletion: number } | null) => ({
+    scenarios: buildScenarios(),
+    matrixRows,
+    browserMatrix: { 'proposed-oldest-oss/same-origin/chromium': { requested: true, executed: true, status: 'passed' } },
+    candidate: { selfContained: true },
+    bundleDelta: { deltaBytes: 1234 },
+    deletionEstimate,
+  });
+  const allFourRows = (overrides: Record<string, { executed: boolean; status: string }>) => ({
+    'proposed-oldest-oss': { executed: true, status: 'passed' },
+    'proposed-oldest-altinity-stable': { executed: true, status: 'passed' },
+    'current-stable-oss': { executed: true, status: 'passed' },
+    'current-altinity-stable': { executed: true, status: 'passed' },
+    ...overrides,
+  });
+
+  it('"supported-server matrix" passes when only the two proposed-oldest rows fail (the exact #627 shape) — the shared, non-candidate-specific failure no longer blocks this gate', () => {
+    const results = baseResults(allFourRows({
+      'proposed-oldest-oss': { executed: true, status: 'failed' },
+      'proposed-oldest-altinity-stable': { executed: true, status: 'failed' },
+    }), { netExecutableDeletion: -154 });
+    const gates = computeGates(results);
+    expect(gates['supported-server matrix']).toBe('pass');
+  });
+
+  it('"supported-server matrix" still fails when a CURRENT-GENERATION row fails — a genuine candidate-specific regression is not waved through', () => {
+    const results = baseResults(allFourRows({
+      'current-stable-oss': { executed: true, status: 'failed' },
+    }), { netExecutableDeletion: -154 });
+    const gates = computeGates(results);
+    expect(gates['supported-server matrix']).toBe('fail');
+  });
+
+  it('"net production-code deletion" is "measured", never "fail", regardless of a negative LOC figure', () => {
+    const results = baseResults(allFourRows({}), { netExecutableDeletion: -154 });
+    const gates = computeGates(results);
+    expect(gates['net production-code deletion']).toBe('measured');
+  });
+
+  it('"net production-code deletion" is "inconclusive" (not "measured") when no deletion estimate was computed at all', () => {
+    const results = baseResults(allFourRows({}), null);
+    const gates = computeGates(results);
+    expect(gates['net production-code deletion']).toBe('inconclusive');
+  });
+
+  it('deriveDecision computes Accepted from the exact ADR-0005 shape: both proposed-oldest rows fail, net deletion is -154, every other gate passes', () => {
+    const results = baseResults(allFourRows({
+      'proposed-oldest-oss': { executed: true, status: 'failed' },
+      'proposed-oldest-altinity-stable': { executed: true, status: 'failed' },
+    }), { netExecutableDeletion: -154 });
+    const decision = deriveDecision(computeGates(results));
+    expect(decision.status).toBe('Accepted');
+  });
+
+  it('deriveDecision still computes Rejected when a current-generation row genuinely regresses, even with the amendment in place', () => {
+    const results = baseResults(allFourRows({
+      'current-altinity-stable': { executed: true, status: 'failed' },
+    }), { netExecutableDeletion: -154 });
+    const decision = deriveDecision(computeGates(results));
+    expect(decision.status).toBe('Rejected');
   });
 });

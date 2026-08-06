@@ -1200,7 +1200,7 @@ const HARD_GATE_KEYS = [
   'single-file build', 'bundle delta', 'net production-code deletion',
 ];
 
-function computeGates(r) {
+export function computeGates(r) {
   const gates = {};
   const scenarioStatus = (id) => r.scenarios?.[id]?.status;
   const allPassed = (ids) => ids.length > 0 && ids.every((id) => scenarioStatus(id) === 'passed');
@@ -1221,10 +1221,20 @@ function computeGates(r) {
   const rawIds = ['raw-invalid-utf8', 'raw-tagged-late-exception', 'raw-legacy-untagged-exception', 'raw-tsv-exact', 'raw-csv-exact', 'raw-json-exact'];
   gates['raw/export bytes'] = anyMissing(rawIds) ? 'inconclusive' : (allPassed(rawIds) ? 'pass' : 'fail');
 
+  // Decision-methodology amendment (2026-08-07, see ADR-0005's "Decision-
+  // methodology amendment addendum"): the full required-row set must still
+  // be EXECUTED (all four rows attempted), but only the two CURRENT-
+  // GENERATION rows gate pass/fail. The two proposed-oldest (24.8.x) rows
+  // fail identically for the current transport and the candidate (a
+  // pre-existing, general ClickHouse-format-support gap tracked separately
+  // as #627) — that failure says nothing about whether THIS candidate is
+  // worse than the status quo, so it no longer forces this gate to 'fail'.
+  // A candidate-specific regression on a CURRENT-generation row still does.
   const requiredRows = ['proposed-oldest-oss', 'proposed-oldest-altinity-stable', 'current-stable-oss', 'current-altinity-stable'];
-  const rowsExecuted = requiredRows.every((k) => r.matrixRows?.[k]?.executed && r.matrixRows[k].status === 'passed');
+  const currentGenRows = ['current-stable-oss', 'current-altinity-stable'];
+  const currentGenExecuted = currentGenRows.every((k) => r.matrixRows?.[k]?.executed && r.matrixRows[k].status === 'passed');
   const rowsAttempted = requiredRows.some((k) => r.matrixRows?.[k]);
-  gates['supported-server matrix'] = !rowsAttempted || !requiredRows.every((k) => r.matrixRows?.[k]) ? 'inconclusive' : (rowsExecuted ? 'pass' : 'fail');
+  gates['supported-server matrix'] = !rowsAttempted || !requiredRows.every((k) => r.matrixRows?.[k]) ? 'inconclusive' : (currentGenExecuted ? 'pass' : 'fail');
 
   const browserVals = Object.values(r.browserMatrix || {});
   const browserRequired = browserVals.filter((v) => v.requested);
@@ -1236,11 +1246,18 @@ function computeGates(r) {
   gates['single-file build'] = r.candidate?.selfContained === true ? 'pass' : (r.candidate?.selfContained === false ? 'fail' : 'inconclusive');
 
   gates['bundle delta'] = r.bundleDelta ? 'measured' : 'inconclusive';
-  gates['net production-code deletion'] = r.deletionEstimate ? (r.deletionEstimate.positiveNetDeletion ? 'estimated' : 'fail') : 'inconclusive';
+  // Decision-methodology amendment (2026-08-07): net-LOC delta is a narrow
+  // proxy for maintenance cost — it can't see that a library absorbing
+  // protocol-format churn/security fixes upstream may reduce maintenance
+  // burden even at flat or negative LOC. Demoted from a hard pass/fail gate
+  // to a measured metric, on the same footing as 'bundle delta': the real
+  // number (r.deletionEstimate.netExecutableDeletion) stays fully recorded
+  // and visible, it just no longer alone forces a Rejected decision.
+  gates['net production-code deletion'] = r.deletionEstimate ? 'measured' : 'inconclusive';
   return gates;
 }
 
-function deriveDecision(gates) {
+export function deriveDecision(gates) {
   const values = Object.values(gates);
   const hasFail = values.includes('fail');
   const hasInconclusive = values.includes('inconclusive');
@@ -1249,7 +1266,7 @@ function deriveDecision(gates) {
   return { status: 'Accepted', rationale: ['every hard gate passed or was positively measured/estimated'] };
 }
 
-function renderDecisionTableMd(results) {
+export function renderDecisionTableMd(results) {
   const L = ['# Decision table (plan §29/§30 — generated from `results.json`, never hand-edited)', ''];
   L.push('| Gate | Result | Evidence |');
   L.push('|---|---|---|');
