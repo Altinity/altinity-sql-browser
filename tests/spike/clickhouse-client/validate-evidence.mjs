@@ -92,15 +92,15 @@ async function loadPrecisionCaseIds() {
 // stay in sync with run-matrix.mjs's `LIVE_SCENARIO_TEST_SUBSTRINGS` keys —
 // duplicated here (not imported; each CLI stays self-contained per this
 // sub-task's file-scope boundary) rather than sharing a module.
-const REQUIRED_LIVE_SCENARIO_IDS = [
+export const REQUIRED_LIVE_SCENARIO_IDS = [
   'server-cancellation-kill-query', 'temporary-table-session-scoped',
   'session-set-persistence', 'session-is-locked-live-retry',
   'progressive-timing-real-server', 'mid-stream-progress-error-real-server',
 ];
 
-const REQUIRED_MATRIX_ROWS = ['proposed-oldest-oss', 'proposed-oldest-altinity-stable', 'current-stable-oss', 'current-altinity-stable'];
-const REQUIRED_BROWSERS = ['chromium', 'webkit'];
-const REQUIRED_ORIGINS = ['same-origin', 'cross-origin'];
+export const REQUIRED_MATRIX_ROWS = ['proposed-oldest-oss', 'proposed-oldest-altinity-stable', 'current-stable-oss', 'current-altinity-stable'];
+export const REQUIRED_BROWSERS = ['chromium', 'webkit'];
+export const REQUIRED_ORIGINS = ['same-origin', 'cross-origin'];
 
 const HARD_GATE_KEYS = [
   'exact-value parity', 'progressive first-row parity', 'mid-stream error parity',
@@ -194,13 +194,26 @@ function findPlaceholderStrings(results) {
 
 // ── individual rule groups (each returns an array of finding strings) ──────
 
-function checkCompleteness(results, deterministicIds, precisionCases) {
+// `checkCompleteness` reports two DIFFERENT kinds of gap under one findings
+// list: something required never ran ("missing", a genuinely incomplete
+// run — the matrix was cut short, a row was skipped, etc.) versus something
+// ran to completion and legitimately failed (a real, evidenced Rejected-ADR
+// reason like the 24.8.x server-matrix incompatibility). Both are real
+// findings worth reporting, but only the first kind means the run itself is
+// incomplete. `missingCount` isolates that distinction so a caller (see
+// `main()`) can gate "is this run even complete enough to cross-check the
+// ADR/wiki against" on missing-ness alone, not on every legitimate failure
+// a fully-complete, correctly-Rejected run is expected to keep reporting
+// forever (a genuinely incompatible server never starts passing).
+export function checkCompleteness(results, deterministicIds, precisionCases) {
   const findings = [];
+  let missingCount = 0;
+  const missing = (message) => { addFinding(findings, message); missingCount += 1; };
 
   for (const id of deterministicIds) {
     const s = results.scenarios?.[id];
     if (!s || s.executed !== true) {
-      addFinding(findings, `missing scenario: deterministic scenario "${id}" has not executed (results.scenarios["${id}"] is ${s ? `present but executed=${s.executed}` : 'absent'})`);
+      missing(`missing scenario: deterministic scenario "${id}" has not executed (results.scenarios["${id}"] is ${s ? `present but executed=${s.executed}` : 'absent'})`);
     } else if (s.status !== 'passed') {
       addFinding(findings, `scenario "${id}" executed but did not pass (status=${s.status})`);
     }
@@ -209,7 +222,7 @@ function checkCompleteness(results, deterministicIds, precisionCases) {
   for (const rowKey of REQUIRED_MATRIX_ROWS) {
     const row = results.matrixRows?.[rowKey];
     if (!row || row.executed !== true) {
-      addFinding(findings, `missing matrix row: required row "${rowKey}" has not executed (results.matrixRows["${rowKey}"] is ${row ? `present but executed=${row.executed}` : 'absent'})`);
+      missing(`missing matrix row: required row "${rowKey}" has not executed (results.matrixRows["${rowKey}"] is ${row ? `present but executed=${row.executed}` : 'absent'})`);
     } else if (row.status !== 'passed') {
       addFinding(findings, `matrix row "${rowKey}" executed but did not pass (status=${row.status})`);
     }
@@ -220,7 +233,7 @@ function checkCompleteness(results, deterministicIds, precisionCases) {
     for (const liveId of REQUIRED_LIVE_SCENARIO_IDS) {
       const entry = results.scenarios?.[liveId]?.[`row:${rowKey}`];
       if (!entry || entry.executed !== true) {
-        addFinding(findings, `missing scenario: live-only scenario "${liveId}" has not executed for row "${rowKey}"`);
+        missing(`missing scenario: live-only scenario "${liveId}" has not executed for row "${rowKey}"`);
       } else if (entry.status !== 'passed') {
         addFinding(findings, `live-only scenario "${liveId}" for row "${rowKey}" executed but did not pass (status=${entry.status})`);
       }
@@ -229,7 +242,7 @@ function checkCompleteness(results, deterministicIds, precisionCases) {
       const caseEntry = results.precision?.[id];
       const rowEntry = caseEntry?.rows?.[rowKey];
       if (!rowEntry) {
-        addFinding(findings, `missing precision case: "${id}" has no recorded result for row "${rowKey}"`);
+        missing(`missing precision case: "${id}" has no recorded result for row "${rowKey}"`);
       } else if (!capabilityGated && !rowEntry.skippedReason
         && !(rowEntry.currentMatchesExpected && rowEntry.officialMatchesExpected)) {
         addFinding(findings, `precision case "${id}" did not match the independent expectation for row "${rowKey}" (not capability-gated)`);
@@ -245,7 +258,7 @@ function checkCompleteness(results, deterministicIds, precisionCases) {
         const key = `${rowKey}/${origin}/${browser}`;
         const entry = results.browserMatrix?.[key];
         if (!entry || entry.executed !== true) {
-          addFinding(findings, `missing browser-matrix row: "${key}" has not executed (results.browserMatrix["${key}"] is ${entry ? `present but executed=${entry.executed}` : 'absent'})`);
+          missing(`missing browser-matrix row: "${key}" has not executed (results.browserMatrix["${key}"] is ${entry ? `present but executed=${entry.executed}` : 'absent'})`);
         } else if (entry.status !== 'passed') {
           addFinding(findings, `browser-matrix row "${key}" executed but did not pass (status=${entry.status})`);
         }
@@ -253,6 +266,7 @@ function checkCompleteness(results, deterministicIds, precisionCases) {
     }
   }
 
+  findings.missingCount = missingCount;
   return findings;
 }
 
@@ -467,11 +481,17 @@ async function main() {
   ];
 
   // ADR/wiki consistency is only meaningful once the matrix has ACTUALLY
-  // completed (see this file's header comment) — skip it while completeness
-  // findings remain, so a partial/smoke run reports ONLY the completeness
-  // gap it genuinely has, not a spurious "wiki still pending" failure for a
-  // decision that hasn't really been reached yet.
-  const adrFindings = completenessFindings.length === 0 ? await checkAdrAndWikiConsistency(results) : [];
+  // completed (see this file's header comment) — skip it while something
+  // required never ran (missingCount > 0), so a partial/smoke run reports
+  // ONLY the completeness gap it genuinely has, not a spurious "wiki still
+  // pending" failure for a decision that hasn't really been reached yet.
+  // Gate on missingCount, NOT completenessFindings.length: a fully-complete
+  // run that reaches a correctly-evidenced Rejected decision (e.g. a real
+  // 24.8.x server incompatibility) will legitimately keep reporting
+  // "executed but did not pass" findings forever — that is not incompleteness,
+  // and must not suppress the one check that verifies the ADR/wiki actually
+  // reflect that same Rejected decision.
+  const adrFindings = completenessFindings.missingCount === 0 ? await checkAdrAndWikiConsistency(results) : [];
 
   const allFindings = [...completenessFindings, ...otherFindings, ...adrFindings];
 
@@ -485,7 +505,15 @@ async function main() {
   process.exitCode = 1;
 }
 
-main().catch((e) => {
-  console.error(e instanceof Error ? (e.stack || e.message) : String(e));
-  process.exitCode = 1;
-});
+// ── CLI ──────────────────────────────────────────────────────────────────────
+
+function isMainModule() {
+  return import.meta.url === `file://${process.argv[1]}`;
+}
+
+if (isMainModule()) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? (e.stack || e.message) : String(e));
+    process.exitCode = 1;
+  });
+}

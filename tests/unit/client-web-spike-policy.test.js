@@ -27,6 +27,9 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
+import {
+  checkCompleteness, REQUIRED_MATRIX_ROWS, REQUIRED_LIVE_SCENARIO_IDS, REQUIRED_ORIGINS, REQUIRED_BROWSERS,
+} from '../spike/clickhouse-client/validate-evidence.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SPIKE_DIR = resolve(projectRoot, 'tests/spike/clickhouse-client');
@@ -254,5 +257,58 @@ describe('ADR-0005 / wiki consistency (fail-closed)', () => {
     const foundOppositeStatus = excerpts.some((excerpt) => unquotedStatusWords(excerpt).has(opposite));
     expect(foundMatchingStatus, `wiki must state the ADR's actual status (${status}) near an ADR-0005/#585 mention`).toBe(true);
     expect(foundOppositeStatus, `wiki must not claim the opposite status (${opposite})`).toBe(false);
+  });
+});
+
+describe('evidence completeness distinguishes "never ran" from "ran and legitimately failed"', () => {
+  // Reproduces the exact real shape found on issue #585 Phase 0: every
+  // required row/scenario/case/browser-combo EXECUTED, but the two
+  // proposed-oldest server rows genuinely fail (a real, evidenced ClickHouse
+  // 24.8.x incompatibility, not incompleteness). A fully-complete run that
+  // reaches a correctly-evidenced Rejected decision keeps reporting these
+  // findings forever -- that must not be conflated with "the matrix run
+  // itself is unfinished," or the ADR/wiki cross-check (gated on this
+  // function's completeness signal in validate-evidence.mjs's main()) would
+  // never run for exactly the scenario it exists to protect.
+  function fullyExecutedResults({ oldRowsPass }) {
+    const results = { matrixRows: {}, scenarios: {}, precision: {}, browserMatrix: {} };
+    for (const rowKey of REQUIRED_MATRIX_ROWS) {
+      const isOldRow = rowKey.startsWith('proposed-oldest');
+      const passed = isOldRow ? oldRowsPass : true;
+      results.matrixRows[rowKey] = { executed: true, status: passed ? 'passed' : 'failed' };
+      for (const liveId of REQUIRED_LIVE_SCENARIO_IDS) {
+        results.scenarios[liveId] ??= {};
+        results.scenarios[liveId][`row:${rowKey}`] = { executed: true, status: passed ? 'passed' : 'failed' };
+      }
+      for (const origin of REQUIRED_ORIGINS) {
+        for (const browser of REQUIRED_BROWSERS) {
+          results.browserMatrix[`${rowKey}/${origin}/${browser}`] = { executed: true, status: 'passed' };
+        }
+      }
+    }
+    return results;
+  }
+
+  it('reports zero missingCount for a fully-executed run even when some rows legitimately fail', () => {
+    const results = fullyExecutedResults({ oldRowsPass: false });
+    const findings = checkCompleteness(results, [], []);
+    expect(findings.missingCount).toBe(0);
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.some((f) => f.includes('proposed-oldest-oss') && f.includes('did not pass'))).toBe(true);
+  });
+
+  it('reports a nonzero missingCount when something required never executed', () => {
+    const results = fullyExecutedResults({ oldRowsPass: true });
+    delete results.matrixRows['current-stable-oss'];
+    const findings = checkCompleteness(results, [], []);
+    expect(findings.missingCount).toBeGreaterThan(0);
+    expect(findings.some((f) => f.includes('missing matrix row') && f.includes('current-stable-oss'))).toBe(true);
+  });
+
+  it('reports zero findings at all for a fully-executed, fully-passing run', () => {
+    const results = fullyExecutedResults({ oldRowsPass: true });
+    const findings = checkCompleteness(results, [], []);
+    expect(findings.missingCount).toBe(0);
+    expect(findings.length).toBe(0);
   });
 });
