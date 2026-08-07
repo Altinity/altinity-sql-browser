@@ -72,9 +72,20 @@ export function startFaultServer(opts = {}) {
     if (cors) {
       // Node's ServerResponse#writeHead always returns `this`; no call site
       // below chains off its return value, so wrapping it to inject the
-      // header is transparent to every existing fixture branch.
+      // header is transparent to every existing fixture branch. Node's real
+      // signature is `writeHead(status[, statusMessage][, headers])` — every
+      // call site in this file today uses the 2-arg `(status, headers)`
+      // form, but handle the 3-arg form too so a future fixture that passes
+      // a `statusMessage` can't have it silently mistaken for `headers`.
       const nativeWriteHead = res.writeHead.bind(res);
-      res.writeHead = (status, headers) => nativeWriteHead(status, { 'access-control-allow-origin': '*', ...(headers || {}) });
+      res.writeHead = (status, ...rest) => {
+        if (rest.length >= 2) {
+          const [statusMessage, headers] = rest;
+          return nativeWriteHead(status, statusMessage, { 'access-control-allow-origin': '*', ...(headers || {}) });
+        }
+        const [headers] = rest;
+        return nativeWriteHead(status, { 'access-control-allow-origin': '*', ...(headers || {}) });
+      };
     }
     const url = new URL(req.url, 'http://localhost');
     // A cross-origin POST carrying an Authorization header is never a
