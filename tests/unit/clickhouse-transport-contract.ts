@@ -139,12 +139,20 @@ export function runTransportContractSuite(name: string, makeTransport: MakeTrans
       expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBe(sql);
     });
 
-    it('carries opaque Bearer, Basic, and custom-scheme Authorization values verbatim across sequential sends — no scheme normalization, no cross-send caching', async () => {
+    it('carries opaque Bearer, Basic, Digest, and a genuinely nonstandard scheme Authorization value verbatim across sequential sends — no scheme normalization, no cross-send caching', async () => {
       const { transport, fetchMock } = harness(() => new Response('ok'));
       const values = [
         'Bearer tok-1',
         'Basic dXNlcjpwYXNz',
         'Digest realm="ch", nonce="abc", response="def"',
+        // A scheme name that is not in the IANA HTTP Authentication Scheme
+        // Registry (unlike Bearer/Basic/Digest above) — e.g. a custom SSO
+        // gateway's own token scheme. Catches an implementation that
+        // special-cases a closed allowlist of known schemes while mangling
+        // (rejecting, dropping, or rewriting) anything outside it: such an
+        // implementation would still pass a matrix built only from
+        // registered schemes.
+        'XAuth opaque-value-1',
         'Bearer tok-2', // back to Bearer with a DIFFERENT value — proves no retained prior-header state
       ];
       for (const authorization of values) {

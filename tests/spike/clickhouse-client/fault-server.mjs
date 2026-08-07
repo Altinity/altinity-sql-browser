@@ -60,16 +60,28 @@ const attemptCounts = new Map();
 export function startFaultServer(opts = {}) {
   const { cors = false } = opts;
   const requestsLog = [];
+  // #630 Phase 1 review fix — test-only observability for the
+  // `res.on('error', ...)` suppression scoping below: records whether the
+  // most recently dispatched response registered an 'error' listener, so a
+  // spike `.ts` test can assert the handler is scoped to `cors: true`
+  // without importing `node:http` itself (plan §8 keeps Node-typed imports
+  // out of spike `.ts` files). Read via `getLastErrorListenerCount()`.
+  let lastErrorListenerCount = 0;
 
   const server = createServer(async (req, res) => {
-    // #630 Phase 1: a client that aborts a cross-origin request (the native
-    // cancellation scenarios) tears down the underlying TCP connection while
-    // a fixture below is still `await sleep(...)`-ing between writes. The
-    // next `res.write()`/`res.end()` on that torn-down socket would otherwise
-    // surface as an uncaught 'error' event and crash this whole shared test
-    // server (used by every fixture, not just the new ones) — swallow it.
-    res.on('error', () => {});
     if (cors) {
+      // #630 Phase 1: a client that aborts a cross-origin request (the
+      // native cancellation scenarios) tears down the underlying TCP
+      // connection while a fixture below is still `await sleep(...)`-ing
+      // between writes. The next `res.write()`/`res.end()` on that
+      // torn-down socket would otherwise surface as an uncaught 'error'
+      // event and crash this whole shared test server — swallow it. Scoped
+      // to the opt-in CORS path only: `cors` defaults off (see docstring
+      // above) and every pre-existing no-option caller
+      // (`parity.test.ts`/`run-matrix.mjs`) must keep today's behavior of
+      // NOT suppressing `ServerResponse` errors, so a real fixture/server
+      // failure there still surfaces instead of being silently hidden.
+      res.on('error', () => {});
       // Node's ServerResponse#writeHead always returns `this`; no call site
       // below chains off its return value, so wrapping it to inject the
       // header is transparent to every existing fixture branch. Node's real
@@ -87,6 +99,7 @@ export function startFaultServer(opts = {}) {
         return nativeWriteHead(status, { 'access-control-allow-origin': '*', ...(headers || {}) });
       };
     }
+    lastErrorListenerCount = res.listenerCount('error');
     const url = new URL(req.url, 'http://localhost');
     // A cross-origin POST carrying an Authorization header is never a
     // CORS-simple request, so the browser sends a preflight OPTIONS first —
@@ -447,6 +460,7 @@ export function startFaultServer(opts = {}) {
         baseUrl: `http://127.0.0.1:${port}`,
         requestsLog,
         resetAttemptCounts: () => attemptCounts.clear(),
+        getLastErrorListenerCount: () => lastErrorListenerCount,
         close: () => new Promise((res2) => server.close(() => res2())),
       });
     });
