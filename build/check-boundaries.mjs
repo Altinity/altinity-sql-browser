@@ -355,20 +355,56 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // not a regex) before matching, so this rule flags only a real code
 // re-declaration/re-import — never this phase's own doc comments narrating
 // the move, and never a `/*`, `*/`, or `//` substring that only *looks*
-// like a comment delimiter because it sits inside a string or template
-// literal. A single alternation regex over the raw text (the earlier
-// approach) cannot tell those apart: `const marker = "/*"; export interface
-// StreamLine {} const end = "*/";` reads as one big block comment because
-// the regex has no notion of "inside a string", silently deleting the real
-// `StreamLine` declaration between the two string literals; likewise
-// `const u = "https://example"; export function streamLines() {}` reads
-// the `//` inside the URL string as a line-comment opener and deletes the
-// real `streamLines` declaration that follows on the same line. Both are
-// covered as regression tests. The scanner below walks the source once,
-// tracking whether it is inside a single/double-quoted string or a
-// template literal (including nested `${ … }` substitutions, which are
-// itself code and can contain further strings/templates/comments) — only
-// outside all of those does a `//` or `/*` actually start a comment.
+// like a comment delimiter because it sits inside a string, a template
+// literal, or a regex literal. A single alternation regex over the raw text
+// (the earlier approach) cannot tell those apart: `const marker = "/*";
+// export interface StreamLine {} const end = "*/";` reads as one big block
+// comment because the regex has no notion of "inside a string", silently
+// deleting the real `StreamLine` declaration between the two string
+// literals; likewise `const u = "https://example"; export function
+// streamLines() {}` reads the `//` inside the URL string as a line-comment
+// opener and deletes the real `streamLines` declaration that follows on the
+// same line; likewise `const re = /\/\//; export function streamLines() {}`
+// reads the second half of the regex literal's own escaped-slash-then-
+// closing-delimiter as a `//` line-comment opener and deletes the real
+// `streamLines` declaration that follows. All three are covered as
+// regression tests. The scanner below walks the source once, tracking
+// whether it is inside a single/double-quoted string or a template literal
+// (including nested `${ … }` substitutions, which are itself code and can
+// contain further strings/templates/comments/regexes) — only outside all of
+// those does a `//` or `/*` actually start a comment, and a lone `/` that
+// isn't a comment opener is resolved as regex-literal-open vs division by
+// `regexAllowedAfter` below before falling through to a plain character.
+//
+// Regex vs division is the classic JS tokenizer ambiguity (resolved by every
+// real engine from surrounding token context, e.g. Acorn's `exprAllowed`):
+// a `/` opens a regex literal when the last non-whitespace text already
+// emitted leaves a value *expected* next (an operator/punctuation, the
+// start of the file, or one of a short list of keywords like `return` or
+// `typeof`); it is division when a value has just been *produced* (a
+// closing `)`/`]`, a completed identifier/number that isn't one of those
+// keywords, or a just-closed string/template). `//`/`/*` immediately
+// following such a division `/` are still unconditionally comments — that
+// check runs first, above — so this only ever fires for a genuine regex
+// open.
+const REGEX_PRECEDING_WORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'else', 'do', 'yield', 'await', 'case', 'default', 'extends',
+]);
+function regexAllowedAfter(out) {
+  let j = out.length - 1;
+  while (j >= 0 && /\s/.test(out[j])) j -= 1;
+  if (j < 0) return true; // start of file/expression — a value is expected
+  const lastChar = out[j];
+  if (lastChar === ')' || lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
+  if (/[\w$]/.test(lastChar)) {
+    let k = j;
+    while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
+    const word = out.slice(k + 1, j + 1);
+    return REGEX_PRECEDING_WORDS.has(word);
+  }
+  return true; // trailing operator/punctuation — a value is expected next
+}
 function stripComments(source) {
   let out = '';
   let i = 0;
@@ -422,6 +458,42 @@ function stripComments(source) {
       i += 2;
       while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
       i += 2;
+      continue;
+    }
+    if (c === '/' && regexAllowedAfter(out)) {
+      // Regex-literal open: consume through the matching unescaped closing
+      // `/` (an unescaped `/` inside a `[...]` character class does not
+      // close it — regex character classes don't need `/` escaped), then
+      // any trailing flag letters, and append the whole literal verbatim —
+      // exactly like the string-literal branch above preserves its content.
+      let j = i + 1;
+      let inClass = false;
+      while (j < n) {
+        const cj = source[j];
+        if (cj === '\\') {
+          j += 2;
+          continue;
+        }
+        if (cj === '\n') break; // unterminated — bail without consuming the newline
+        if (cj === '[') {
+          inClass = true;
+          j += 1;
+          continue;
+        }
+        if (cj === ']') {
+          inClass = false;
+          j += 1;
+          continue;
+        }
+        if (cj === '/' && !inClass) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      while (j < n && /[a-zA-Z]/.test(source[j])) j += 1; // flags
+      out += source.slice(i, j);
+      i = j;
       continue;
     }
     if (c === '"' || c === "'") {

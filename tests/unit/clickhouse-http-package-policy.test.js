@@ -300,6 +300,24 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
 // or `const u = "https://example"; export function streamLines() {}`).
 // This mirror must stay lexically identical to the production scanner —
 // see its comment for the walk-through.
+const REGEX_PRECEDING_WORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'else', 'do', 'yield', 'await', 'case', 'default', 'extends',
+]);
+function regexAllowedAfter(out) {
+  let j = out.length - 1;
+  while (j >= 0 && /\s/.test(out[j])) j -= 1;
+  if (j < 0) return true;
+  const lastChar = out[j];
+  if (lastChar === ')' || lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
+  if (/[\w$]/.test(lastChar)) {
+    let k = j;
+    while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
+    const word = out.slice(k + 1, j + 1);
+    return REGEX_PRECEDING_WORDS.has(word);
+  }
+  return true;
+}
 function stripComments(source) {
   let out = '';
   let i = 0;
@@ -344,6 +362,37 @@ function stripComments(source) {
       i += 2;
       while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
       i += 2;
+      continue;
+    }
+    if (c === '/' && regexAllowedAfter(out)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < n) {
+        const cj = source[j];
+        if (cj === '\\') {
+          j += 2;
+          continue;
+        }
+        if (cj === '\n') break;
+        if (cj === '[') {
+          inClass = true;
+          j += 1;
+          continue;
+        }
+        if (cj === ']') {
+          inClass = false;
+          j += 1;
+          continue;
+        }
+        if (cj === '/' && !inClass) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      while (j < n && /[a-zA-Z]/.test(source[j])) j += 1;
+      out += source.slice(i, j);
+      i = j;
       continue;
     }
     if (c === '"' || c === "'") {
@@ -504,6 +553,30 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
 
   it('flags a re-added streamLines following a string literal containing a "//" URL (regex-stripComments bypass 2)', () => {
     const probe = 'const u = "https://example"; export function streamLines() {}';
+    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+  });
+
+  // Regression case for a real bypass of the earlier regex-unaware
+  // stripComments: it had no notion of "inside a regex literal" either, so
+  // `/\/\//` — a regex whose escaped-slash content plus closing delimiter
+  // happen to place two literal `/` characters side by side — was misread as
+  // a `//` line-comment opener partway through the regex, silently deleting
+  // everything after it on that line, including the real `streamLines`
+  // declaration. The scanner must recognize the regex-literal open (via
+  // `regexAllowedAfter`) and consume through its real closing `/` before
+  // comment detection ever runs on the characters inside it.
+  it('flags a re-added streamLines declared right after a regex literal containing "//" (regex-stripComments bypass 3)', () => {
+    const probe = 'const re = /\\/\\//; export function streamLines() {}';
+    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+  });
+
+  it('does not flag a division inside a regex-adjacent expression as a false regex-literal open (regexAllowedAfter negative case)', () => {
+    const probe = `
+      export function pct(read, total) {
+        return (read / total) * 100;
+      }
+      export function streamLines() {}
+    `;
     expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
   });
 });
