@@ -131,6 +131,23 @@ const RULES = [
       'src/net/oauth-config.ts', 'src/application', 'src/ui'],
     why: 'issue #585 Phase 1: the transport contract must not couple to auth/application policy or UI, even type-only',
   },
+  // Issue #630 Phase 2 — Rule A: the new workspace package must not depend on
+  // ANY SQL Browser source, relatively. (A separate dedicated block below
+  // additionally bans a browser-root-literal or bare-specifier escape, since
+  // this generic loop only inspects specifiers starting with '.'.)
+  {
+    dir: 'packages/clickhouse-http/src',
+    forbidden: ['src'],
+    why: 'issue #630 Phase 2: clickhouse-http must not depend on SQL Browser source',
+  },
+  // Issue #630 Phase 2 — Rule C: SQL Browser source must consume the package
+  // through its public export, never a relative deep import into the
+  // package's own src/** implementation files.
+  {
+    dir: 'src',
+    forbidden: ['packages/clickhouse-http/src'],
+    why: 'issue #630 Phase 2: SQL Browser must use the package public export',
+  },
 ];
 
 function collectFiles(target) {
@@ -264,6 +281,55 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
     if (spec !== CLIENT_WEB_SPECIFIER && !spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) continue;
     if (CLIENT_WEB_ALLOWLIST.has(relFile)) continue;
     violations.push(`${relFile} → ${spec} (issue #585 Phase 1: only the future official transport file may import @clickhouse/client-web — ADR-0005 is Rejected, Phases 2-4 do not proceed without a new decision)`);
+  }
+}
+
+// Issue #630 Phase 2 — Rule B: packages/clickhouse-http/src/** must have
+// ZERO bare specifiers (an empty allowlist, not just an empty manifest
+// `dependencies` object). Root hoists many runtime dependencies already
+// (e.g. @preact/signals-core), so a zero-dependency manifest alone would not
+// stop package source from importing one undeclared — TypeScript/esbuild
+// could still resolve it. This block also catches a browser-root-literal
+// import (e.g. `/src/net/ch-client.js`) reaching back into SQL Browser
+// source: the generic RULES loop above only inspects specifiers that start
+// with '.', so a literal absolute-looking path would otherwise slip past
+// Rule A undetected — everything that isn't a relative specifier is a
+// violation here, with no exceptions.
+const PACKAGE_SRC_DIR = path.join(repoRoot, 'packages/clickhouse-http/src');
+if (fs.existsSync(PACKAGE_SRC_DIR)) {
+  for (const file of collectFiles(PACKAGE_SRC_DIR)) {
+    const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+    checkedFiles += 1;
+    const source = fs.readFileSync(file, 'utf8');
+    for (const spec of extractSpecifiers(source)) {
+      if (spec.startsWith('.')) continue; // relative — governed by Rule A above
+      violations.push(`${relFile} → ${spec} (issue #630 Phase 2: clickhouse-http has zero bare package imports)`);
+    }
+  }
+}
+
+// Issue #630 Phase 2 — Rule D: the public package name may be imported by
+// bare specifier only under src/net/** — the existing network-layer
+// boundary — so src/core, src/workspace, src/dashboard, src/application, or
+// UI code cannot bypass that layer merely because the low-level HTTP
+// mechanics moved behind a bare package name. The deep-import subpath form
+// (`@altinity/clickhouse-http/...`) is forbidden EVERYWHERE under src/** —
+// only the package's "." export is public (contract A4).
+const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
+for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  checkedFiles += 1;
+  const source = fs.readFileSync(file, 'utf8');
+  for (const spec of extractSpecifiers(source)) {
+    if (spec === CLICKHOUSE_HTTP_SPECIFIER) {
+      if (!relFile.startsWith('src/net/')) {
+        violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http may only be imported under src/net/**)`);
+      }
+      continue;
+    }
+    if (spec.startsWith(`${CLICKHOUSE_HTTP_SPECIFIER}/`)) {
+      violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http exposes only its "." export — deep imports are forbidden everywhere)`);
+    }
   }
 }
 

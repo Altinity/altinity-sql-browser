@@ -20,10 +20,18 @@ import { sqlString } from '../core/format.js';
 // `createHttpTransport`; this module keeps every auth/epoch/retry policy,
 // product operation, and `ChCtx` exactly as before, delegating through the
 // transport instead of calling `chUrl`/`ctx.fetch` directly.
-import { chUrl, createHttpTransport } from './clickhouse-http-transport.js';
+//
+// Issue #630 Phase 2 — `chUrl` now comes from `@altinity/clickhouse-http`
+// (the package is the ONE serializer implementation, contract A5); this
+// module's re-export below keeps every existing importer (including the
+// historical official-client spike, `tests/spike/clickhouse-client/current-
+// adapter.ts`) resolving unchanged. `createHttpTransport` stays imported
+// from the local compatibility adapter — its composition graph is untouched.
+import { chUrl } from '@altinity/clickhouse-http';
+import { createHttpTransport } from './clickhouse-http-transport.js';
 import type { TransportRequest } from './clickhouse-transport.types.js';
 export { chUrl };
-export type { ChUrlOpts } from './clickhouse-http-transport.js';
+export type { ChUrlOpts } from '@altinity/clickhouse-http';
 export type { ClickHouseTransport, StreamCallbacks, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────

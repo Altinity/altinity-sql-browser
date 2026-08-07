@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { chUrl, createHttpTransport } from '../../src/net/clickhouse-http-transport.js';
+import { createHttpTransport } from '../../src/net/clickhouse-http-transport.js';
 import type { StreamLine } from '../../src/core/stream.js';
 import { runTransportContractSuite } from './clickhouse-transport-contract.js';
 
@@ -7,10 +7,17 @@ import { runTransportContractSuite } from './clickhouse-transport-contract.js';
 // implementation. Registers the shared contract suite once (this is the
 // ONLY implementation Phase 1 registers — see the suite factory's header
 // comment), then covers the mechanics the shared suite deliberately leaves
-// implementation-specific: `chUrl`'s exact URL shape and the moved
-// progress-line stream loop, including two edge cases a manual move can
-// silently alter (a split multi-byte UTF-8 character across byte chunks,
-// and per-chunk onLine-before-onChunk ordering).
+// implementation-specific: the moved progress-line stream loop, including
+// two edge cases a manual move can silently alter (a split multi-byte UTF-8
+// character across byte chunks, and per-chunk onLine-before-onChunk
+// ordering).
+//
+// Issue #630 Phase 2 — `chUrl`'s own exact-URL-shape suite moved (not
+// duplicated) to tests/unit/clickhouse-http-package.test.ts, since `chUrl`
+// itself moved to @altinity/clickhouse-http. This file keeps the
+// COMPATIBILITY-ADAPTER-specific tests: `send()`'s exact request shape
+// (still true through delegation) and its promise-settlement shape on a
+// request-preparation failure.
 
 runTransportContractSuite('createHttpTransport', createHttpTransport);
 
@@ -35,60 +42,6 @@ function byteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 function stringStream(chunks: string[]): ReadableStream<Uint8Array> {
   return byteStream(chunks.map((c) => new TextEncoder().encode(c)));
 }
-
-describe('chUrl', () => {
-  it('uses default format and compression', () => {
-    expect(chUrl('https://o')).toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1');
-  });
-  it('applies format, extra and params', () => {
-    const url = chUrl('https://o', { format: 'JSON', extra: { wait_end_of_query: 1 }, params: { x: 'a b' } });
-    expect(url).toContain('default_format=JSON');
-    expect(url).toContain('wait_end_of_query=1');
-    expect(url).toContain('x=a%20b');
-  });
-
-  // #630 Phase 1 — exact-literal zero/empty/reserved-value matrix (none of
-  // these are derived through chUrl() itself; each expected string is an
-  // independently authored literal, per the plan's failure/gap policy).
-
-  it('serializes a numeric zero setting/param literally as 0, never omitted', () => {
-    expect(chUrl('https://o', { extra: { max_result_rows: 0 } }))
-      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&max_result_rows=0');
-    expect(chUrl('https://o', { params: { query_id: 0 } }))
-      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&query_id=0');
-  });
-
-  it('serializes an empty-string setting/param as a bare trailing "="', () => {
-    expect(chUrl('https://o', { extra: { session_id: '' } }))
-      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&session_id=');
-    expect(chUrl('https://o', { params: { query_id: '' } }))
-      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&query_id=');
-  });
-
-  it('percent-encodes spaces and reserved URL characters (& = ? # / %) in a setting/param value', () => {
-    const url = chUrl('https://o', { extra: { a: 'x y' }, params: { b: 'a&b=c?d#e/f%g' } });
-    expect(url).toBe(
-      'https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1'
-      + '&a=x%20y&b=a%26b%3Dc%3Fd%23e%2Ff%25g',
-    );
-  });
-
-  it('serializes extra (settings) before params, each in its own object\'s key insertion order', () => {
-    const url = chUrl('https://o', {
-      extra: { z_setting: 1, a_setting: 2 },
-      params: { z_param: 3, a_param: 4 },
-    });
-    expect(url).toBe(
-      'https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1'
-      + '&z_setting=1&a_setting=2&z_param=3&a_param=4',
-    );
-  });
-
-  it('always orders default_format before enable_http_compression, even with an explicit format override', () => {
-    expect(chUrl('https://o', { format: 'TabSeparated' }))
-      .toBe('https://o?default_format=TabSeparated&enable_http_compression=1');
-  });
-});
 
 describe('createHttpTransport().send — exact request shape', () => {
   it('builds the exact literal URL from origin/format/settings/params, POSTs the SQL body, and sends the complete Authorization header', async () => {
@@ -117,6 +70,27 @@ describe('createHttpTransport().send — exact request shape', () => {
     const transport = createHttpTransport(d);
     await transport.send({ sql: 'x', defaultFormat: 'JSON', authorization: 'Bearer t', signal: controller.signal });
     expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBe(controller.signal);
+  });
+
+  // Issue #630 Phase 2 — locks in the production compatibility adapter's
+  // settlement shape across the extraction: `send()` delegates to the
+  // package's async `request()`, so a request-preparation failure (chUrl
+  // throwing URIError on an unencodable value) must still surface as a
+  // REJECTED promise here too, never a synchronous throw out of `send()`.
+  it('rejects the returned promise with URIError on malformed URL data, without throwing synchronously and without invoking fetch', async () => {
+    const { fetchMock, deps: d } = deps(() => new Response('ok'));
+    const transport = createHttpTransport(d);
+    let result!: Promise<Response>;
+    expect(() => {
+      result = transport.send({
+        sql: 'SELECT 1',
+        defaultFormat: 'JSON',
+        settings: { broken: '\uD800' },
+        authorization: 'Bearer x',
+      });
+    }).not.toThrow();
+    await expect(result).rejects.toBeInstanceOf(URIError);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

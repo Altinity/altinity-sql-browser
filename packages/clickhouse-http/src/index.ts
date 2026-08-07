@@ -1,7 +1,16 @@
-// Issue #630 Phase 2 — inert workspace scaffold (Checkpoint 1). This package
-// is the repository's first npm workspace: the low-level ClickHouse HTTP
-// URL/request mechanics move here from `src/net/clickhouse-http-transport.ts`
-// in Checkpoint 2. Statement-free on purpose until then — package source
-// lands under strict TypeScript + coverage only together with its
-// implementation and tests (see the Phase 2 plan's migration order).
-export {};
+// Issue #630 Phase 2 — the package's public surface. Only "." is exported
+// (see `package.json`'s `exports` map): implementation subpaths (`./url`,
+// `./client`) are not part of the public contract, and `build/check-
+// boundaries.mjs` mechanically forbids any root SQL Browser source from
+// deep-importing them. Every re-export below is a relative import, matching
+// this package's zero-bare-specifier rule.
+
+export { chUrl } from './url.js';
+export { createClickHouseHttpClient } from './client.js';
+
+export type { ChUrlOpts } from './url.js';
+export type {
+  ClickHouseHttpClientDeps,
+  ClickHouseHttpRequest,
+  ClickHouseHttpClient,
+} from './client.js';

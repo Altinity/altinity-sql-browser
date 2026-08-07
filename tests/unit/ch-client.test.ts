@@ -92,17 +92,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe('chUrl', () => {
-  it('uses default format and compression', () => {
-    expect(chUrl('https://o')).toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1');
-  });
-  it('applies format, extra and params', () => {
-    const url = chUrl('https://o', { format: 'JSON', extra: { wait_end_of_query: 1 }, params: { x: 'a b' } });
-    expect(url).toContain('default_format=JSON');
-    expect(url).toContain('wait_end_of_query=1');
-    expect(url).toContain('x=a%20b');
-  });
-});
+// Issue #630 Phase 2 — the small legacy `chUrl` output-shape tests that used
+// to live here moved to tests/unit/clickhouse-http-package.test.ts along
+// with `chUrl` itself; this file keeps only the malformed-URL `authedFetch`
+// test below, which proves the pre-credential ORDERING contract (chUrl
+// called before the first await), not serializer output.
 
 // (queryDashboardTile was retired in #193 — dashboard tiles now stream through
 // runQuery via the shared app.exec.executeRead seam (#276), carrying readonly:2 /
