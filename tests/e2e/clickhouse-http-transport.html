@@ -16,7 +16,17 @@
        Native `Response` objects cannot cross Playwright's page.evaluate()
        serialization boundary, so every scenario below does its own identity
        assertion INSIDE the page realm and returns only plain, serializable
-       results (booleans/numbers/strings) to the Node-side spec. -->
+       results (booleans/numbers/strings) to the Node-side spec.
+
+       #630 Phase 2 — the transport module now imports the bare
+       `@altinity/clickhouse-http` package specifier. build/e2e-serve.mjs is a
+       raw file server, not a bundler/resolver, so this import map resolves
+       that ONE bare specifier to the workspace source directly. -->
+  <script type="importmap">
+    { "imports": {
+      "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
+    } }
+  </script>
   <script type="module">
     import { createHttpTransport } from '/src/net/clickhouse-http-transport.js';
 

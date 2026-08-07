@@ -54,6 +54,9 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
+              # #630 Phase 2: the first npm workspace — its source and
+              # manifest are unit-test/typecheck inputs too.
+              - 'packages/**'
             build:
               - 'src/**'
               - 'schemas/**'
@@ -61,6 +64,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
+              - 'packages/**'
             bundle:
               - 'src/**'
               - 'schemas/**'
@@ -70,6 +74,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
+              - 'packages/**'
             # #564: the browser suite is the ONLY gate that can see CSS layout,
             # container queries, real focus/hover, and IndexedDB — happy-dom sees
             # none of it. Anything that can move rendered geometry or the
@@ -91,6 +96,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
+              - 'packages/**'
             docker:
               - 'Dockerfile'
               - 'deploy/caddy/**'
@@ -101,6 +107,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/**'
+              - 'packages/**'
 
   # Example-only PRs still validate every portable bundle, authored Dashboard,
   # filter contract, and generator normalization without paying for coverage,

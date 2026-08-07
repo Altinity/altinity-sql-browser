@@ -56,7 +56,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: resolve(repoRoot, 'coverage'),
-      include: ['src/**/*.{js,ts}'],
+      include: ['src/**/*.{js,ts}', 'packages/clickhouse-http/src/**/*.ts'],
       // Type-only seam interface files (ADR-0002 phase 0 / #262) have no
       // executable statements — nothing to cover, like src/generated/.
       exclude: ['src/generated/*.js', 'src/**/*.types.ts'],

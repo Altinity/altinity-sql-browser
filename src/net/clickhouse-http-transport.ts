@@ -1,37 +1,21 @@
 // Issue #585 Phase 1 — the current custom ClickHouse HTTP transport,
 // re-seated behind the `ClickHouseTransport` contract (`clickhouse-transport.types.ts`).
-// This is a pure move: `chUrl` (+ its `ChUrlOpts` parameter type) and the
-// progress-line stream-read loop are relocated here verbatim from
-// `ch-client.ts`, which re-imports/re-exports both so every existing importer
-// keeps resolving. No behavior change; no product SQL; no auth/lifecycle
-// policy (that stays app-side in `ch-client.ts`'s `authedFetch`).
+// Issue #630 Phase 2 — this file is now a temporary COMPATIBILITY ADAPTER:
+// `chUrl`/`ChUrlOpts`, the URL construction, and the direct injected
+// `fetch()` invocation moved to `@altinity/clickhouse-http` (mechanically,
+// behaviorally unchanged — see that package's `url.ts`/`client.ts`). `send()`
+// below delegates to the package's `request()` instead of building the
+// request itself. `streamLines()` (the progress-bearing JSON-lines read
+// loop) stays local until Phase 3 — stream decoding is explicitly deferred.
 //
-// Ownership boundary: this file may depend only on `src/core` — never on
+// Ownership boundary: this file may depend only on `src/core` and the
+// `@altinity/clickhouse-http` public package export — never on
 // `ch-client.ts`, `oauth.ts`, `oauth-config.ts`, `src/application/`, or
 // `src/ui/`. `build/check-boundaries.mjs` enforces this mechanically.
 
+import { createClickHouseHttpClient } from '@altinity/clickhouse-http';
 import type { ClickHouseTransport, StreamCallbacks, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
 import type { StreamLine } from '../core/stream.js';
-
-/** `chUrl`'s query-string options. */
-export interface ChUrlOpts {
-  format?: string;
-  extra?: Record<string, string | number>;
-  params?: Record<string, string | number>;
-}
-
-/** Build a ClickHouse HTTP URL with query-string options. Pure. */
-export function chUrl(origin: string, opts: ChUrlOpts = {}): string {
-  const format = opts.format || 'JSONStringsEachRowWithProgress';
-  let url = origin + '?default_format=' + format + '&enable_http_compression=1';
-  for (const [k, v] of Object.entries(opts.extra || {})) {
-    url += '&' + k + '=' + encodeURIComponent(v);
-  }
-  for (const [k, v] of Object.entries(opts.params || {})) {
-    url += '&' + k + '=' + encodeURIComponent(v);
-  }
-  return url;
-}
 
 /** Drives the progress-bearing JSON-lines read loop: decode, line split,
  * `JSON.parse` per line, trailing-buffer flush, malformed-line skip —
@@ -77,19 +61,16 @@ async function streamLines(body: ReadableStream<Uint8Array>, cbs: StreamCallback
  * `chCtx`, mutated in place on sign-in) is always observed at its current
  * value, never pinned to a stale snapshot (Adaptation A5). */
 export function createHttpTransport(deps: TransportDeps): ClickHouseTransport {
+  const client = createClickHouseHttpClient(deps);
   return {
+    // Kept `async` even though its body is a single delegating call: this
+    // exactly matches today's adapter-level settlement shape (a synchronous
+    // preparation error, e.g. a URIError from URL encoding, must surface as
+    // a REJECTED promise here too, never a synchronous throw out of
+    // `send()`), and makes the compatibility intent explicit rather than
+    // relying solely on the package implementation's own async-ness.
     async send(request: TransportRequest): Promise<Response> {
-      const url = chUrl(deps.origin(), {
-        format: request.defaultFormat,
-        extra: request.settings,
-        params: request.params,
-      });
-      return deps.fetch()(url, {
-        method: 'POST',
-        body: request.sql,
-        headers: { Authorization: request.authorization },
-        signal: request.signal,
-      });
+      return client.request(request);
     },
     streamLines,
   };

@@ -3,16 +3,24 @@
 // `.types.ts` suffix rather than the issue's suggested `clickhouse-transport.ts`
 // — "exact names may follow repository conventions" per the issue). Puts the
 // CURRENT custom HTTP implementation behind a contract a future official
-// transport (Phase 2, gated on a new decision — ADR-0005 is Rejected) could
-// also satisfy, without moving any product SQL or auth/lifecycle policy here.
+// transport (gated on a new decision — ADR-0005 is Rejected) could also
+// satisfy, without moving any product SQL or auth/lifecycle policy here.
+//
+// Issue #630 Phase 2 — `TransportDeps`/`TransportRequest` are now ALIASES of
+// the low-level request/dependency types owned by `@altinity/clickhouse-http`
+// (see that package's `client.ts`), not separate shapes: the package is the
+// single source of truth for the low-level request boundary. `ClickHouseTransport`
+// itself stays here — Phase 2 still has the SQL-Browser-local `streamLines`
+// method, deferred to Phase 3.
 //
 // Ownership boundary: this file (and its implementation,
 // `clickhouse-http-transport.ts`) may depend only on `src/core` (the narrow
-// `StreamLine` type) — never on `ch-client.ts`, `oauth.ts`, `oauth-config.ts`,
-// `src/application/`, or `src/ui/`, even type-only. `build/check-boundaries.mjs`
-// enforces this mechanically (twin `RULES` entries for this file and the
-// implementation file).
+// `StreamLine` type) and the `@altinity/clickhouse-http` public package export
+// — never on `ch-client.ts`, `oauth.ts`, `oauth-config.ts`, `src/application/`,
+// or `src/ui/`, even type-only. `build/check-boundaries.mjs` enforces this
+// mechanically (twin `RULES` entries for this file and the implementation file).
 
+import type { ClickHouseHttpClientDeps, ClickHouseHttpRequest } from '@altinity/clickhouse-http';
 import type { StreamLine } from '../core/stream.js';
 
 /** What the transport is allowed to see of the environment. Deliberately
@@ -31,33 +39,18 @@ import type { StreamLine } from '../core/stream.js';
  * so — exactly like A6's single-send discipline — this rule is enforced by
  * this doc comment and review, not by the compiler or the existing epoch
  * race test (whose proof stops at the `send` invocation boundary). */
-export interface TransportDeps {
-  fetch(): typeof fetch;
-  origin(): string;
-}
+export type TransportDeps = ClickHouseHttpClientDeps;
 
 /** One ClickHouse HTTP request, fully specified. No client-level defaults
  * exist: `authorization` is the complete header value (scheme + credential),
- * resolved by the caller (SQL Browser auth policy) for THIS request. */
-export interface TransportRequest {
-  /** Opaque SQL text. The transport never parses, rewrites, or appends to it
-   * (hard invariant 16: an authored FORMAT clause always wins over
-   * `defaultFormat` server-side, exactly as today). */
-  sql: string;
-  /** Exact ClickHouse format name sent as `default_format`. */
-  defaultFormat: string;
-  /** HTTP query-string settings (wait_end_of_query, max_result_rows,
-   * result_overflow_mode, add_http_cors_header, readonly, …) — the caller's
-   * policy decides which; the transport only serializes. */
-  settings?: Record<string, string | number>;
-  /** Query-string params riding alongside: native `param_*` parameters,
-   * `query_id`, `session_id`, `role` — today's exact wire vocabulary,
-   * unchanged (Adaptation A2). */
-  params?: Record<string, string | number>;
-  /** Complete Authorization header value. Never optional, never defaulted. */
-  authorization: string;
-  signal?: AbortSignal;
-}
+ * resolved by the caller (SQL Browser auth policy) for THIS request.
+ *
+ * Field-level docs (moved to `@altinity/clickhouse-http`'s `client.ts`):
+ * `sql` is opaque (never parsed/rewritten/appended to — hard invariant 16:
+ * an authored FORMAT clause always wins over `defaultFormat` server-side);
+ * `settings`/`params` are today's exact wire vocabulary, unchanged
+ * (Adaptation A2); `authorization` is never optional or defaulted. */
+export type TransportRequest = ClickHouseHttpRequest;
 
 // No TransportResponse type in Phase 1 (Adaptation A3): `send` resolves with
 // the NATIVE fetch `Response`. A structural subset would be assignable only in
@@ -84,8 +77,15 @@ export interface ClickHouseTransport {
    * `streamToFile(resp: Response, …)` consumer without casts. Exactly one
    * fetch invocation (contract-suite-asserted, incl. on non-2xx — A6); no
    * retry, no token read, no lifecycle callback, no error classification, no
-   * body consumption. HTTP error statuses resolve (they are responses); only
-   * network I/O failure / abort rejects. */
+   * body consumption. HTTP error statuses resolve normally (they are
+   * responses); network I/O failure / abort rejects the returned promise
+   * natively. Since #630 Phase 2, `send` is implemented by delegating to
+   * `@altinity/clickhouse-http`'s async `request()`, which itself builds the
+   * request URL — so a REQUEST-PREPARATION failure (e.g. a `URIError` from
+   * malformed `settings`/`params`) also surfaces as a rejected promise here,
+   * not a synchronous throw. The transport performs no error classification
+   * or wrapping of either failure kind — that policy distinction is made by
+   * the caller (`ch-client.ts`'s `authedFetch`), not here. */
   send(request: TransportRequest): Promise<Response>;
   /** Supported-stream mechanics for the progress-bearing JSON-lines formats:
    * drives the read loop (decode, line split, JSON.parse, trailing-buffer

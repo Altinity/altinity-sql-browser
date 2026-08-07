@@ -26,6 +26,11 @@ export function normalizeInputPath(p) {
 // Attribute one input file to an ownership bucket per the issue's rules:
 //   src/generated/**            -> generated project code
 //   src/**  (everything else)   -> hand-written project source
+//   packages/**                 -> first-party project source (issue #630
+//                                   Phase 2 — the in-repository npm workspace
+//                                   is project code, not a third-party
+//                                   runtime dependency, even though esbuild
+//                                   resolves it through node_modules)
 //   node_modules/<pkg>/**       -> external, grouped under <pkg>
 //   node_modules/@scope/<pkg>/  -> external, grouped under @scope/<pkg>
 // Nested deps (a/node_modules/b) attribute to the *leaf* package (b), which is the
@@ -42,6 +47,7 @@ export function classifyInput(rawPath) {
   }
   if (path.startsWith('src/generated/')) return { owner: 'generated', group: 'src/generated' };
   if (path.startsWith('src/')) return { owner: 'project', group: 'src' };
+  if (path.startsWith('packages/')) return { owner: 'project', group: 'packages' };
   return { owner: 'other', group: 'other' };
 }
 

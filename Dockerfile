@@ -12,6 +12,7 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY packages ./packages
 COPY build ./build
 COPY examples ./examples
 COPY schemas ./schemas
