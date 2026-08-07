@@ -291,13 +291,114 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
 // Issue #630 Phase 3 — independent reimplementation of the narrow
 // legacy-owner rule (comments stripped, then a bare word-boundary check per
 // forbidden identifier — see build/check-boundaries.mjs's own comment for
-// why `applyStreamLine` can never false-positive against `StreamLine`). ONE
-// alternation-based regex pass, not two sequential ones — see the production
-// checker's own comment for why a two-pass strip is fooled by a `/*`-shaped
-// substring (e.g. `` `src/core/**` ``) sitting inside an unstripped `//`
-// comment.
+// why `applyStreamLine` can never false-positive against `StreamLine`). A
+// hand-rolled lexical scanner, not a regex — see the production checker's
+// own comment for why a naive `/\*[\s\S]*?\*\/|\/\/.*/` alternation is
+// fooled by `/*`/`*/`/`//` substrings that only look like comment
+// delimiters because they sit inside a string or template literal (e.g.
+// `const marker = "/*"; export interface StreamLine {} const end = "*/";`
+// or `const u = "https://example"; export function streamLines() {}`).
+// This mirror must stay lexically identical to the production scanner —
+// see its comment for the walk-through.
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  let out = '';
+  let i = 0;
+  const n = source.length;
+  const stack = [];
+  while (i < n) {
+    const top = stack[stack.length - 1];
+    if (top === 'template') {
+      const c = source[i];
+      if (c === '\\') {
+        out += c;
+        i += 1;
+        if (i < n) {
+          out += source[i];
+          i += 1;
+        }
+        continue;
+      }
+      if (c === '`') {
+        out += c;
+        i += 1;
+        stack.pop();
+        continue;
+      }
+      if (c === '$' && source[i + 1] === '{') {
+        out += '${';
+        i += 2;
+        stack.push({ type: 'expr', depth: 0 });
+        continue;
+      }
+      out += c;
+      i += 1;
+      continue;
+    }
+    const c = source[i];
+    const c2 = source[i + 1];
+    if (c === '/' && c2 === '/') {
+      while (i < n && source[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const quote = c;
+      out += c;
+      i += 1;
+      while (i < n && source[i] !== quote) {
+        if (source[i] === '\\') {
+          out += source[i];
+          i += 1;
+          if (i < n) {
+            out += source[i];
+            i += 1;
+          }
+          continue;
+        }
+        out += source[i];
+        i += 1;
+      }
+      if (i < n) {
+        out += source[i];
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '`') {
+      out += c;
+      i += 1;
+      stack.push('template');
+      continue;
+    }
+    if (top && top.type === 'expr') {
+      if (c === '{') {
+        top.depth += 1;
+        out += c;
+        i += 1;
+        continue;
+      }
+      if (c === '}') {
+        if (top.depth === 0) {
+          out += c;
+          i += 1;
+          stack.pop();
+          continue;
+        }
+        top.depth -= 1;
+        out += c;
+        i += 1;
+        continue;
+      }
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
 }
 const PHASE3_LEGACY_OWNER_RULES = [
   {
@@ -387,6 +488,23 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
       }
     `;
     expect(legacyOwnerViolations(probe, ['streamLines', 'StreamCallbacks'])).toEqual([]);
+  });
+
+  // Regression cases for a real bypass of the earlier regex-only
+  // stripComments: a naive `/\*[\s\S]*?\*\/|\/\/.*/` alternation has no
+  // notion of "inside a string", so a `/*`/`*/`/`//` substring that only
+  // *looks* like a comment delimiter because it sits inside a string
+  // literal used to swallow the real forbidden declaration between (or
+  // after) the string literals, producing a false-clean scan. The scanner
+  // must track string-literal boundaries so these are flagged.
+  it('flags a re-added StreamLine sitting between two string literals that contain /* and */ (regex-stripComments bypass 1)', () => {
+    const probe = 'const marker = "/*"; export interface StreamLine {} const end = "*/";';
+    expect(legacyOwnerViolations(probe, ['StreamLine'])).toEqual(['StreamLine']);
+  });
+
+  it('flags a re-added streamLines following a string literal containing a "//" URL (regex-stripComments bypass 2)', () => {
+    const probe = 'const u = "https://example"; export function streamLines() {}';
+    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
   });
 });
 

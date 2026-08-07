@@ -349,22 +349,134 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // `StreamLine` (no boundary between "apply" and "StreamLine", so `\bStreamLine\b`
 // never matches inside it).
 //
-// Comments are stripped (naive block/line-comment regex, matching this
-// file's existing regex-only, non-AST approach) before matching, so this
-// rule flags only a real code re-declaration/re-import — never this phase's
-// own doc comments narrating the move. ONE alternation-based pass, not two
-// sequential `.replace()` calls: a two-pass strip (block comments globally
-// first, then `//` lines) is fooled by a `/*`-shaped substring sitting
-// inside an as-yet-unstripped `//` comment (e.g. this very file's own prose
-// mentions `` `src/core/**` `` — the "/**" there reads as a block-comment
-// OPENER to a naive first pass, which then swallows everything up to the
-// next genuine `*/`, silently deleting real code in between). A single
-// regex with alternation finds the leftmost match at each scan position, so
-// the real `//` that starts a line comment is matched (and `.`'s
-// newline-stop keeps that match on one line) before the engine ever
-// considers a later `/*`-shaped trap on that same already-consumed line.
+// Comments are stripped by a small hand-rolled lexical scanner (matching
+// this file's existing regex-only, non-AST approach for everything else,
+// but comment-vs-string ambiguity needs real character-by-character state,
+// not a regex) before matching, so this rule flags only a real code
+// re-declaration/re-import — never this phase's own doc comments narrating
+// the move, and never a `/*`, `*/`, or `//` substring that only *looks*
+// like a comment delimiter because it sits inside a string or template
+// literal. A single alternation regex over the raw text (the earlier
+// approach) cannot tell those apart: `const marker = "/*"; export interface
+// StreamLine {} const end = "*/";` reads as one big block comment because
+// the regex has no notion of "inside a string", silently deleting the real
+// `StreamLine` declaration between the two string literals; likewise
+// `const u = "https://example"; export function streamLines() {}` reads
+// the `//` inside the URL string as a line-comment opener and deletes the
+// real `streamLines` declaration that follows on the same line. Both are
+// covered as regression tests. The scanner below walks the source once,
+// tracking whether it is inside a single/double-quoted string or a
+// template literal (including nested `${ … }` substitutions, which are
+// itself code and can contain further strings/templates/comments) — only
+// outside all of those does a `//` or `/*` actually start a comment.
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
+  let out = '';
+  let i = 0;
+  const n = source.length;
+  // Stack of open template literals. Each entry is either the string
+  // 'template' (currently scanning raw template text, looking for a
+  // closing backtick or a `${` substitution start) or an object
+  // `{ type: 'expr', depth }` (currently scanning the code inside an open
+  // `${ … }`, tracking `{`/`}` nesting so an object literal inside the
+  // substitution doesn't get mistaken for the substitution's own closing
+  // brace).
+  const stack = [];
+  while (i < n) {
+    const top = stack[stack.length - 1];
+    if (top === 'template') {
+      const c = source[i];
+      if (c === '\\') {
+        out += c;
+        i += 1;
+        if (i < n) {
+          out += source[i];
+          i += 1;
+        }
+        continue;
+      }
+      if (c === '`') {
+        out += c;
+        i += 1;
+        stack.pop();
+        continue;
+      }
+      if (c === '$' && source[i + 1] === '{') {
+        out += '${';
+        i += 2;
+        stack.push({ type: 'expr', depth: 0 });
+        continue;
+      }
+      out += c;
+      i += 1;
+      continue;
+    }
+    // Code-scanning mode: either top-level (stack empty) or inside a
+    // template's `${ … }` substitution (top.type === 'expr').
+    const c = source[i];
+    const c2 = source[i + 1];
+    if (c === '/' && c2 === '/') {
+      while (i < n && source[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const quote = c;
+      out += c;
+      i += 1;
+      while (i < n && source[i] !== quote) {
+        if (source[i] === '\\') {
+          out += source[i];
+          i += 1;
+          if (i < n) {
+            out += source[i];
+            i += 1;
+          }
+          continue;
+        }
+        out += source[i];
+        i += 1;
+      }
+      if (i < n) {
+        out += source[i];
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '`') {
+      out += c;
+      i += 1;
+      stack.push('template');
+      continue;
+    }
+    if (top && top.type === 'expr') {
+      if (c === '{') {
+        top.depth += 1;
+        out += c;
+        i += 1;
+        continue;
+      }
+      if (c === '}') {
+        if (top.depth === 0) {
+          out += c;
+          i += 1;
+          stack.pop();
+          continue;
+        }
+        top.depth -= 1;
+        out += c;
+        i += 1;
+        continue;
+      }
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
 }
 const PHASE3_LEGACY_OWNER_RULES = [
   {
