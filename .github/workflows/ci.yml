@@ -79,6 +79,13 @@ jobs:
               - 'src/**'
               - 'schemas/**'
               - 'tests/e2e/**'
+              # #630 Phase 1: tests/e2e/clickhouse-http-transport.spec.js now
+              # imports this ONE shared spike fixture server directly — a
+              # real cross-tree dependency the PR path filter didn't know
+              # about before. Deliberately narrow (not `tests/spike/**`):
+              # the rest of that historical spike suite is not a dependency
+              # of the root e2e suite and stays out of ordinary PR CI.
+              - 'tests/spike/clickhouse-client/fault-server.mjs'
               - 'playwright.config.js'
               - 'build/**'
               - 'package.json'

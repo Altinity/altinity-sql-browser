@@ -79,14 +79,6 @@ export function runTransportContractSuite(name: string, makeTransport: MakeTrans
       expect(url).toBe('https://ch.example?default_format=JSON&enable_http_compression=1');
     });
 
-    it('carries each send\'s own authorization value with no state cached between sends', async () => {
-      const { transport, fetchMock } = harness(() => new Response('ok'));
-      await transport.send(baseRequest({ authorization: 'Bearer first' }));
-      await transport.send(baseRequest({ authorization: 'Bearer second' }));
-      expect((fetchMock.mock.calls[0][1] as RequestInit).headers as unknown as HeadersRecord).toEqual({ Authorization: 'Bearer first' });
-      expect((fetchMock.mock.calls[1][1] as RequestInit).headers as unknown as HeadersRecord).toEqual({ Authorization: 'Bearer second' });
-    });
-
     it('invokes the stub fetch exactly once per send — no internal retry or header caching — on a 2xx response', async () => {
       const { transport, fetchMock } = harness(() => new Response('ok', { status: 200 }));
       await transport.send(baseRequest());
@@ -99,17 +91,19 @@ export function runTransportContractSuite(name: string, makeTransport: MakeTrans
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('resolves (never throws) on a non-2xx response, with the body reaching the caller byte-identical', async () => {
-      const { transport } = harness(() => new Response('{"exception":"Code: 60. DB::Exception: table not found"}', { status: 500 }));
+    it('resolves (never throws) on a non-2xx response, leaving bodyUsed === false until the caller consumes it, with the body then byte-identical', async () => {
+      const fetchResponse = new Response('{"exception":"Code: 60. DB::Exception: table not found"}', { status: 500 });
+      const { transport } = harness(() => fetchResponse);
       const resp = await transport.send(baseRequest());
       expect(resp.status).toBe(500);
+      expect(resp.bodyUsed).toBe(false);
       expect(await resp.text()).toBe('{"exception":"Code: 60. DB::Exception: table not found"}');
     });
 
-    it('rejects with the network/abort failure rather than resolving, for an aborted signal', async () => {
+    it('rejects with the network/abort failure rather than resolving, for an aborted signal, having still invoked the injected fetch exactly once', async () => {
       const controller = new AbortController();
       controller.abort();
-      const { transport } = harness((_url, init) => {
+      const { transport, fetchMock } = harness((_url, init) => {
         if ((init.signal as AbortSignal | undefined)?.aborted) {
           const err = Object.assign(new Error('aborted'), { name: 'AbortError' });
           return Promise.reject(err);
@@ -117,6 +111,72 @@ export function runTransportContractSuite(name: string, makeTransport: MakeTrans
         return Promise.resolve(new Response('ok'));
       });
       await expect(transport.send(baseRequest({ signal: controller.signal }))).rejects.toMatchObject({ name: 'AbortError' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the exact native Response object from a 2xx Fetch — never a clone or wrapper', async () => {
+      const fetchResponse = new Response('ok', { status: 200 });
+      const { transport } = harness(() => fetchResponse);
+      const resp = await transport.send(baseRequest());
+      expect(resp).toBe(fetchResponse);
+    });
+
+    it('returns the exact native Response object from a non-2xx Fetch — never a clone or wrapper', async () => {
+      const fetchResponse = new Response('denied', { status: 403 });
+      const { transport } = harness(() => fetchResponse);
+      const resp = await transport.send(baseRequest());
+      expect(resp).toBe(fetchResponse);
+    });
+
+    it('sends an independently authored pathological SQL literal — leading/trailing whitespace, comments, tab/newline, an authored FORMAT clause, a trailing semicolon, and a non-ASCII codepoint — byte-identical as the POST body', async () => {
+      const { transport, fetchMock } = harness(() => new Response('ok'));
+      // Deliberately NOT derived from chUrl/the transport under test — an
+      // independently authored literal, per the plan's "do not derive
+      // expected SQL/URL/Auth values through the production helper under
+      // test" failure/gap policy.
+      const sql = '  -- leading comment\n\tSELECT \'héllo\', 1 -- trailing comment\nFORMAT CSV;  \n';
+      await transport.send(baseRequest({ sql, defaultFormat: 'JSON' }));
+      expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBe(sql);
+    });
+
+    it('carries opaque Bearer, Basic, and custom-scheme Authorization values verbatim across sequential sends — no scheme normalization, no cross-send caching', async () => {
+      const { transport, fetchMock } = harness(() => new Response('ok'));
+      const values = [
+        'Bearer tok-1',
+        'Basic dXNlcjpwYXNz',
+        'Digest realm="ch", nonce="abc", response="def"',
+        'Bearer tok-2', // back to Bearer with a DIFFERENT value — proves no retained prior-header state
+      ];
+      for (const authorization of values) {
+        await transport.send(baseRequest({ authorization }));
+      }
+      values.forEach((expected, i) => {
+        expect((fetchMock.mock.calls[i][1] as RequestInit).headers as unknown as HeadersRecord).toEqual({ Authorization: expected });
+      });
+    });
+
+    it('returns invalid-UTF-8 raw bytes byte-identical via arrayBuffer(), proving send() never decodes the body itself', async () => {
+      const bytes = new Uint8Array([0x61, 0x62, 0xff, 0xfe, 0x63, 0x00, 0x0a, 0x64]);
+      const { transport } = harness(() => new Response(bytes, { status: 200 }));
+      const resp = await transport.send(baseRequest());
+      expect(resp.bodyUsed).toBe(false);
+      const buf = await resp.arrayBuffer();
+      expect(new Uint8Array(buf)).toEqual(bytes);
+    });
+
+    it('reads deps.fetch() live per request instead of snapshotting it at construction time', async () => {
+      const fetchMockA = vi.fn(() => Promise.resolve(new Response('a')));
+      const fetchMockB = vi.fn(() => Promise.resolve(new Response('b')));
+      let current: FetchImpl = fetchMockA as unknown as FetchImpl;
+      const transport = makeTransport({
+        fetch: () => current as unknown as typeof fetch,
+        origin: () => 'https://ch.example',
+      });
+      await transport.send(baseRequest());
+      current = fetchMockB as unknown as FetchImpl;
+      await transport.send(baseRequest());
+      expect(fetchMockA).toHaveBeenCalledTimes(1);
+      expect(fetchMockB).toHaveBeenCalledTimes(1);
     });
 
     it('surfaces a mid-stream abort from streamLines rather than swallowing it', async () => {

@@ -17,6 +17,11 @@ import { createServer } from 'node:http';
 
 const EXCEPTION_MARKER = '__exception__';
 
+// #630 Phase 1 — see the 'post-header-abort-hold' fixture below. Exported so
+// the e2e spec's own post-hold "assert no later callbacks" wait can size
+// itself relative to this value instead of an independent magic number.
+export const POST_HEADER_ABORT_HOLD_MS = 3000;
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -40,18 +45,58 @@ function ndjson(obj) {
 // Attempt counters for the 401-then-success fixture, keyed by query_id.
 const attemptCounts = new Map();
 
-/** Start the fault server on an ephemeral loopback port. Returns
+/** Start the fault server on an ephemeral loopback port. `opts.cors` (#630
+ * Phase 1, default off — every pre-existing caller keeps today's behavior)
+ * additionally: answers CORS preflight for POST + Authorization, logs the
+ * OPTIONS request too, and stamps `Access-Control-Allow-Origin` on every
+ * actual response — required because the new root e2e transport spec loads
+ * this server cross-origin from the Playwright-served page. Returns
  * `{ server, port, baseUrl, requestsLog, close() }`. `requestsLog` accumulates
  * `{ method, url, headers }` for every request the request-inspection
  * scenarios assert against — `authorization` is recorded only as a redacted
  * boolean-shape summary (scheme + presence), never the raw header value
  * (plan §12 "avoid logging authorization values" / CLAUDE.md's credential
  * hygiene rule). */
-export function startFaultServer() {
+export function startFaultServer(opts = {}) {
+  const { cors = false } = opts;
   const requestsLog = [];
 
   const server = createServer(async (req, res) => {
+    // #630 Phase 1: a client that aborts a cross-origin request (the native
+    // cancellation scenarios) tears down the underlying TCP connection while
+    // a fixture below is still `await sleep(...)`-ing between writes. The
+    // next `res.write()`/`res.end()` on that torn-down socket would otherwise
+    // surface as an uncaught 'error' event and crash this whole shared test
+    // server (used by every fixture, not just the new ones) — swallow it.
+    res.on('error', () => {});
+    if (cors) {
+      // Node's ServerResponse#writeHead always returns `this`; no call site
+      // below chains off its return value, so wrapping it to inject the
+      // header is transparent to every existing fixture branch.
+      const nativeWriteHead = res.writeHead.bind(res);
+      res.writeHead = (status, headers) => nativeWriteHead(status, { 'access-control-allow-origin': '*', ...(headers || {}) });
+    }
     const url = new URL(req.url, 'http://localhost');
+    // A cross-origin POST carrying an Authorization header is never a
+    // CORS-simple request, so the browser sends a preflight OPTIONS first —
+    // to the exact same URL (including query string), so `query_id` is still
+    // present on it. Answer it before any fixture dispatch: preflight has no
+    // fixture behavior of its own.
+    if (cors && req.method === 'OPTIONS') {
+      requestsLog.push({
+        method: 'OPTIONS',
+        pathname: url.pathname,
+        params: Object.fromEntries(url.searchParams.entries()),
+        headers: {},
+        body: '',
+      });
+      res.writeHead(204, {
+        'access-control-allow-methods': 'POST, OPTIONS',
+        'access-control-allow-headers': 'Authorization, Content-Type',
+      });
+      res.end();
+      return;
+    }
     // Both adapters always POST to the connection URL's root path (verified
     // empirically: the official client folds any URL path segment into a
     // ClickHouse `database` query param instead of preserving it as the HTTP
@@ -65,8 +110,15 @@ export function startFaultServer() {
     // protocol-interpreted value.
     const queryId = url.searchParams.get('query_id') || '';
     const fixture = queryId.split('__')[0] || '';
-    let body = '';
-    for await (const chunk of req) body += chunk;
+    // #630 Phase 1: byte-safe capture. `body += chunk` (the prior version)
+    // performs an implicit per-Buffer UTF-8 decode, so a multi-byte character
+    // split across two TCP chunks corrupts independently of anything the
+    // transport under test does — too weak for an exact-SQL server-observed
+    // proof. Collect raw Buffers and decode once, after every byte has
+    // arrived.
+    const bodyChunks = [];
+    for await (const chunk of req) bodyChunks.push(chunk);
+    const body = Buffer.concat(bodyChunks).toString('utf8');
 
     const auth = req.headers.authorization;
     requestsLog.push({
@@ -266,6 +318,23 @@ export function startFaultServer() {
         res.write(ndjson({ progress: { read_rows: '0', read_bytes: '0', total_rows_to_read: '1', elapsed_ns: '0' } }));
         res.write(ndjson({ row: { v: 42 } }));
         res.write(ndjson({ progress: { read_rows: '1', read_bytes: '8', total_rows_to_read: '1', elapsed_ns: '1000' } }));
+        res.end();
+        return;
+      }
+      case 'post-header-abort-hold': {
+        // #630 Phase 1's native post-header cancellation-lifetime fixture
+        // (plan "Detailed browser scenarios" 5-7): headers plus one complete
+        // NDJSON row arrive in the same immediate write, so a real
+        // `reader.read()` for it resolves right away — then the NEXT chunk is
+        // held for POST_HEADER_ABORT_HOLD_MS, comfortably longer than
+        // Chromium/WebKit scheduling jitter, so the test can guarantee a real
+        // native second `read()` is genuinely pending when the original
+        // signal is aborted. The existing ~120ms gap in
+        // 'delayed-headers-scheduled-rows' is unnecessarily tight for that.
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write(ndjson({ row: { n: 'first' } }));
+        await sleep(POST_HEADER_ABORT_HOLD_MS);
+        res.write(ndjson({ row: { n: 'after-hold' } }));
         res.end();
         return;
       }
