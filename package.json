@@ -8,6 +8,9 @@
   "engines": {
     "node": ">=22"
   },
+  "workspaces": [
+    "packages/clickhouse-http"
+  ],
   "scripts": {
     "prebuild": "npm run check:schemas && npm run check:examples",
     "build": "node build/build.mjs",
@@ -43,6 +46,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@altinity/clickhouse-http": "0.0.0",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-json": "^6.0.2",
