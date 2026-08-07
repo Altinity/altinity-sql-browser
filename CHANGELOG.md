@@ -10,6 +10,38 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#630 Phase 2: create `@altinity/clickhouse-http`, the repository's first npm
+  workspace package, and move low-level request/URL mechanics into it.**
+  `packages/clickhouse-http` now owns `chUrl()`/URL serialization and a
+  low-level `createClickHouseHttpClient(deps).request(request)` — a direct,
+  branch-free `native fetch()` passthrough preserving exact SQL/Authorization,
+  live `origin()`/`fetch()` accessors, the caller's original `AbortSignal`,
+  and native `Response` identity (all nine Phase-1 invariants now pass
+  directly against the package's own `request()`, not only through the
+  compatibility path). `src/net/clickhouse-http-transport.ts`'s `send()`
+  becomes a thin delegating adapter to the package; `streamLines()` and all
+  SQL Browser auth/epoch/lifecycle/retry policy remain unchanged and local.
+  `ch-client.ts`'s composition graph (`ChCtx -> transportFor -> createHttpTransport
+  -> send`) is untouched; its eager pre-credential `chUrl()` validation now
+  calls the package's serializer. Root `package.json` gains a `workspaces`
+  entry and an explicit `@altinity/clickhouse-http` dependency;
+  `build/check-boundaries.mjs` gains four new architecture rules (package
+  source may not import root `src/**`; root may not deep-import package
+  internals; package source has zero bare import specifiers — closing a gap
+  the existing bare-specifier-skipping rule loop would otherwise leave open
+  for any hoisted root dependency; the bare `@altinity/clickhouse-http`
+  specifier itself is permitted only under `src/net/**`), each mirrored as a
+  coverage-gated unit test with a non-vacuous sabotage probe.
+  `Dockerfile` now copies `packages/` before `npm ci`; CI's `unit`/`build`/
+  `bundle`/`e2e`/`docker` path classifications include `packages/**`. The
+  existing exact-literal `chUrl()` test suite moved (not duplicated) into the
+  new package test; the older duplicate in `ch-client.test.ts` is removed.
+  Bundle-size attribution now classifies `packages/**` as first-party project
+  code rather than `other`. Eight raw-ESM e2e fixtures that reach the
+  transport gained an `@altinity/clickhouse-http` import-map entry. This is
+  phase 2 of 8 (issue #630); consuming query APIs, SQL quoting/type grammar,
+  auth composition, and final migration/deletion remain later phases.
+
 - **#630 Phase 1: characterize native Fetch/Response/cancellation semantics
   ahead of the `@altinity/clickhouse-http` extraction.** No production
   behavior changed — `src/net/clickhouse-http-transport.ts`,
