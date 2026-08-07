@@ -46,6 +46,48 @@ describe('chUrl', () => {
     expect(url).toContain('wait_end_of_query=1');
     expect(url).toContain('x=a%20b');
   });
+
+  // #630 Phase 1 — exact-literal zero/empty/reserved-value matrix (none of
+  // these are derived through chUrl() itself; each expected string is an
+  // independently authored literal, per the plan's failure/gap policy).
+
+  it('serializes a numeric zero setting/param literally as 0, never omitted', () => {
+    expect(chUrl('https://o', { extra: { max_result_rows: 0 } }))
+      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&max_result_rows=0');
+    expect(chUrl('https://o', { params: { query_id: 0 } }))
+      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&query_id=0');
+  });
+
+  it('serializes an empty-string setting/param as a bare trailing "="', () => {
+    expect(chUrl('https://o', { extra: { session_id: '' } }))
+      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&session_id=');
+    expect(chUrl('https://o', { params: { query_id: '' } }))
+      .toBe('https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1&query_id=');
+  });
+
+  it('percent-encodes spaces and reserved URL characters (& = ? # / %) in a setting/param value', () => {
+    const url = chUrl('https://o', { extra: { a: 'x y' }, params: { b: 'a&b=c?d#e/f%g' } });
+    expect(url).toBe(
+      'https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1'
+      + '&a=x%20y&b=a%26b%3Dc%3Fd%23e%2Ff%25g',
+    );
+  });
+
+  it('serializes extra (settings) before params, each in its own object\'s key insertion order', () => {
+    const url = chUrl('https://o', {
+      extra: { z_setting: 1, a_setting: 2 },
+      params: { z_param: 3, a_param: 4 },
+    });
+    expect(url).toBe(
+      'https://o?default_format=JSONStringsEachRowWithProgress&enable_http_compression=1'
+      + '&z_setting=1&a_setting=2&z_param=3&a_param=4',
+    );
+  });
+
+  it('always orders default_format before enable_http_compression, even with an explicit format override', () => {
+    expect(chUrl('https://o', { format: 'TabSeparated' }))
+      .toBe('https://o?default_format=TabSeparated&enable_http_compression=1');
+  });
 });
 
 describe('createHttpTransport().send — exact request shape', () => {

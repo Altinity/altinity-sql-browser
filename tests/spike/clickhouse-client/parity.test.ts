@@ -1077,6 +1077,35 @@ describe('§16 runtime-surface experiment — literal cast-forced in isolation, 
   });
 });
 
+// PR review fix (#630 Phase 1): `fault-server.mjs`'s own docstring says
+// `opts.cors` defaults off and every pre-existing no-option caller (this
+// file, `run-matrix.mjs`) keeps today's behavior — but the response
+// error-suppression handler had been wired unconditionally, ahead of the
+// `if (cors)` branch, silently changing that behavior for every caller here.
+// Assert the scoping directly via the fault server's own
+// `getLastErrorListenerCount()` introspection (kept inside `fault-server.mjs`
+// so this `.ts` file needs no `node:http` import, per plan §8).
+describe('#630 Phase 1 review fix — ServerResponse error-suppression is scoped to cors:true', () => {
+  it('registers no ServerResponse error listener for a legacy no-option (cors:false, default) request', async () => {
+    const req = baseReq('ordinary-query');
+    const current = await runCurrent(req, fault.baseUrl, fetch);
+    expect(current.outcome.error).toBeNull();
+    expect(fault.getLastErrorListenerCount()).toBe(0);
+  });
+
+  it('registers exactly one ServerResponse error listener for an opt-in cors:true request', async () => {
+    const corsFault = await startFaultServer({ cors: true });
+    try {
+      const req = baseReq('ordinary-query');
+      const current = await runCurrent(req, corsFault.baseUrl, fetch);
+      expect(current.outcome.error).toBeNull();
+      expect(corsFault.getLastErrorListenerCount()).toBe(1);
+    } finally {
+      await corsFault.close();
+    }
+  });
+});
+
 function createOfficialConnectionWithFetch(baseUrl: string, fetchImpl: typeof fetch) {
   return createOfficialConnection(baseUrl, fetchImpl);
 }

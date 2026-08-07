@@ -9,6 +9,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **#630 Phase 1: characterize native Fetch/Response/cancellation semantics
+  ahead of the `@altinity/clickhouse-http` extraction.** No production
+  behavior changed — `src/net/clickhouse-http-transport.ts`,
+  `clickhouse-transport.types.ts`, and `ch-client.ts` are untouched. Strengthened
+  `tests/unit/clickhouse-transport-contract.ts` and
+  `tests/unit/clickhouse-http-transport.test.ts` to prove strict native
+  `Response` identity (2xx and non-2xx), no hidden body consumption, exactly
+  one injected Fetch call (including pre-aborted input), exact SQL/Authorization
+  fidelity, raw invalid-UTF-8 byte safety, live `origin()`/`fetch()` accessors,
+  and current URL-serialization literals (zero/empty/reserved values). Added a
+  real-browser Chromium/WebKit proof
+  (`tests/e2e/clickhouse-http-transport.{html,spec.js}`) covering pre-abort,
+  abort-while-awaiting-headers, native post-header body cancellation,
+  no-callbacks-after-cancellation, concurrent-request isolation, and
+  abort-after-completion — driven through the actual production transport, not
+  a synthetic stream. `tests/spike/clickhouse-client/fault-server.mjs` gained
+  byte-safe request-body capture, an opt-in CORS mode, and a deterministic
+  post-header-hold fixture to support this; `.github/workflows/ci.yml`'s e2e
+  path filter now includes that one shared fixture file. This is a
+  characterization-only unit (issue #630, phase 1 of 8); the package
+  extraction itself begins in phase 2.
+
 ### Changed
 - **ADR-0005 reverted to Rejected (`@clickhouse/client-web` not adopted);
   briefly Accepted for part of one day.** A 2026-08-07 decision-methodology
