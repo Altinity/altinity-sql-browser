@@ -352,9 +352,19 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // Comments are stripped (naive block/line-comment regex, matching this
 // file's existing regex-only, non-AST approach) before matching, so this
 // rule flags only a real code re-declaration/re-import — never this phase's
-// own doc comments narrating the move.
+// own doc comments narrating the move. ONE alternation-based pass, not two
+// sequential `.replace()` calls: a two-pass strip (block comments globally
+// first, then `//` lines) is fooled by a `/*`-shaped substring sitting
+// inside an as-yet-unstripped `//` comment (e.g. this very file's own prose
+// mentions `` `src/core/**` `` — the "/**" there reads as a block-comment
+// OPENER to a naive first pass, which then swallows everything up to the
+// next genuine `*/`, silently deleting real code in between). A single
+// regex with alternation finds the leftmost match at each scan position, so
+// the real `//` that starts a line comment is matched (and `.`'s
+// newline-stop keeps that match on one line) before the engine ever
+// considers a later `/*`-shaped trap on that same already-consumed line.
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 }
 const PHASE3_LEGACY_OWNER_RULES = [
   {

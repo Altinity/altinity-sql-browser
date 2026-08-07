@@ -291,9 +291,13 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
 // Issue #630 Phase 3 — independent reimplementation of the narrow
 // legacy-owner rule (comments stripped, then a bare word-boundary check per
 // forbidden identifier — see build/check-boundaries.mjs's own comment for
-// why `applyStreamLine` can never false-positive against `StreamLine`).
+// why `applyStreamLine` can never false-positive against `StreamLine`). ONE
+// alternation-based regex pass, not two sequential ones — see the production
+// checker's own comment for why a two-pass strip is fooled by a `/*`-shaped
+// substring (e.g. `` `src/core/**` ``) sitting inside an unstripped `//`
+// comment.
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  return source.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 }
 const PHASE3_LEGACY_OWNER_RULES = [
   {
