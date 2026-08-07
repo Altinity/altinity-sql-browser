@@ -304,17 +304,25 @@ const REGEX_PRECEDING_WORDS = new Set([
   'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
   'throw', 'else', 'do', 'yield', 'await', 'case', 'default', 'extends',
 ]);
-function regexAllowedAfter(out) {
+const CONTROL_FLOW_PAREN_WORDS = new Set(['if', 'while', 'for']);
+function precedingWord(out) {
+  let j = out.length - 1;
+  while (j >= 0 && /\s/.test(out[j])) j -= 1;
+  if (j < 0 || !/[\w$]/.test(out[j])) return null;
+  let k = j;
+  while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
+  return out.slice(k + 1, j + 1);
+}
+function regexAllowedAfter(out, lastCloseParenIsControlFlow) {
   let j = out.length - 1;
   while (j >= 0 && /\s/.test(out[j])) j -= 1;
   if (j < 0) return true;
   const lastChar = out[j];
-  if (lastChar === ')' || lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
+  if (lastChar === ')') return lastCloseParenIsControlFlow;
+  if (lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
   if (/[\w$]/.test(lastChar)) {
-    let k = j;
-    while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
-    const word = out.slice(k + 1, j + 1);
-    return REGEX_PRECEDING_WORDS.has(word);
+    const word = precedingWord(out);
+    return word !== null && REGEX_PRECEDING_WORDS.has(word);
   }
   return true;
 }
@@ -323,6 +331,8 @@ function stripComments(source) {
   let i = 0;
   const n = source.length;
   const stack = [];
+  const parenControlStack = [];
+  let lastCloseParenIsControlFlow = false;
   while (i < n) {
     const top = stack[stack.length - 1];
     if (top === 'template') {
@@ -364,7 +374,7 @@ function stripComments(source) {
       i += 2;
       continue;
     }
-    if (c === '/' && regexAllowedAfter(out)) {
+    if (c === '/' && regexAllowedAfter(out, lastCloseParenIsControlFlow)) {
       let j = i + 1;
       let inClass = false;
       while (j < n) {
@@ -443,6 +453,19 @@ function stripComments(source) {
         i += 1;
         continue;
       }
+    }
+    if (c === '(') {
+      const word = precedingWord(out);
+      parenControlStack.push(word !== null && CONTROL_FLOW_PAREN_WORDS.has(word));
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === ')') {
+      lastCloseParenIsControlFlow = parenControlStack.length > 0 ? parenControlStack.pop() : false;
+      out += c;
+      i += 1;
+      continue;
     }
     out += c;
     i += 1;
@@ -574,6 +597,33 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
     const probe = `
       export function pct(read, total) {
         return (read / total) * 100;
+      }
+      export function streamLines() {}
+    `;
+    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+  });
+
+  // Regression case for review-pass-3's bypass: `regexAllowedAfter` used to
+  // return false unconditionally whenever the last emitted character was
+  // `)`, without checking whether that `)` closed an `if`/`while`/`for`
+  // condition — where the grammar expects the *controlled statement* next,
+  // which may itself open with a regex literal — versus a call/grouping
+  // paren, where division is expected. `if (true) /\//.test("/");` is valid
+  // JS (a regex matching a single slash, tested against the string "/"): the
+  // old scanner misread the `/` right after `)` as division, then read the
+  // escaped-slash-adjacent-to-closing-slash pair as a `//` line-comment
+  // opener, deleting the rest of the line including the real `streamLines`
+  // declaration. The scanner must track, per open `(`, whether it followed
+  // `if`/`while`/`for`, and let a regex open right after that paren's `)`.
+  it('flags a re-added streamLines declared after an if-controlled statement that opens with a regex literal (regexAllowedAfter control-flow-paren bypass)', () => {
+    const probe = 'if (true) /\\//.test("/"); export function streamLines() {}';
+    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+  });
+
+  it('does not flag a division right after a plain grouping/call paren as a false regex-literal open (control-flow-paren negative case)', () => {
+    const probe = `
+      export function ratio(fn, total) {
+        return fn(total) / total;
       }
       export function streamLines() {}
     `;

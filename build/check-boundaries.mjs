@@ -387,21 +387,41 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // following such a division `/` are still unconditionally comments — that
 // check runs first, above — so this only ever fires for a genuine regex
 // open.
+//
+// A closing `)` is *not* uniformly "a value was just produced": when it
+// closes the condition of an `if`/`while`/`for`, the grammar expects the
+// controlled *statement* next, which may itself open with a regex literal
+// (`if (true) /\//.test(x);`) — the same context every real tokenizer
+// tracks via a parenthesis-is-a-statement-header stack (e.g. Acorn/Esprima's
+// `exprAllowed` handling for keyword-controlled parens). Plain grouping/call
+// parens (`(read / total)`) still close on a produced value, so `/` right
+// after those is division. `stripComments` below pushes, for every `(` it
+// scans, whether the last word before it is one of those three keywords,
+// and pops that flag on the matching `)`, tracked in
+// `lastCloseParenIsControlFlow`.
 const REGEX_PRECEDING_WORDS = new Set([
   'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
   'throw', 'else', 'do', 'yield', 'await', 'case', 'default', 'extends',
 ]);
-function regexAllowedAfter(out) {
+const CONTROL_FLOW_PAREN_WORDS = new Set(['if', 'while', 'for']);
+function precedingWord(out) {
+  let j = out.length - 1;
+  while (j >= 0 && /\s/.test(out[j])) j -= 1;
+  if (j < 0 || !/[\w$]/.test(out[j])) return null;
+  let k = j;
+  while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
+  return out.slice(k + 1, j + 1);
+}
+function regexAllowedAfter(out, lastCloseParenIsControlFlow) {
   let j = out.length - 1;
   while (j >= 0 && /\s/.test(out[j])) j -= 1;
   if (j < 0) return true; // start of file/expression — a value is expected
   const lastChar = out[j];
-  if (lastChar === ')' || lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
+  if (lastChar === ')') return lastCloseParenIsControlFlow;
+  if (lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
   if (/[\w$]/.test(lastChar)) {
-    let k = j;
-    while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
-    const word = out.slice(k + 1, j + 1);
-    return REGEX_PRECEDING_WORDS.has(word);
+    const word = precedingWord(out);
+    return word !== null && REGEX_PRECEDING_WORDS.has(word);
   }
   return true; // trailing operator/punctuation — a value is expected next
 }
@@ -417,6 +437,13 @@ function stripComments(source) {
   // substitution doesn't get mistaken for the substitution's own closing
   // brace).
   const stack = [];
+  // Stack of booleans, one per currently-open `(`, pushed with whether the
+  // word immediately preceding that `(` was `if`/`while`/`for` — see
+  // `regexAllowedAfter`'s comment above. Popped on the matching `)`, whose
+  // value then feeds `lastCloseParenIsControlFlow` for the very next
+  // regex-vs-division decision.
+  const parenControlStack = [];
+  let lastCloseParenIsControlFlow = false;
   while (i < n) {
     const top = stack[stack.length - 1];
     if (top === 'template') {
@@ -460,7 +487,7 @@ function stripComments(source) {
       i += 2;
       continue;
     }
-    if (c === '/' && regexAllowedAfter(out)) {
+    if (c === '/' && regexAllowedAfter(out, lastCloseParenIsControlFlow)) {
       // Regex-literal open: consume through the matching unescaped closing
       // `/` (an unescaped `/` inside a `[...]` character class does not
       // close it — regex character classes don't need `/` escaped), then
@@ -544,6 +571,19 @@ function stripComments(source) {
         i += 1;
         continue;
       }
+    }
+    if (c === '(') {
+      const word = precedingWord(out);
+      parenControlStack.push(word !== null && CONTROL_FLOW_PAREN_WORDS.has(word));
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === ')') {
+      lastCloseParenIsControlFlow = parenControlStack.length > 0 ? parenControlStack.pop() : false;
+      out += c;
+      i += 1;
+      continue;
     }
     out += c;
     i += 1;
