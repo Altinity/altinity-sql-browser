@@ -5,8 +5,16 @@
 // `fetch()` invocation moved to `@altinity/clickhouse-http` (mechanically,
 // behaviorally unchanged — see that package's `url.ts`/`client.ts`). `send()`
 // below delegates to the package's `request()` instead of building the
-// request itself. `streamLines()` (the progress-bearing JSON-lines read
-// loop) stays local until Phase 3 — stream decoding is explicitly deferred.
+// request itself.
+//
+// Issue #630 Phase 3 — this file is now SEND-ONLY. `streamLines()` (the
+// progress-bearing JSON-lines read loop) moved to
+// `@altinity/clickhouse-http`'s own `streamLines` — `ch-client.ts`'s
+// `runQuery` (itself under `src/net/**`) calls the package function
+// directly instead of going through this transport seam, so this adapter no
+// longer has (or forwards to) a stream member at all. There is exactly one
+// production stream implementation in the repository now — the package's;
+// this file does not reintroduce a second one, forwarding or otherwise.
 //
 // Ownership boundary: this file may depend only on `src/core` and the
 // `@altinity/clickhouse-http` public package export — never on
@@ -14,46 +22,7 @@
 // `src/ui/`. `build/check-boundaries.mjs` enforces this mechanically.
 
 import { createClickHouseHttpClient } from '@altinity/clickhouse-http';
-import type { ClickHouseTransport, StreamCallbacks, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
-import type { StreamLine } from '../core/stream.js';
-
-/** Drives the progress-bearing JSON-lines read loop: decode, line split,
- * `JSON.parse` per line, trailing-buffer flush, malformed-line skip —
- * byte-for-byte the loop formerly inlined in `runQuery`. `onLine` fires per
- * parsed object, `onChunk` once per network chunk. A single `TextDecoder`
- * used with `{ stream: true }` for the whole body (not per-chunk) so a
- * multi-byte UTF-8 character split across two byte chunks still decodes
- * correctly. */
-async function streamLines(body: ReadableStream<Uint8Array>, cbs: StreamCallbacks): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines[lines.length - 1];
-    for (const line of lines.slice(0, -1)) {
-      if (!line) continue;
-      let json: StreamLine;
-      try {
-        json = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      cbs.onLine && cbs.onLine(json);
-    }
-    cbs.onChunk && cbs.onChunk();
-  }
-  if (buffer.trim()) {
-    try {
-      cbs.onLine && cbs.onLine(JSON.parse(buffer));
-    } catch {
-      /* trailing partial line */
-    }
-  }
-}
+import type { ClickHouseTransport, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
 
 /** The current custom HTTP implementation of `ClickHouseTransport`. `deps`'
  * accessors are read per-request (REQUIRED-PURE — see the contract's doc
@@ -72,6 +41,5 @@ export function createHttpTransport(deps: TransportDeps): ClickHouseTransport {
     async send(request: TransportRequest): Promise<Response> {
       return client.request(request);
     },
-    streamLines,
   };
 }

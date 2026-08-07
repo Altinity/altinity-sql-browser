@@ -10,6 +10,43 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#630 Phase 3: move the progress-stream read loop and HTTP exception
+  parsing/late-exception framing into `@altinity/clickhouse-http`.**
+  `packages/clickhouse-http` now owns the progress-bearing JSON-lines read
+  loop (`streamLines`, plus the canonical `StreamLine`/`StreamCallbacks`/
+  `ProgressMetaColumn` wire types — `progress-stream.ts`) and the ClickHouse
+  HTTP exception-text parser + byte-safe late-exception framer
+  (`parseExceptionText`, `findExceptionFrame`/`ExceptionFrame` —
+  `exceptions.ts`); `findExceptionFrame` now takes the retained tail as a raw
+  `Uint8Array` directly rather than a caller-supplied latin1 surrogate
+  string. This is a real move+delete, not an additive compatibility layer:
+  `src/net/clickhouse-http-transport.ts` and `clickhouse-transport.types.ts`
+  are now request/send-only (no `streamLines`/`StreamCallbacks` member at
+  all); `src/core/stream.ts` no longer declares `StreamLine`, `splitBuffer`,
+  `parseExceptionText`, `ExceptionFrame`, or `findExceptionFrame`. `runQuery`
+  (`src/net/ch-client.ts`, itself under `src/net/**`) calls the package's
+  `streamLines` directly instead of through the transport seam;
+  `export-service.ts`'s `streamToFile` calls the package's byte-oriented
+  `findExceptionFrame` on its retained holdback directly, through
+  `ch-client.ts`'s zero-logic re-export gateway, deleting the caller-side
+  latin1 converter it used to carry. SQL Browser keeps everything downstream
+  of the wire exactly where it was: `StreamResult`, row caps, progress
+  percentages, in-band exception → `result.error` folding (`applyStreamLine`,
+  now narrowed to an open `Record<string, unknown>` parsed-record boundary
+  rather than a second declared copy of the wire type), raw/result
+  presentation, editor-caret positioning (`parseErrorPos`), and
+  auth-expiry/denial UI policy (`isAuthExpiredBody`, `authDeniedMessage`).
+  `build/check-boundaries.mjs` gains a narrow legacy-owner regression rule
+  rejecting the three former owners from regaining any moved identifier,
+  mirrored in `tests/unit/clickhouse-http-package-policy.test.js` with its
+  own sabotage probes and a checker-source drift binding. The real-browser
+  Chromium/WebKit transport fault harness
+  (`tests/e2e/clickhouse-http-transport.{html,spec.js}`) now streams through
+  the package's `streamLines` directly instead of a transport method. This is
+  phase 3 of 8 (issue #630); consuming query APIs, SQL quoting/type grammar,
+  auth composition, and final migration/deletion of `runQuery`/`exportQuery`/
+  the remaining request transport seam remain later phases.
+
 - **#630 Phase 2: create `@altinity/clickhouse-http`, the repository's first npm
   workspace package, and move low-level request/URL mechanics into it.**
   `packages/clickhouse-http` now owns `chUrl()`/URL serialization and a

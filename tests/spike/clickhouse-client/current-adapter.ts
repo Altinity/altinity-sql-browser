@@ -6,8 +6,16 @@
 // plan requires ("Do not reimplement current behavior in a test helper and
 // compare that replica with the official client").
 
-import { runQuery, exportQuery, killQuery, chUrl, type ChCtx } from '../../../src/net/ch-client.js';
-import { applyStreamLine, newResult, parseExceptionText } from '../../../src/core/stream.js';
+// Issue #630 Phase 3 — `parseExceptionText` is package-owned now
+// (`@altinity/clickhouse-http`); obtained here through `ch-client.ts`'s own
+// zero-logic re-export (the same gateway `chUrl` already came through since
+// Phase 2), in the same import declaration. `applyStreamLine`/`newResult`
+// stay SQL-Browser-owned result policy, imported from `src/core/stream.js`
+// unchanged.
+import {
+  runQuery, exportQuery, killQuery, chUrl, parseExceptionText, type ChCtx,
+} from '../../../src/net/ch-client.js';
+import { applyStreamLine, newResult } from '../../../src/core/stream.js';
 import type { AdapterRunResult, SpikeCredential, SpikeRequest, SpikeOutcome } from './types.js';
 import { emptyOutcome, IncrementalSha256 } from './normalize.js';
 

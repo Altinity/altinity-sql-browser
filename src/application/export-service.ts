@@ -53,7 +53,14 @@ import { mergedSourceArgs } from '../core/param-pipeline.js';
 import type { PreparedSource } from '../core/param-pipeline.js';
 import { prepareExportSql, isSchemaMutatingSql } from '../core/format.js';
 import { formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
-import { findExceptionFrame } from '../core/stream.js';
+// Issue #630 Phase 3 — `findExceptionFrame` is package-owned
+// (`@altinity/clickhouse-http`) and now takes raw bytes directly (no more
+// caller-side latin1 conversion — see the deleted `latin1()` helper this
+// file used to carry). `src/application/**` cannot import the package
+// directly (Rule D), so this goes through `ch-client.ts`'s zero-logic
+// re-export, the same gateway this file already depends on for `exportQuery`/
+// `runQuery`/`killQuery`.
+import { findExceptionFrame } from '../net/ch-client.js';
 import type { QueryTab } from '../state.js';
 import { variableDoc } from '../state.js';
 import type { ResultSort } from '../core/sort.js';
@@ -235,14 +242,6 @@ export interface ExportService {
   cancelExport(): void;
   cancelExportScript(): void;
 }
-
-// A latin1 decode (1 char per byte) for byte-accurate exception-frame slicing
-// — pure, no injected deps.
-const latin1 = (bytes: Uint8Array): string => {
-  let s = '';
-  for (const b of bytes) s += String.fromCharCode(b);
-  return s;
-};
 
 /** Build an `ExportService` bound to `deps`. Trivial constructor — no
  *  validation, no defaulting; the caller supplies every field exactly as it
@@ -466,8 +465,11 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
         }
         held = merged.subarray(commit);
       }
-      // EOF: inspect the retained tail (latin1: 1 char per byte, for byte-accurate slicing).
-      const frame = findExceptionFrame(latin1(held), tag);
+      // EOF: inspect the retained tail. `findExceptionFrame` (package-owned,
+      // #630 Phase 3) takes the raw bytes directly — no caller-side latin1
+      // conversion is needed any more; the package computes byte-exact
+      // offsets internally.
+      const frame = findExceptionFrame(held, tag);
       const clean = frame ? held.subarray(0, frame.cleanBytes) : held;
       if (signal.aborted) throw new DOMException('aborted', 'AbortError');
       if (clean.length) {

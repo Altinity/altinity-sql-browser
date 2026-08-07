@@ -15,6 +15,16 @@
 // complete pre-resolved `authorization` header — Adaptations A3/A6), so this
 // suite proves today's ONE implementation satisfies the contract, not that
 // the contract already generalizes to a hypothetical second one.
+//
+// Issue #630 Phase 3 — this suite is now REQUEST/SEND-ONLY: `ClickHouseTransport`
+// no longer has a `streamLines` member (the progress-stream read loop moved
+// to `@altinity/clickhouse-http`'s own `streamLines`, tested directly against
+// the package in `clickhouse-http-progress-stream.test.ts`). The former
+// "surfaces a mid-stream abort from streamLines rather than swallowing it"
+// case moved there too (a direct package-level "reader error identity"
+// proof) rather than staying here — there is intentionally only one
+// production stream implementation now, so this shared suite has nothing
+// left to register it against.
 
 import { describe, expect, it, vi } from 'vitest';
 import type { ClickHouseTransport, TransportDeps, TransportRequest } from '../../src/net/clickhouse-transport.types.js';
@@ -185,15 +195,6 @@ export function runTransportContractSuite(name: string, makeTransport: MakeTrans
       await transport.send(baseRequest());
       expect(fetchMockA).toHaveBeenCalledTimes(1);
       expect(fetchMockB).toHaveBeenCalledTimes(1);
-    });
-
-    it('surfaces a mid-stream abort from streamLines rather than swallowing it', async () => {
-      const { transport } = harness(() => new Response('ok'));
-      const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) { controller.error(abortError); },
-      });
-      await expect(transport.streamLines(stream, {})).rejects.toBe(abortError);
     });
 
     it('preserves response status and arbitrary headers, including X-ClickHouse-Summary', async () => {

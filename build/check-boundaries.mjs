@@ -333,6 +333,59 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   }
 }
 
+// Issue #630 Phase 3 — narrow legacy-owner regression rule: the former
+// production owners of the moved progress-stream/exception-parsing
+// primitives must not regain them. This mechanically rejects re-adding a
+// `streamLines` forwarding wrapper to the old transport adapter, a
+// `StreamCallbacks`/`streamLines` member to the transport contract, or a
+// `StreamLine`/`splitBuffer`/`parseExceptionText`/`ExceptionFrame`/
+// `findExceptionFrame` declaration to `core/stream.ts` — the "no duplicate
+// stream/error implementation remains" contract this phase requires.
+// Deliberately narrower than a repository-wide function-name ban (Phase 8
+// owns broader anti-regrowth hardening): this names exactly the three former
+// owners and the exact identifiers Phase 3 moved out of them.
+// `applyStreamLine` stays explicitly allowed (SQL Browser result policy,
+// never moved) — the word-boundary match below cannot mistake it for
+// `StreamLine` (no boundary between "apply" and "StreamLine", so `\bStreamLine\b`
+// never matches inside it).
+//
+// Comments are stripped (naive block/line-comment regex, matching this
+// file's existing regex-only, non-AST approach) before matching, so this
+// rule flags only a real code re-declaration/re-import — never this phase's
+// own doc comments narrating the move.
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+const PHASE3_LEGACY_OWNER_RULES = [
+  {
+    file: 'src/net/clickhouse-http-transport.ts',
+    forbiddenWords: ['streamLines'],
+    why: 'issue #630 Phase 3: the transport adapter must not regain a streamLines implementation/member — the package is the one stream owner',
+  },
+  {
+    file: 'src/net/clickhouse-transport.types.ts',
+    forbiddenWords: ['StreamCallbacks', 'streamLines'],
+    why: 'issue #630 Phase 3: the transport contract must not regain StreamCallbacks or a streamLines member',
+  },
+  {
+    file: 'src/core/stream.ts',
+    forbiddenWords: ['StreamLine', 'splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame'],
+    why: 'issue #630 Phase 3: core/stream.ts must not regain the package-owned StreamLine/splitBuffer/parseExceptionText/ExceptionFrame/findExceptionFrame declarations',
+  },
+];
+for (const rule of PHASE3_LEGACY_OWNER_RULES) {
+  const file = path.join(repoRoot, rule.file);
+  if (!fs.existsSync(file)) continue;
+  checkedFiles += 1;
+  const code = stripComments(fs.readFileSync(file, 'utf8'));
+  for (const word of rule.forbiddenWords) {
+    const re = new RegExp(`\\b${word}\\b`);
+    if (re.test(code)) {
+      violations.push(`${rule.file} → regained ${word} (${rule.why})`);
+    }
+  }
+}
+
 if (violations.length) {
   console.error('check-boundaries: architecture violations:');
   for (const line of violations) console.error(`  ${line}`);

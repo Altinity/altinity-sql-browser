@@ -7,8 +7,7 @@
 //     onSignedOut() }
 // so the whole module is unit-testable with plain stubs.
 
-import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
-import type { StreamLine } from '../core/stream.js';
+import { isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
 import { sqlString } from '../core/format.js';
@@ -16,10 +15,10 @@ import { sqlString } from '../core/format.js';
 // `clickhouse-http-transport.ts`; re-exported here (with its `ChUrlOpts`
 // parameter type) so every existing importer — including
 // `tests/spike/clickhouse-client/current-adapter.ts` — keeps resolving. The
-// generic request-construction/fetch/stream mechanics live in
-// `createHttpTransport`; this module keeps every auth/epoch/retry policy,
-// product operation, and `ChCtx` exactly as before, delegating through the
-// transport instead of calling `chUrl`/`ctx.fetch` directly.
+// generic request-construction/fetch mechanics live in `createHttpTransport`;
+// this module keeps every auth/epoch/retry policy, product operation, and
+// `ChCtx` exactly as before, delegating through the transport instead of
+// calling `chUrl`/`ctx.fetch` directly.
 //
 // Issue #630 Phase 2 — `chUrl` now comes from `@altinity/clickhouse-http`
 // (the package is the ONE serializer implementation, contract A5); this
@@ -27,12 +26,30 @@ import { sqlString } from '../core/format.js';
 // historical official-client spike, `tests/spike/clickhouse-client/current-
 // adapter.ts`) resolving unchanged. `createHttpTransport` stays imported
 // from the local compatibility adapter — its composition graph is untouched.
-import { chUrl } from '@altinity/clickhouse-http';
+//
+// Issue #630 Phase 3 — the progress-stream read loop and the HTTP
+// exception-text/late-exception-frame parser are also package-owned now
+// (`streamLines`/`parseExceptionText`/`findExceptionFrame`, plus the
+// canonical `StreamLine`/`StreamCallbacks` wire types). `runQuery` calls
+// package `streamLines` directly (it is itself under `src/net/**`, so no
+// seam violation) instead of going through `transportFor(ctx)` for the
+// stream half — `transportFor(ctx)` remains used by `authedFetch`'s/
+// `killQueryWithLease`'s request/send paths, which Phase 7 eventually
+// retires. `parseExceptionText`/`findExceptionFrame`/`StreamLine`/
+// `StreamCallbacks` are re-exported below as zero-logic migration plumbing:
+// `src/core/**`/`src/application/**` cannot import the package directly
+// (Rule D), so `export-service.ts`'s `findExceptionFrame` use and this
+// module's own callers of the removed root `core/stream.js` exports resolve
+// through this one gateway instead.
+import {
+  chUrl, streamLines, parseExceptionText, findExceptionFrame,
+} from '@altinity/clickhouse-http';
+import type { StreamLine } from '@altinity/clickhouse-http';
 import { createHttpTransport } from './clickhouse-http-transport.js';
 import type { TransportRequest } from './clickhouse-transport.types.js';
-export { chUrl };
-export type { ChUrlOpts } from '@altinity/clickhouse-http';
-export type { ClickHouseTransport, StreamCallbacks, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
+export { chUrl, parseExceptionText, findExceptionFrame };
+export type { ChUrlOpts, StreamLine, StreamCallbacks } from '@altinity/clickhouse-http';
+export type { ClickHouseTransport, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────
 
@@ -1110,6 +1127,12 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
   if (!isStreaming) {
     return { raw: await resp.text() };
   }
-  await transportFor(ctx).streamLines(resp.body!, { onLine: o.onLine, onChunk: o.onChunk });
+  // Issue #630 Phase 3 — calls the package's `streamLines` directly rather
+  // than `transportFor(ctx).streamLines(...)`: this module is itself under
+  // `src/net/**` (the one layer allowed to import the package by bare
+  // specifier), and the transport seam no longer has a stream member at all
+  // (there is exactly one production stream implementation now — the
+  // package's).
+  await streamLines(resp.body!, { onLine: o.onLine, onChunk: o.onChunk });
   return { streamed: true };
 }

@@ -179,14 +179,36 @@ Two roadmap tracks are current:
   own, exposing only its `.` export — and turns
   `src/net/clickhouse-http-transport.ts` into a temporary compatibility
   adapter whose `send()` delegates to the package's `request()`;
-  `streamLines()` stays local, deferred to a later phase. `ch-client.ts`'s
-  composition graph, auth/epoch/retry policy, and eager pre-credential
-  `chUrl` preflight are all unchanged. See
+  `streamLines()` stayed local at that point, deferred to Phase 3.
+  `ch-client.ts`'s composition graph, auth/epoch/retry policy, and eager
+  pre-credential `chUrl` preflight are all unchanged. **Phase 3** (merged)
+  moves the progress-bearing JSON-lines read loop (`streamLines`, plus the
+  canonical `StreamLine`/`StreamCallbacks`/`ProgressMetaColumn` wire types)
+  and the HTTP exception-text parser + byte-safe late-exception framer
+  (`parseExceptionText`, `findExceptionFrame`/`ExceptionFrame` — now
+  `Uint8Array`-in, no caller-side latin1 conversion) into the package too —
+  a real move+delete, not an additive compatibility layer: the transport
+  adapter and its type contract are now request/send-only, and
+  `core/stream.ts` no longer declares a second copy of the wire type.
+  `runQuery` (itself under `src/net/**`) calls the package's `streamLines`
+  directly rather than through the transport seam, since there is exactly
+  one production stream implementation now. SQL Browser keeps `StreamResult`,
+  row caps, percentages, raw/result presentation, editor-caret positioning,
+  and auth-expiry/denial UI policy exactly where they were —
+  `applyStreamLine` now narrows an open `Record<string, unknown>` parsed
+  record instead of re-declaring the package's wire type. Still deferred to
+  later phases: `queryJson`/`queryText`/`queryProgress` convenience APIs,
+  `ensureClickHouseSuccess`, `ClickHouseError`, package `KILL QUERY`, SQL
+  quoting/type-grammar extraction, an authentication-composition rewrite,
+  and `runQuery`/`exportQuery`/the remaining request transport seam's own
+  eventual migration/deletion (Phase 7). See
   [[Source-Map]] and [[Architecture]] for the file-level detail and
-  `build/check-boundaries.mjs`'s Rules A–D for the mechanical boundary
-  enforcement (package↔root-src ban, package zero-bare-specifier ban,
-  root↔package-deep-import ban, bare-import location restricted to
-  `src/net/**`).
+  `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3 narrow
+  legacy-owner rule for the mechanical boundary enforcement (package↔root-src
+  ban, package zero-bare-specifier ban, root↔package-deep-import ban,
+  bare-import location restricted to `src/net/**`, and the former
+  transport/contract/`core/stream.ts` owners rejected from regaining any
+  moved identifier).
 
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).

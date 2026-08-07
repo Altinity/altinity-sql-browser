@@ -8,6 +8,18 @@
 // two can drift, so a "drift bind" test at the end greps
 // `build/check-boundaries.mjs`'s own source to confirm each production rule
 // this file mirrors still exists.
+//
+// Issue #630 Phase 3 — extends this same file with the narrow legacy-owner
+// ownership check (plan §14): the former production owners of the moved
+// progress-stream/exception-parsing primitives
+// (`src/net/clickhouse-http-transport.ts`, `src/net/clickhouse-transport.
+// types.ts`, `src/core/stream.ts`) must not regain
+// `streamLines`/`StreamCallbacks`/`StreamLine`/`splitBuffer`/
+// `parseExceptionText`/`ExceptionFrame`/`findExceptionFrame`. Same
+// independent-scanner convention as the Phase 2 rules above — this file's
+// own `stripComments`/word-boundary logic is a fresh reimplementation, not an
+// import of `build/check-boundaries.mjs`'s own copy — and the drift-binding
+// describe block at the bottom is extended to cover this rule too.
 
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
@@ -266,8 +278,111 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
 
   it('src/net/ch-client.ts re-exports the package chUrl rather than redeclaring it', () => {
     const text = readFileSync(join(repoRoot, 'src/net/ch-client.ts'), 'utf8');
-    expect(/import\s*\{\s*chUrl\s*\}\s*from\s*['"]@altinity\/clickhouse-http['"]/.test(text)).toBe(true);
-    expect(/export\s*\{\s*chUrl\s*\}/.test(text)).toBe(true);
+    // #630 Phase 3 widened this single import/export declaration to also
+    // carry streamLines/parseExceptionText/findExceptionFrame — so `chUrl`
+    // is one of several named imports/exports rather than the sole name
+    // inside the braces; match it as a member of a comma-separated list
+    // rather than requiring it alone.
+    expect(/import\s*\{[^}]*\bchUrl\b[^}]*\}\s*from\s*['"]@altinity\/clickhouse-http['"]/.test(text)).toBe(true);
+    expect(/export\s*\{[^}]*\bchUrl\b[^}]*\}/.test(text)).toBe(true);
+  });
+});
+
+// Issue #630 Phase 3 — independent reimplementation of the narrow
+// legacy-owner rule (comments stripped, then a bare word-boundary check per
+// forbidden identifier — see build/check-boundaries.mjs's own comment for
+// why `applyStreamLine` can never false-positive against `StreamLine`).
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+const PHASE3_LEGACY_OWNER_RULES = [
+  {
+    file: 'src/net/clickhouse-http-transport.ts',
+    forbiddenWords: ['streamLines'],
+  },
+  {
+    file: 'src/net/clickhouse-transport.types.ts',
+    forbiddenWords: ['StreamCallbacks', 'streamLines'],
+  },
+  {
+    file: 'src/core/stream.ts',
+    forbiddenWords: ['StreamLine', 'splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame'],
+  },
+];
+function legacyOwnerViolations(fileText, forbiddenWords) {
+  const code = stripComments(fileText);
+  return forbiddenWords.filter((word) => new RegExp(`\\b${word}\\b`).test(code));
+}
+
+describe('Phase 3 legacy-owner rule — the moved stream/exception primitives cannot regain their former owners', () => {
+  for (const rule of PHASE3_LEGACY_OWNER_RULES) {
+    it(`the real ${rule.file} carries none of its former declarations`, () => {
+      const text = readFileSync(join(repoRoot, rule.file), 'utf8');
+      expect(legacyOwnerViolations(text, rule.forbiddenWords)).toEqual([]);
+    });
+  }
+
+  it('flags a re-added streamLines forwarding wrapper in the transport adapter (sabotage probe, not written to disk)', () => {
+    const probe = `
+      export function createHttpTransport(deps) {
+        const client = createClickHouseHttpClient(deps);
+        return {
+          async send(request) { return client.request(request); },
+          streamLines: packageStreamLines,
+        };
+      }
+    `;
+    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+  });
+
+  it('flags a re-added StreamCallbacks/streamLines member on the transport contract (sabotage probe, not written to disk)', () => {
+    const probe = `
+      export interface StreamCallbacks { onLine?: (line: unknown) => void; onChunk?: () => void; }
+      export interface ClickHouseTransport {
+        send(request: TransportRequest): Promise<Response>;
+        streamLines(body: ReadableStream<Uint8Array>, cbs: StreamCallbacks): Promise<void>;
+      }
+    `;
+    expect(legacyOwnerViolations(probe, ['StreamCallbacks', 'streamLines'])).toEqual(['StreamCallbacks', 'streamLines']);
+  });
+
+  it('flags a re-added export interface StreamLine in core/stream.ts (sabotage probe, not written to disk)', () => {
+    const probe = `
+      export interface StreamLine { meta?: unknown[]; row?: Record<string, unknown>; }
+      export function applyStreamLine(json, result) { return result; }
+    `;
+    // applyStreamLine must never trip the StreamLine check — no word
+    // boundary between "apply" and "StreamLine".
+    expect(legacyOwnerViolations(probe, ['StreamLine'])).toEqual(['StreamLine']);
+  });
+
+  it('does not flag applyStreamLine as a regained StreamLine declaration', () => {
+    const probe = `
+      export interface StreamColumn { name: string; type: string; }
+      export function applyStreamLine(json, result) { return result; }
+    `;
+    expect(legacyOwnerViolations(probe, ['StreamLine'])).toEqual([]);
+  });
+
+  it('flags a re-added splitBuffer/parseExceptionText/ExceptionFrame/findExceptionFrame in core/stream.ts (sabotage probe, not written to disk)', () => {
+    const probe = `
+      export function splitBuffer(buffer) { return { lines: [], rest: '' }; }
+      export function parseExceptionText(text) { return text; }
+      export interface ExceptionFrame { message: string; cleanBytes: number; }
+      export function findExceptionFrame(tailBytes, tag) { return null; }
+    `;
+    expect(legacyOwnerViolations(probe, ['splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame']))
+      .toEqual(['splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame']);
+  });
+
+  it('does not flag a doc comment merely narrating the move (comments are stripped before matching)', () => {
+    const probe = `
+      // streamLines() moved to the package; StreamCallbacks moved too.
+      export function createHttpTransport(deps) {
+        return { async send(request) { return null; } };
+      }
+    `;
+    expect(legacyOwnerViolations(probe, ['streamLines', 'StreamCallbacks'])).toEqual([]);
   });
 });
 
@@ -319,5 +434,21 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/CLICKHOUSE_HTTP_SPECIFIER/);
     expect(checkerSource).toMatch(/may only be imported under src\/net\/\*\*/);
     expect(checkerSource).toMatch(/deep imports are forbidden everywhere/);
+  });
+
+  // Issue #630 Phase 3 — same drift bind, extended to the narrow
+  // legacy-owner rule: deleting `PHASE3_LEGACY_OWNER_RULES` (or its
+  // `stripComments` gate) from the real checker must not leave this file's
+  // own independent mirror as the only thing enforcing it.
+  it('declares the Phase 3 legacy-owner rule for all three former owners, with comments stripped before matching', () => {
+    expect(checkerSource).toMatch(/PHASE3_LEGACY_OWNER_RULES/);
+    expect(checkerSource).toMatch(/function stripComments\(/);
+    for (const rule of PHASE3_LEGACY_OWNER_RULES) {
+      const escapedFile = rule.file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const entry = checkerSource.match(new RegExp(`file:\\s*'${escapedFile}',\\s*forbiddenWords:\\s*\\[([^\\]]*)\\]`));
+      expect(entry, `Phase 3 rule entry missing for ${rule.file}`).not.toBeNull();
+      const words = [...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+      expect(words).toEqual(rule.forbiddenWords);
+    }
   });
 });
