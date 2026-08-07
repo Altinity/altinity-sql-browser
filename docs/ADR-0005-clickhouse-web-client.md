@@ -1072,7 +1072,39 @@ review passes patching the same interception design are not expected to
 produce a different outcome; this addendum is the record of why the
 `/ship` run stopped attempting them.
 
-## Reproduction commands
+### #630 Phase 2 extraction addendum (2026-08-07)
+
+**This addendum does not reopen or otherwise touch the Rejected decision
+above.** `@clickhouse/client-web` remains rejected for production adoption
+for exactly the reasons the "Phase 2 cancellation-incompatibility addendum"
+records; nothing here revisits that evidence.
+
+Issue #630 Phase 2 extracts the SQL Browser's OWN hand-rolled Fetch-native
+request mechanics — `chUrl`'s URL serialization and the direct injected
+`fetch()` invocation, both already proven correct by this ADR's own Phase 0
+evidence and by the Phase 1 seam this ADR's "Phase 1 addendum" describes —
+out of `src/net/clickhouse-http-transport.ts` and into a new first-party,
+in-repository npm workspace package, `packages/clickhouse-http`. This is a
+pure internal reorganization of code this ADR already characterized as
+"the current custom transport... remains authoritative": no third-party
+HTTP client is introduced, no cancellation semantics change (the package's
+`request()` still passes the caller's own `AbortSignal` directly into the
+real `fetch()` for the response's whole lifetime — exactly the property
+whose ABSENCE from `@clickhouse/client-web@1.23.1` is this ADR's own
+rejection reason), and `src/net/clickhouse-http-transport.ts` becomes a thin
+compatibility adapter delegating to the package rather than building
+requests itself. `streamLines()` (the progress-bearing JSON-lines read loop)
+stays local to SQL Browser, deferred to a later phase.
+
+The point of the extraction is reuse across a hypothetical future non-bundled
+consumer of this exact Fetch-native request boundary — not a step back
+toward `@clickhouse/client-web` or any other vendor client, and not itself a
+reopening of Phases 2–4 above (those remain gated on a new decision, per the
+Rejected verdict). Standalone package build/declaration/npm-pack
+stabilization and any external-repository extraction are out of this
+phase's scope, tracked separately by the issue's Phase 8.
+
+
 
 ```sh
 # spike-only test suite (does not run under normal `npm test`)

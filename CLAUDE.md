@@ -20,8 +20,17 @@ all bundled — see hard rule 4). Quality is held by tests.
    layout, and application code goes in `src/dashboard/`, with dependency
    direction `model/layouts <- application <- UI`. App-level coordination and
    sessions go in `src/application/` and must not import `src/ui/` or
-   `src/editor/`. Network goes in `src/net/` with the fetch seam *injected*,
-   never imported. DOM rendering goes in `src/ui/` as functions that take the
+   `src/editor/`. SQL Browser's network *integration and application
+   policy* (OAuth, `ChCtx`, auth/epoch/retry, product operations) goes in
+   `src/net/`, with the fetch seam *injected*, never imported. Reusable,
+   product-agnostic ClickHouse HTTP/Fetch mechanics (URL serialization, the
+   low-level request) may live in the first-party workspace package
+   `packages/clickhouse-http` (#630 Phase 2) instead — `src/net/**` is the
+   only place allowed to import it, by its exact public package name, never
+   a deep import into its `src/**`; the package itself may depend on
+   nothing under SQL Browser `src/**` and declares zero runtime
+   dependencies (mechanically enforced, `build/check-boundaries.mjs`).
+   DOM rendering goes in `src/ui/` as functions that take the
    `app` controller — except the editor, which lives in `src/editor/` behind the
    injected editor seams (#143/#212): only `main.js` imports concrete adapters,
    and everything else addresses `app.sqlEditor` or `app.specEditor` explicitly.
@@ -65,7 +74,12 @@ all bundled — see hard rule 4). Quality is held by tests.
    fail-closed policy: images/raw HTML/rejected links render as literal
    text; measured +44 KB raw / ~3% artifact delta) — all inlined into the
    artifact, so the page loads no runtime libraries from third-party CDNs.
-   Adding *another* runtime dependency is a deliberate decision (it grows the
+   `packages/clickhouse-http` (#630 Phase 2, the repository's first npm
+   workspace) is **project source, not an eighth bundled runtime
+   dependency**: it is private, ships no `dependencies`, and esbuild bundles
+   it exactly like hand-written `src/**` — `build/size-report-lib.mjs`
+   attributes it to the `project` ownership bucket, not `external`. Adding
+   *another* runtime dependency is a deliberate decision (it grows the
    single served file) — don't do it casually. When a feature needs a library,
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in
    `src/core/chart-data.js`; DOT→positions in `src/core/dot-layout.js`, both
@@ -120,6 +134,7 @@ Touch these in one change:
 |---|---|
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
+| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization and the low-level injected-`fetch()` request, behind a public `.` export only; importable from `src/net/**` alone |
 | `src/application/*` | app-level coordination, sessions, and pure projections; no UI/editor imports |
 | `src/workspace/*` | pure stored-workspace aggregate, persistence contracts, and mutations |
 | `src/dashboard/*` | Dashboard model, layouts, and application runtime; dependency direction is mechanically checked |

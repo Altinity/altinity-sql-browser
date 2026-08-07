@@ -10,7 +10,8 @@ route-scoped sessions behind a small composition root.
 
 ```
 core/          pure logic (no DOM, no globals, no imports from other layers)
-net/           integration: OAuth + the ClickHouse HTTP client (fetch injected via ctx)
+net/           integration: OAuth + the ClickHouse HTTP client (fetch injected via ctx);
+               low-level URL/request mechanics delegate to packages/clickhouse-http
 application/   route-agnostic services & sessions (no App, no DOM, no ui/editor imports)
 workspace/     pure stored-workspace aggregate, persistence contracts, and mutations
 dashboard/     Dashboard model/layouts/application runtime (model/layouts <- application <- UI)
@@ -31,6 +32,12 @@ Dependency direction is strictly downward. Enforced mechanically by
 - `src/ui/workbench/**` and `src/ui/dashboard/**` never import each other,
   never import the editor (dashboard), and never import `src/ui/app.ts` —
   shells receive everything injected.
+- `packages/clickhouse-http/src/**` never imports SQL Browser `src/**` and
+  has zero bare-specifier imports of its own (an empty allowlist — root
+  hoists many runtime dependencies the package must not resolve
+  undeclared); `src/**` never deep-imports the package's own `src/**`, and
+  its bare `@altinity/clickhouse-http` import (never a deep subpath) is
+  restricted to `src/net/**` (#630 Phase 2).
 
 Two known, deliberate exceptions predate #276 and are out of its scope:
 `core/saved-io.ts` imports a type from `editor/spec-editor.types.js`, and
@@ -199,27 +206,44 @@ folded via the pure `applyStreamLine`; a single automatic token refresh on
 401/403/`token_verification_exception` (before `authConfirmed` flips, an auth
 failure signs out; after, it is a query error).
 
-### Transport seam (#585 Phase 1)
+### Transport seam (#585 Phase 1) and the clickhouse-http package (#630 Phase 2)
 
 Generic request construction and stream mechanics are split out behind a
 narrow contract: `net/clickhouse-transport.types.ts` declares
-`ClickHouseTransport` (`send`/`streamLines`), `TransportDeps` (`fetch`/
-`origin` accessors — read live per request, never snapshotted, since the
-live `chCtx.origin` is mutated in place on sign-in), and `TransportRequest`.
-`net/clickhouse-http-transport.ts`'s `createHttpTransport` is the current
-custom HTTP implementation of that contract — `chUrl`/`ChUrlOpts` live there
-now, re-exported unchanged from `ch-client.ts`. `ch-client.ts` keeps every
-auth/epoch/retry/lifecycle policy (`authedFetch`), product operation, and
-`ChCtx` exactly as before; a module-private `transportFor(ctx)` delegates
-unconditionally to `createHttpTransport` — `ChCtx` gained no field and there
-is no runtime transport switch. `authedFetch` snapshots the caller's
-`settings`/`params` synchronously at entry, before its first await, as one
-centralized defense against a caller mutating those objects while a
-token/refresh await is pending. A reusable contract-test-suite factory
-(`tests/unit/clickhouse-transport-contract.ts`) registers against this one
-implementation; a future official-client implementation (ADR-0005 is
-Rejected; Phases 2–4 do not proceed without a new decision) would satisfy the
-same contract and reuse the same suite.
+`ClickHouseTransport` (`send`/`streamLines`), and re-exports its
+`TransportDeps`/`TransportRequest` types as aliases of
+`@altinity/clickhouse-http`'s own `ClickHouseHttpClientDeps`/
+`ClickHouseHttpRequest`. `net/clickhouse-http-transport.ts`'s
+`createHttpTransport` is now a temporary COMPATIBILITY ADAPTER: its `send()`
+delegates to the package's `createClickHouseHttpClient(deps).request()`
+instead of building the request itself; `streamLines()` (the
+progress-bearing JSON-lines read loop) stays local, deferred to a later
+phase. `chUrl`/`ChUrlOpts` and the low-level `request()`/Fetch invocation now
+live in `packages/clickhouse-http` — the repository's first npm workspace
+(private, zero runtime dependencies, zero bare-specifier imports in its own
+source, no dependency on SQL Browser `src/**`) — and are exposed only
+through its public `.` export; `ch-client.ts` re-exports `chUrl` from that
+package unchanged for its own existing importers. `build/check-boundaries.mjs`
+mechanically restricts the bare `@altinity/clickhouse-http` import to
+`src/net/**` and bans any deep import into the package's `src/**`
+implementation (from either side), so the network-layer boundary can't be
+bypassed just because the low-level mechanics moved behind a package name.
+`ch-client.ts` keeps every auth/epoch/retry/lifecycle policy (`authedFetch`),
+product operation, and `ChCtx` exactly as before; a module-private
+`transportFor(ctx)` delegates unconditionally to `createHttpTransport` —
+`ChCtx` gained no field and there is no runtime transport switch.
+`authedFetch` snapshots the caller's `settings`/`params` synchronously at
+entry, before its first await, calling the package's `chUrl` directly as an
+eager pre-credential preflight (a malformed value throws synchronously here,
+before any token read), as one centralized defense against a caller mutating
+those objects while a token/refresh await is pending — the low-level
+`request()`/`send()` API instead resolves this same failure as a REJECTED
+promise, since both remain `async`. A reusable contract-test-suite factory
+(`tests/unit/clickhouse-transport-contract.ts`) registers against both the
+package's own `request()` and the compatibility adapter; a future
+official-client implementation (ADR-0005 is Rejected; that cutover does not
+proceed without a new decision) would satisfy the same
+`ClickHouseTransport` contract and reuse the same suite.
 
 ## Build
 
@@ -227,4 +251,12 @@ same contract and reuse the same suite.
 `styles.css` into `build/template.html` → a single `dist/sql.html`. Seven
 bundled runtime dependencies (CodeMirror 6, Chart.js +
 chartjs-adapter-date-fns + date-fns, dagre, `@preact/signals-core`, marked);
-none is loaded from a third-party CDN.
+none is loaded from a third-party CDN. `packages/clickhouse-http` (#630
+Phase 2, the repository's first npm workspace) is first-party project
+source, not an eighth runtime dependency — esbuild resolves its bare
+`@altinity/clickhouse-http` import through the workspace's `node_modules`
+symlink and bundles it as ordinary source; `build/size-report-lib.mjs`
+attributes every `packages/**` input to the `project` ownership bucket
+accordingly, and the Dockerfile's build stage copies `packages/` alongside
+`src/` before `npm ci && npm run build` so container/release builds resolve
+it identically.

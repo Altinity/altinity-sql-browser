@@ -164,6 +164,30 @@ Two roadmap tracks are current:
   fetch, or a deliberate renegotiation of the transport contract's
   cancellation semantics themselves.
 
+- **#630 — extract the SQL Browser's own Fetch-native transport mechanics
+  into a first-party package.** Independent of the #585/ADR-0005 track above
+  (ADR-0005 rejects the *third-party* `@clickhouse/client-web` client; #630
+  extracts SQL Browser's *own* hand-rolled, already-proven-correct
+  mechanics, and does not reopen or depend on ADR-0005's decision either
+  way). Phase 1 (merged, PR #640) froze the current `createHttpTransport`'s
+  native Fetch/Response/cancellation semantics as a real-browser
+  characterization suite, with no production code change — the behavioral
+  baseline Phase 2 is not allowed to alter. **Phase 2** moves `chUrl`/URL
+  serialization and the low-level injected-`fetch()` request into a new
+  `packages/clickhouse-http` — the repository's first npm workspace,
+  private, zero runtime dependencies, zero bare-specifier imports of its
+  own, exposing only its `.` export — and turns
+  `src/net/clickhouse-http-transport.ts` into a temporary compatibility
+  adapter whose `send()` delegates to the package's `request()`;
+  `streamLines()` stays local, deferred to a later phase. `ch-client.ts`'s
+  composition graph, auth/epoch/retry policy, and eager pre-credential
+  `chUrl` preflight are all unchanged. See
+  [[Source-Map]] and [[Architecture]] for the file-level detail and
+  `build/check-boundaries.mjs`'s Rules A–D for the mechanical boundary
+  enforcement (package↔root-src ban, package zero-bare-specifier ban,
+  root↔package-deep-import ban, bare-import location restricted to
+  `src/net/**`).
+
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).
 
