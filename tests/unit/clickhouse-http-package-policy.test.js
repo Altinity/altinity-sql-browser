@@ -60,6 +60,7 @@ import {
   findDeepImportSpecifiers,
   findPackageImportUsages,
   PHASE5_PACKAGE_LANGUAGE_EXPORTS,
+  mightReferencePackage,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -167,18 +168,16 @@ function bareSpecifierViolations(dir, virtualFiles = []) {
 // comments as trivia by construction. Both halves of Rule D now call the
 // same shared real-parser helper module.
 const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
-// Cheap pre-filter before spawning the real parser, matching the production
-// checker (build/check-boundaries.mjs). A raw substring test alone is
-// unsound: a valid string/template literal can spell the exact same
-// specifier through a JS escape sequence (a hex escape, a Unicode escape, or
-// a per-character identity escape) that decodes to the real package name
-// without the RAW source ever containing the plain substring — every such
-// escape needs at least one literal backslash, so "no plain substring AND no
-// backslash anywhere" is the only combination that may safely skip the
-// parser-backed checks below.
-function mightReferencePackage(text) {
-  return text.includes(CLICKHOUSE_HTTP_SPECIFIER) || text.includes('\\');
-}
+// Cheap pre-filter before spawning the real parser — imported from
+// `build/lib/check-legacy-owners.mjs` (review pass 2 hardening) rather than
+// hand-copied here a second time: two independently maintained copies (one
+// here, one in `build/check-boundaries.mjs`) meant a production-only
+// regression back to the old exact-substring gate could leave every
+// escaped-specifier sabotage test below green, since they exercised only
+// THIS file's own copy, never production's. Sharing the one implementation
+// means the same call below now also proves production still uses it (see
+// the drift-binding describe block at the bottom of this file). See that
+// function's own doc comment for the escape-sequence reasoning.
 // The on-disk tree under `dir` never changes within one test-file run, but
 // every call site above re-passes `join(repoRoot, 'src')` with a DIFFERENT
 // single sabotage probe appended — ~30 call sites across this describe
@@ -203,7 +202,7 @@ function deepImportViolations(dir, virtualFiles = []) {
     for (const file of collectFiles(dir)) {
       const relFile = relative(repoRoot, file).split(sep).join('/');
       const text = readFileSync(file, 'utf8');
-      if (!mightReferencePackage(text)) continue;
+      if (!mightReferencePackage(text, CLICKHOUSE_HTTP_SPECIFIER)) continue;
       for (const spec of findDeepImportSpecifiers(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
         cached.push(`${relFile} → ${spec}`);
       }
@@ -213,7 +212,7 @@ function deepImportViolations(dir, virtualFiles = []) {
   const found = [...cached];
   for (const [rel, source] of virtualFiles) {
     const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
-    if (!mightReferencePackage(source)) continue;
+    if (!mightReferencePackage(source, CLICKHOUSE_HTTP_SPECIFIER)) continue;
     for (const spec of findDeepImportSpecifiers(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       found.push(`${relFile} → ${spec}`);
     }
@@ -240,7 +239,7 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
       const relFile = relative(repoRoot, file).split(sep).join('/');
       if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
       const text = readFileSync(file, 'utf8');
-      if (!mightReferencePackage(text)) continue;
+      if (!mightReferencePackage(text, CLICKHOUSE_HTTP_SPECIFIER)) continue;
       for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
         if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
         cached.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
@@ -252,7 +251,7 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
   for (const [rel, source] of virtualFiles) {
     const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
     if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
-    if (!mightReferencePackage(source)) continue;
+    if (!mightReferencePackage(source, CLICKHOUSE_HTTP_SPECIFIER)) continue;
     for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
       found.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
@@ -941,6 +940,30 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     // comment sitting between `import`/`export` and the specifier defeated
     // that regex no matter how far its patterns were widened.
     expect(checkerSource).toMatch(/findDeepImportSpecifiers\(/);
+  });
+
+  // Review pass 2 finding — the drift bind above only proved the checker
+  // still calls `findDeepImportSpecifiers`/`findPackageImportUsages`; it said
+  // nothing about the CHEAP PRE-FILTER (`mightReferencePackage`) that gates
+  // whether those real-parser calls even run. Until this test, that prefilter
+  // was independently hand-copied here AND in the checker — two copies that
+  // could drift, so a production-only regression back to the old
+  // exact-substring-only gate (dropping the `|| source.includes('\\')` half)
+  // would have left every escaped-specifier sabotage test in this file green,
+  // since those tests exercised only this file's own copy, never
+  // production's. Now both import the ONE implementation from
+  // `build/lib/check-legacy-owners.mjs`, so this test pins that the checker
+  // still imports and calls it, and never reintroduces a second inline copy.
+  it('the deep-import/bare-specifier pre-filter (mightReferencePackage) is imported from the shared helper, not reimplemented inline', () => {
+    const importBlock = checkerSource.match(/import \{([^}]*)\} from '\.\/lib\/check-legacy-owners\.mjs';/);
+    expect(importBlock, 'check-legacy-owners import block missing from build/check-boundaries.mjs').not.toBeNull();
+    expect(importBlock[1]).toMatch(/\bmightReferencePackage\b/);
+    // Must actually CALL the shared helper, not merely import and shadow it.
+    expect(checkerSource).toMatch(/=\s*mightReferencePackage\(/);
+    // Guards exactly the regression this finding warned about: a
+    // reintroduced inline exact-substring-only prefilter bypassing the
+    // shared, escape-sequence-aware helper entirely.
+    expect(checkerSource).not.toMatch(/const\s+\w+\s*=\s*source\.includes\(CLICKHOUSE_HTTP_SPECIFIER\)/);
   });
 
   // Issue #630 Phase 3 — same drift bind, adapted to the shared-helper

@@ -43,6 +43,7 @@ import {
   findDeepImportSpecifiers,
   findPackageImportUsages,
   PHASE5_PACKAGE_LANGUAGE_EXPORTS,
+  mightReferencePackage,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -363,27 +364,17 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
   checkedFiles += 1;
   const source = fs.readFileSync(file, 'utf8');
-  // Cheap pre-filter before spawning the real parser. A raw substring test
-  // alone is unsound: a valid string/template literal can spell the exact
-  // same specifier through a JS escape sequence — a hex escape
-  // (`@altinity/clickhouse-h\x74tp`), a Unicode escape, or even a
-  // per-character identity escape (`\@\a\l\t...`, legal and decodes to the
-  // plain character for almost any char that isn't itself a multi-char
-  // escape introducer) — none of which contain the RAW substring, so
-  // `source.includes(CLICKHOUSE_HTTP_SPECIFIER)` alone silently skipped the
-  // real parser for exactly the files that most need it (review found this).
-  // Every one of those escape forms requires at least one literal backslash
-  // in the source, so "no plain substring AND no backslash anywhere in the
-  // file" is the only combination that can safely skip the parser-backed
-  // checks below — any backslash routes the file through them instead, and
-  // they decode escapes correctly via the real parser's own `node.text`.
-  // This stays a textual pre-filter, not a hand-rolled escape decoder: the
-  // decoding itself is left entirely to the real parser, for the same reason
-  // `build/lib/check-legacy-owners.mjs`'s module doc comment gives for why a
-  // hand-rolled scanner over this grammar keeps losing to pattern-widening.
-  const mightReferencePackage = source.includes(CLICKHOUSE_HTTP_SPECIFIER) || source.includes('\\');
+  // Cheap pre-filter before spawning the real parser — shared with the
+  // in-suite mirror (`tests/unit/clickhouse-http-package-policy.test.js`) as
+  // `build/lib/check-legacy-owners.mjs`'s `mightReferencePackage` (review
+  // pass 2: two independently hand-copied implementations here and in the
+  // test suite meant a production-only regression to the old exact-substring
+  // gate could leave the test's escaped-specifier sabotage cases green,
+  // since they exercised only the test's own copy — see that function's own
+  // doc comment for the escape-sequence reasoning).
+  const fileMightReferencePackage = mightReferencePackage(source, CLICKHOUSE_HTTP_SPECIFIER);
 
-  if (mightReferencePackage) {
+  if (fileMightReferencePackage) {
     for (const spec of findDeepImportSpecifiers(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http exposes only its "." export — deep imports are forbidden everywhere)`);
     }
@@ -414,7 +405,7 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   // `src/net/**` every access form/name remains unrestricted, matching
   // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
   if (relFile.startsWith('src/net/')) continue;
-  if (!mightReferencePackage) continue;
+  if (!fileMightReferencePackage) continue;
   for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
     if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
     const label = usage.kind === 'named' ? `named import of '${usage.name}' (transport/protocol API)`

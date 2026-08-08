@@ -243,6 +243,48 @@ export function findKillStopgapOwnerViolations(source, filename) {
   return findNamedIdentifierViolations(source, filename, PHASE5_KILL_STOPGAP_OWNER_FILES, PHASE5_KILL_STOPGAP_MOVED_NAMES);
 }
 
+// ── Shared cheap pre-filter (review pass 2 hardening) ───────────────────────
+
+/**
+ * Cheap textual pre-filter, shared by the production `check:arch` gate
+ * (`build/check-boundaries.mjs`) and its in-suite mirror
+ * (`tests/unit/clickhouse-http-package-policy.test.js`), that decides
+ * whether a file is even worth handing to the real-parser checks above
+ * (`findDeepImportSpecifiers`/`findPackageImportUsages`) — spawning the
+ * native `tsc` child process for every file in the tree is the expensive
+ * part, so files that provably cannot reference `packageSpecifier` skip it.
+ *
+ * A raw substring test alone is unsound: a valid string/template literal can
+ * spell the exact same specifier through a JS escape sequence — a hex escape
+ * (`@altinity/clickhouse-h\x74tp`), a Unicode escape, or even a
+ * per-character identity escape (`\@\a\l\t...`, legal and decodes to the
+ * plain character for almost any char that isn't itself a multi-char escape
+ * introducer) — none of which contain the RAW substring, so
+ * `source.includes(packageSpecifier)` alone would silently skip the real
+ * parser for exactly the files that most need it. Every one of those escape
+ * forms requires at least one literal backslash in the source, so "no plain
+ * substring AND no backslash anywhere in the file" is the only combination
+ * that can safely skip the parser-backed checks — any backslash routes the
+ * file through them instead, which decode escapes correctly via the real
+ * parser's own `node.text`.
+ *
+ * Previously two independently hand-copied implementations (production and
+ * the test suite) mirrored this exact logic; a production-only regression
+ * back to the old exact-substring form would have left every
+ * escaped-specifier sabotage test green, since the test exercised only its
+ * own copy, never production's. Sharing this one implementation closes that
+ * gap — there is now only one place this logic can drift from.
+ *
+ * @param {string} source
+ * @param {string} packageSpecifier the exact bare specifier being guarded
+ * @returns {boolean} true if `source` might reference `packageSpecifier`
+ *   (via a plain substring OR an escape sequence) and must go through the
+ *   real-parser checks; false only when it provably cannot
+ */
+export function mightReferencePackage(source, packageSpecifier) {
+  return source.includes(packageSpecifier) || source.includes('\\');
+}
+
 // ── Revised Rule D: deep-import subpath detection ────────────────────────────
 
 /**
