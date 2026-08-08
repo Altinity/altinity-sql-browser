@@ -1,7 +1,19 @@
 // Pure formatting + small string helpers. No DOM, no globals — trivially
 // unit-testable and shared across the UI layer.
+//
+// Issue #630 Phase 5 — `sqlString`/`quoteIdent`/`qualifyIdent` (ClickHouse SQL
+// string-literal/identifier quoting) and the shared `scanSpans` lexical
+// scanner moved to `@altinity/clickhouse-http`, the package's one quoting
+// implementation and one scanner implementation respectively. This module no
+// longer declares any quoting helper or forwarding alias — every real
+// consumer imports `sqlString`/`quoteIdent`/`qualifyIdent` from the package
+// directly. `format.ts` keeps every SQL Browser display/general-formatting
+// and SQL-preparation function (`stripTrailingTrivia`, `detectSqlFormat`,
+// `detectSqlOutfile`, `withTrailingFormat`, `prepareExportSql`, `toSubquery`,
+// `isSchemaMutatingSql`, …), consuming the package's `scanSpans` the same way
+// it always consumed the local one.
 
-import { scanSpans } from './sql-spans.js';
+import { scanSpans } from '@altinity/clickhouse-http';
 import { leadingKeyword } from './sql-split.js';
 
 /** Clamp `v` into the inclusive range [lo, hi]. */
@@ -68,39 +80,6 @@ export function timeAgo(ts: number, now: number = Date.now()): string {
   if (s < 3600) return Math.floor(s / 60) + 'm ago';
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
-}
-
-/** Quote + escape a string as a ClickHouse SQL string literal. */
-export function sqlString(s: unknown): string {
-  // Escape the backslash first (CH honors backslash escapes in string literals,
-  // so a trailing `\` would otherwise escape the closing quote and break out),
-  // then double the single quote.
-  return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "''") + "'";
-}
-
-// A bare (unquoted) ClickHouse identifier: a letter/underscore then word chars.
-// Anything else (dashes, dots, spaces — e.g. a `…snappy.parquet` table) MUST be
-// backtick-quoted or it's a syntax error.
-const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/**
- * Quote `name` as a ClickHouse identifier when it isn't a bare identifier:
- * backticks, with `\` and `` ` `` backslash-escaped (CH's identifier escaping).
- * Bare identifiers pass through unquoted so ordinary SQL stays readable.
- */
-export function quoteIdent(name: unknown): string {
-  const s = String(name);
-  if (BARE_IDENT.test(s)) return s;
-  return '`' + s.replace(/\\/g, '\\\\').replace(/`/g, '\\`') + '`';
-}
-
-/**
- * Join already-separate identifier parts into a dotted reference, quoting each
- * part as needed: `qualifyIdent('db', 'a.b')` → `` db.`a.b` ``. Empty/nullish
- * parts are dropped (so a bare table name qualifies to just itself).
- */
-export function qualifyIdent(...parts: unknown[]): string {
-  return parts.filter((p) => p != null && p !== '').map(quoteIdent).join('.');
 }
 
 /**

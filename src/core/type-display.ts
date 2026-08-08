@@ -21,7 +21,8 @@
 // never an exception.
 
 import { truncate } from './format.js';
-import { scanSpans } from './sql-spans.js';
+// Issue #630 Phase 5 — the shared scanner now comes directly from `@altinity/clickhouse-http`.
+import { scanSpans } from '@altinity/clickhouse-http';
 
 // The shared display budget for a type rendered inline in a row-shaped surface
 // (the schema tree's meta column and the completion dropdown's detail column

@@ -35,9 +35,21 @@ Dependency direction is strictly downward. Enforced mechanically by
 - `packages/clickhouse-http/src/**` never imports SQL Browser `src/**` and
   has zero bare-specifier imports of its own (an empty allowlist — root
   hoists many runtime dependencies the package must not resolve
-  undeclared); `src/**` never deep-imports the package's own `src/**`, and
-  its bare `@altinity/clickhouse-http` import (never a deep subpath) is
-  restricted to `src/net/**` (#630 Phase 2).
+  undeclared); `src/**` never deep-imports the package's own `src/**`
+  (#630 Phase 2). The package's bare `@altinity/clickhouse-http` import
+  (never a deep subpath) splits into two categories since #630 Phase 5:
+  transport/protocol APIs (`createClickHouseHttpClient`, `chUrl`,
+  `streamLines`, the response consumers, `ClickHouseError`) remain
+  restricted to `src/net/**`, exactly as Phase 2 established; pure
+  LANGUAGE APIs (SQL quoting, the generic type grammar, the shared
+  scanner) may be imported directly by their real SQL Browser consumers
+  anywhere outside `src/net/**` too — but only as a plain named import of
+  an approved name; every other access form (default/namespace/
+  side-effect/dynamic import, package re-export gateway) and every
+  transport/protocol name stay `src/net/**`-only, no matter where the
+  import site lives. This name/shape-aware half of the rule is a real
+  TypeScript parse (`build/lib/check-legacy-owners.mjs`), not a specifier-
+  text regex, because a regex cannot tell which names a named import binds.
 
 Two known, deliberate exceptions predate #276 and are out of its scope:
 `core/saved-io.ts` imports a type from `editor/spec-editor.types.js`, and
@@ -311,11 +323,58 @@ callback, retry, or query registry of its own, and it never writes its SQL
 target into the HTTP request's own `params.query_id`. Its own private
 `quoteKillQueryId` reproduces only `src/core/format.ts`'s `sqlString()`
 backslash-then-quote escaping convention as a narrow, unexported Phase-4
-stopgap — Phase 5 replaces it with the package's own shared public
-string-literal quoting API. Root `killQuery`/`killQueryWithLease` and
+stopgap — **Phase 5** replaces it with the package's own shared public
+string-literal quoting API (below). Root `killQuery`/`killQueryWithLease` and
 `queryJson`/`runQuery`/`exportQuery` are unaffected: they continue to reach
 `authedFetch`'s auth/epoch/retry policy exactly as before, and none of them
-have been migrated onto the new package APIs in this phase.
+have been migrated onto the new package consuming-query APIs — that cutover
+is Phase 7.
+
+### SQL quoting and the generic type grammar (#630 Phase 5)
+
+Phase 5 moves SQL Browser's ClickHouse SQL string-literal/identifier quoting
+and its generic type-expression grammar into `@altinity/clickhouse-http`,
+alongside the shared lexical scanner that grammar's dependency closure
+requires:
+
+```
+sql-quote.ts        sqlString / quoteIdent / qualifyIdent   (the ONE quoter)
+clickhouse-type.ts   parseClickHouseType / analyzeTypeModifiers /
+                     canonicalType / wrapper+enum helpers    (the ONE grammar)
+sql-spans.ts         scanSpans / Span / SpanKind              (the ONE scanner,
+                     re-exported — surviving SQL Browser SQL-analysis
+                     modules outside src/net/** still need it)
+quoted-span.ts       scanDelimited                           (package-private;
+                     not re-exported — only the two package modules above
+                     import it, relatively)
+```
+
+Every real former SQL Browser owner of these mechanics is retargeted, not
+duplicated: `src/core/format.ts` no longer declares
+`sqlString`/`BARE_IDENT`/`quoteIdent`/`qualifyIdent` at all (no forwarding
+alias either), and `src/core/clickhouse-type.ts`/`sql-spans.ts`/
+`quoted-span.ts` are deleted outright. `packages/clickhouse-http/src/client.ts`'s
+`killQuery` now quotes its SQL target with the package's own `sqlString`
+(imported relatively, package-internal); the Phase-4 private
+`quoteKillQueryId` stopgap is gone. Every real production consumer imports
+directly from the package's public `.` export: `src/net/ch-client.ts`,
+`src/ui/app.ts`, `src/core/variable-options.ts`, `src/core/completions.ts`,
+`src/ui/schema.ts`, `src/ui/schema-detail.ts`, `src/ui/explain-graph.ts`,
+`src/core/param-type.ts`, `src/core/kpi.ts`, `src/core/dashboard-variables.ts`,
+and the scanner's other surviving consumers (`src/core/sql-lex.ts`,
+`sql-split.ts`, `param-scan.ts`, `type-display.ts`, `optional-blocks.ts`,
+`format.ts` itself). `isSupportedOptionScalar` — SQL Browser option/control
+policy over which scalar families are eligible for an option-backed control,
+not generic grammar — moved to `src/core/param-type.ts` instead, the package
+never exports it. SQL Browser's own display/FORMAT/parameter-control/KPI/
+Dashboard-variable policy is otherwise untouched: only the underlying generic
+mechanics changed owner, never their behavior — the existing parser/helper
+bodies moved, they were not redesigned.
+
+This is the phase that requires Rule D (above) to distinguish transport/
+protocol package exports from pure-language ones, since SQL Browser
+language consumers now legitimately import the package from outside
+`src/net/**` — see the boundary rule text above for the mechanics.
 
 ## Build
 

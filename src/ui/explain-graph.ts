@@ -13,7 +13,8 @@ import type { LayoutInputEdge, LayoutInputNode, LayoutOutputEdge, LayoutOutputNo
 import { buildCardModel, cardSize, CARD } from '../core/schema-cards.js';
 import type { CardModel, CardGraphNode } from '../core/schema-cards.js';
 import type { SchemaGraphFocus } from '../core/schema-graph.js';
-import { qualifyIdent } from '../core/format.js';
+// Issue #630 Phase 5 — `qualifyIdent` now comes directly from `@altinity/clickhouse-http`.
+import { qualifyIdent } from '@altinity/clickhouse-http';
 import { fitBox, fitWidthBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 import type { ViewBox } from '../core/panzoom.js';
 import {

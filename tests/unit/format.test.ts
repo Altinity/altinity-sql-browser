@@ -1,6 +1,11 @@
+// Issue #630 Phase 5 — sqlString/quoteIdent/qualifyIdent moved out of this
+// file's import list and describe blocks; they now have their one
+// implementation in `@altinity/clickhouse-http` (`sql-quote.ts`), tested in
+// tests/unit/clickhouse-http-sql-quote.test.ts. Every other formatting/
+// FORMAT-detection test here is unaffected.
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, detectSqlOutfile, stripTrailingTrivia, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio,
+  clamp, formatRows, formatBytes, timeAgo, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, detectSqlOutfile, stripTrailingTrivia, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio,
   parseServerVersion, versionAtLeast,
 } from '../../src/core/format.js';
 
@@ -101,46 +106,6 @@ describe('timeAgo', () => {
   });
   it('defaults now to Date.now()', () => {
     expect(timeAgo(Date.now())).toBe('0s ago');
-  });
-});
-
-describe('sqlString', () => {
-  it('quotes and doubles single quotes', () => {
-    expect(sqlString('abc')).toBe("'abc'");
-    expect(sqlString("a'b")).toBe("'a''b'");
-    expect(sqlString(42)).toBe("'42'");
-  });
-  it('escapes backslashes so a trailing one cannot break out of the literal', () => {
-    expect(sqlString('a\\b')).toBe("'a\\\\b'");
-    expect(sqlString('x\\')).toBe("'x\\\\'");
-    expect(sqlString("\\'")).toBe("'\\\\'''");
-  });
-});
-
-describe('quoteIdent', () => {
-  it('leaves a bare identifier unquoted', () => {
-    expect(quoteIdent('users')).toBe('users');
-    expect(quoteIdent('_x9')).toBe('_x9');
-  });
-  it('backtick-quotes names with non-identifier chars', () => {
-    expect(quoteIdent('part-00000-c000.snappy.parquet')).toBe('`part-00000-c000.snappy.parquet`');
-    expect(quoteIdent('has space')).toBe('`has space`');
-    expect(quoteIdent('9starts')).toBe('`9starts`'); // leading digit isn't bare
-  });
-  it('escapes backslashes and backticks inside the quotes', () => {
-    expect(quoteIdent('a`b')).toBe('`a\\`b`');
-    expect(quoteIdent('a\\b')).toBe('`a\\\\b`');
-  });
-});
-
-describe('qualifyIdent', () => {
-  it('quotes each part and joins with a dot', () => {
-    expect(qualifyIdent('db', 'tbl')).toBe('db.tbl');
-    expect(qualifyIdent('target_all', 'part-0.snappy.parquet')).toBe('target_all.`part-0.snappy.parquet`');
-  });
-  it('drops empty/nullish parts (a bare name qualifies to itself)', () => {
-    expect(qualifyIdent('', 'tbl')).toBe('tbl');
-    expect(qualifyIdent(null, 'a-b')).toBe('`a-b`');
   });
 });
 

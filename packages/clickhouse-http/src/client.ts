@@ -16,15 +16,20 @@
 // same visible two-step shape: one `client.request(...)` call, then one
 // matching `response.ts` consumer — no retry, no second Fetch, no SQL
 // Browser Table/KPI/TSV mode knowledge (a literal `defaultFormat` string is
-// opaque wire data to this package). `killQuery` requires the caller's own
+// opaque wire data to this package).
+//
+// Issue #630 Phase 5 — `killQuery` now quotes its SQL target with this
+// package's own public `sqlString` (`sql-quote.ts`, imported relatively —
+// this module is package-internal, never through `index.ts`), the ONE
+// SQL-quoting implementation. The Phase-4 private `quoteKillQueryId`
+// stopgap is retired entirely; `killQuery` still requires the caller's own
 // `authorization` and performs no credential lookup, refresh, epoch,
-// lifecycle callback, retry, or query registry of its own — see the
-// private `quoteKillQueryId` below for its intentionally narrow, Phase-4-
-// only string-literal quoting.
+// lifecycle callback, retry, or query registry of its own.
 
 import { chUrl } from './url.js';
 import { consumeJsonResponse, consumeTextResponse, consumeProgressResponse } from './response.js';
 import type { StreamCallbacks } from './progress-stream.js';
+import { sqlString } from './sql-quote.js';
 
 /** Accessor-shaped dependencies: both must be read live, per request — a
  * live, mutable `origin`/`fetch` (e.g. the SQL Browser's `ChCtx`, mutated in
@@ -118,17 +123,6 @@ export interface ClickHouseHttpClient {
   killQuery(request: ClickHouseKillQueryRequest): Promise<void>;
 }
 
-// Issue #630 Phase 4 — the intentionally narrow, PRIVATE Phase-4 stopgap for
-// quoting `queryId` into a `KILL QUERY` string literal. Reproduces ONLY
-// `src/core/format.ts`'s `sqlString()` escaping convention (backslash
-// doubled first, then single quote doubled) — not exported, and
-// deliberately not generalized into identifier/type-expression quoting:
-// Phase 5 replaces this with the package's own shared public string-literal
-// API.
-function quoteKillQueryId(queryId: string): string {
-  return "'" + queryId.replace(/\\/g, '\\\\').replace(/'/g, "''") + "'";
-}
-
 export function createClickHouseHttpClient(deps: ClickHouseHttpClientDeps): ClickHouseHttpClient {
   // A lexical `client` object (not `this`) so every convenience method below
   // calls `client.request(...)` regardless of how it is later destructured
@@ -169,7 +163,7 @@ export function createClickHouseHttpClient(deps: ClickHouseHttpClientDeps): Clic
     async killQuery({ queryId, ...request }: ClickHouseKillQueryRequest): Promise<void> {
       await client.queryText({
         ...request,
-        sql: `KILL QUERY WHERE query_id = ${quoteKillQueryId(queryId)} ASYNC`,
+        sql: `KILL QUERY WHERE query_id = ${sqlString(queryId)} ASYNC`,
         defaultFormat: 'JSON',
       });
     },

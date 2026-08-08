@@ -11,7 +11,8 @@
 // contains a `;` will mis-split — the splitter has no way to know where the
 // format payload ends. Inline-data inserts should be run on their own.
 
-import { scanSpans } from './sql-spans.js';
+// Issue #630 Phase 5 — the shared scanner now comes directly from `@altinity/clickhouse-http`.
+import { scanSpans } from '@altinity/clickhouse-http';
 
 /**
  * Split `sql` into individual statements on top-level `;`. Literals and comments

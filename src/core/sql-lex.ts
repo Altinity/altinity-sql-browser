@@ -17,8 +17,9 @@
 //   - consumers use `token.start` / `token.end` directly and must never
 //     reconstruct positions by summing token text lengths.
 
-import { scanSpans } from './sql-spans.js';
-import type { SpanKind } from './sql-spans.js';
+// Issue #630 Phase 5 — the shared scanner now comes directly from `@altinity/clickhouse-http`.
+import { scanSpans } from '@altinity/clickhouse-http';
+import type { SpanKind } from '@altinity/clickhouse-http';
 
 /** One structural token's classification: the four lexical-span kinds
  *  (`sql-spans.js`) plus the code-span breakdown this layer adds. */

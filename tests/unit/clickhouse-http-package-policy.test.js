@@ -25,6 +25,22 @@
 // tests exercise that helper's contract; the drift-binding describe block at
 // the bottom confirms `build/check-boundaries.mjs` still calls the same
 // helper over the same owner files.
+//
+// Issue #630 Phase 5 — Rule D is revised (plan §8.2): the bare package
+// specifier is no longer net-only for EVERY name — pure LANGUAGE exports
+// (SQL quoting, the generic type grammar, the shared scanner) may now be
+// imported directly outside `src/net/**` too, while transport/protocol APIs
+// (`createClickHouseHttpClient`, `chUrl`, `streamLines`, …) and every
+// non-named-import access form (default/namespace/side-effect/dynamic
+// import, package re-export gateway) stay `src/net/**`-only. This identifier
+// /import-shape analysis is NOT independently reimplemented here either, for
+// the same reason as the Phase 3 rule above (a specifier-text regex cannot
+// tell which NAMES a named import binds) — both the checker and this suite
+// call the same shared `findPackageImportUsages` helper. Phase 5 also adds
+// two more former-owner checks (`format.ts` must not regain SQL quoting;
+// the package's own `client.ts` must not regain the retired Phase-4
+// `quoteKillQueryId` stopgap), through the same generalized
+// `findNamedIdentifierViolations` walker the Phase 3 rule now shares.
 
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
@@ -35,6 +51,14 @@ import {
   findLegacyOwnerViolations,
   PHASE3_LEGACY_OWNER_FILES,
   PHASE3_MOVED_NAMES,
+  findSqlQuoteOwnerViolations,
+  PHASE5_SQL_QUOTE_OWNER_FILES,
+  PHASE5_SQL_QUOTE_MOVED_NAMES,
+  findKillStopgapOwnerViolations,
+  PHASE5_KILL_STOPGAP_OWNER_FILES,
+  PHASE5_KILL_STOPGAP_MOVED_NAMES,
+  findPackageImportUsages,
+  PHASE5_PACKAGE_LANGUAGE_EXPORTS,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -130,20 +154,42 @@ function bareSpecifierViolations(dir, virtualFiles = []) {
   return found;
 }
 
-// Rule D mirror: the exact bare package name may be imported only under
-// src/net/**; the deep-import subpath form is forbidden everywhere.
+// Rule D mirror (deep-import half only — independently reimplemented, same
+// accepted-risk convention as Rules A-C above, since a plain specifier-text
+// check needs no real parser). The bare-specifier, name/shape-aware half
+// below (issue #630 Phase 5) is NOT independently reimplemented — it shares
+// `findPackageImportUsages` with the production checker instead, for the
+// same reason the Phase 3 legacy-owner rule stopped being a text scanner: a
+// specifier-text regex cannot tell which NAMES a named import binds.
 const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
-function bareLocationViolations(dir, virtualFiles = []) {
+function deepImportViolations(dir, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
     const relFile = relative(repoRoot, file).split(sep).join('/');
     const text = source ?? readFileSync(file, 'utf8');
     for (const spec of extractSpecifiers(text)) {
-      if (spec === CLICKHOUSE_HTTP_SPECIFIER) {
-        if (!relFile.startsWith('src/net/')) found.push(`${relFile} → ${spec}`);
-        continue;
-      }
       if (spec.startsWith(`${CLICKHOUSE_HTTP_SPECIFIER}/`)) found.push(`${relFile} → ${spec}`);
+    }
+  }
+  return found;
+}
+
+// Rule D's revised bare-specifier half (issue #630 Phase 5, plan §8.2):
+// outside `src/net/**`, only a named import of an approved pure-language
+// export is allowed — every other name, and every non-named-import access
+// form (default/namespace/side-effect/dynamic import, package re-export
+// gateway), stays `src/net/**`-only. Calls the SAME real-parser helper the
+// production `check:arch` gate calls.
+function packageNameShapeViolations(dir, virtualFiles = []) {
+  const found = [];
+  for (const [file, source] of collectEntries(dir, virtualFiles)) {
+    const relFile = relative(repoRoot, file).split(sep).join('/');
+    if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
+    const text = source ?? readFileSync(file, 'utf8');
+    if (!text.includes(CLICKHOUSE_HTTP_SPECIFIER)) continue;
+    for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+      if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+      found.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
     }
   }
   return found;
@@ -249,25 +295,101 @@ describe('Rule C — SQL Browser source does not deep-import the package\'s own 
   });
 });
 
-describe('Rule D — the bare package import is restricted to src/net/**; deep-import subpaths are forbidden everywhere', () => {
-  it('the real src/** tree only imports @altinity/clickhouse-http under src/net/**, with no deep-import subpath', () => {
-    expect(bareLocationViolations(join(repoRoot, 'src'))).toEqual([]);
-  });
-
-  it('flags a bare package import from outside src/net/** (sabotage probe, not written to disk)', () => {
-    const found = bareLocationViolations(join(repoRoot, 'src'), [
-      ['src/core/__boundary_probe_630_core__.ts',
-        "import { chUrl } from '@altinity/clickhouse-http';\n"],
-    ]);
-    expect(found.some((line) => line.includes('__boundary_probe_630_core__'))).toBe(true);
+describe('Rule D, deep-import half — the deep-import subpath form is forbidden everywhere under src/**', () => {
+  it('the real src/** tree has no deep-import subpath', () => {
+    expect(deepImportViolations(join(repoRoot, 'src'))).toEqual([]);
   });
 
   it('flags a deep-import subpath of the package from anywhere under src/** (sabotage probe, not written to disk)', () => {
-    const found = bareLocationViolations(join(repoRoot, 'src'), [
+    const found = deepImportViolations(join(repoRoot, 'src'), [
       ['src/net/__boundary_probe_630_deepbare__.ts',
         "import { createClickHouseHttpClient } from '@altinity/clickhouse-http/src/client';\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_deepbare__'))).toBe(true);
+  });
+
+  it('flags a deep-import subpath even under src/net/** (deep imports stay forbidden everywhere, not just outside net)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_deepnet__.ts',
+        "import { chUrl } from '@altinity/clickhouse-http/url';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deepnet__'))).toBe(true);
+  });
+});
+
+// Issue #630 Phase 5 — Rule D's revised bare-specifier half (plan §8.2):
+// this phase's whole point is that SQL Browser language consumers (the
+// generic quoting/type-grammar/scanner) now import the package's pure
+// LANGUAGE exports directly, outside src/net/**, while the transport/client
+// surface remains net-only and every non-named-import access form stays
+// net-only too.
+describe('Rule D, revised bare-specifier half (issue #630 Phase 5) — outside src/net/**, only a named import of an approved pure-language export is allowed', () => {
+  it('the real src/** tree is clean under the revised policy', () => {
+    expect(packageNameShapeViolations(join(repoRoot, 'src'))).toEqual([]);
+  });
+
+  it('passes a named import of an approved pure-language export outside src/net/** (e.g. sqlString from src/core/**)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_language__.ts',
+        "import { sqlString } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_language__'))).toBe(false);
+  });
+
+  it('flags a named import of a transport/client export outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_core__.ts',
+        "import { createClickHouseHttpClient } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_core__'))).toBe(true);
+  });
+
+  it('flags a default import of the package outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_default__.ts',
+        "import Def from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_default__'))).toBe(true);
+  });
+
+  it('flags a namespace import of the package outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_namespace__.ts',
+        "import * as ns from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_namespace__'))).toBe(true);
+  });
+
+  it('flags a side-effect import of the package outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_sideeffect__.ts',
+        "import '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_sideeffect__'))).toBe(true);
+  });
+
+  it('flags a dynamic import of the package outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_dynamic__.ts',
+        "export async function f() { await import('@altinity/clickhouse-http'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_dynamic__'))).toBe(true);
+  });
+
+  it('flags a package re-export gateway outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_reexport__.ts',
+        "export { sqlString } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_reexport__'))).toBe(true);
+  });
+
+  it('passes any access form/name at all under src/net/** — net remains unrestricted by design', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_net_transport__.ts',
+        "import { createClickHouseHttpClient } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_net_transport__'))).toBe(false);
   });
 });
 
@@ -530,10 +652,16 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect([...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual(['packages/clickhouse-http/src']);
   });
 
-  it('declares Rule D (bare @altinity/clickhouse-http restricted to src/net/**, deep imports banned everywhere)', () => {
+  it('declares Rule D (deep imports banned everywhere; revised bare-specifier policy since issue #630 Phase 5)', () => {
     expect(checkerSource).toMatch(/CLICKHOUSE_HTTP_SPECIFIER/);
-    expect(checkerSource).toMatch(/may only be imported under src\/net\/\*\*/);
     expect(checkerSource).toMatch(/deep imports are forbidden everywhere/);
+    // Issue #630 Phase 5 — the revised bare-specifier half must still call
+    // the SAME shared real-parser helper this suite's own Rule D tests call,
+    // and still special-case src/net/** as unrestricted.
+    expect(checkerSource).toMatch(/from '\.\/lib\/check-legacy-owners\.mjs'/);
+    expect(checkerSource).toMatch(/findPackageImportUsages\(/);
+    expect(checkerSource).toMatch(/PHASE5_PACKAGE_LANGUAGE_EXPORTS/);
+    expect(checkerSource).toMatch(/relFile\.startsWith\('src\/net\/'\)/);
   });
 
   // Issue #630 Phase 3 — same drift bind, adapted to the shared-helper
@@ -566,5 +694,103 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
       'ProgressMetaColumn',
       'ExceptionFrame',
     ]);
+  });
+
+  // Issue #630 Phase 5 — same drift-bind convention for the two new
+  // former-owner rules this phase adds: the checker must still call the
+  // shared helper (not a reintroduced text scanner) over the exact owner
+  // file each rule protects.
+  it('delegates the Phase 5 SQL-quote former-owner rule to build/lib/check-legacy-owners.mjs', () => {
+    expect(checkerSource).toMatch(/findSqlQuoteOwnerViolations\(/);
+    expect(checkerSource).toMatch(/for \(const relFile of PHASE5_SQL_QUOTE_OWNER_FILES\)/);
+  });
+
+  it('delegates the Phase 5 killQuery-stopgap former-owner rule to build/lib/check-legacy-owners.mjs', () => {
+    expect(checkerSource).toMatch(/findKillStopgapOwnerViolations\(/);
+    expect(checkerSource).toMatch(/for \(const relFile of PHASE5_KILL_STOPGAP_OWNER_FILES\)/);
+  });
+
+  it('the shared helper still names the exact Phase 5 owner files and moved-name sets', () => {
+    expect([...PHASE5_SQL_QUOTE_OWNER_FILES]).toEqual(['src/core/format.ts']);
+    expect([...PHASE5_SQL_QUOTE_MOVED_NAMES]).toEqual(['sqlString', 'BARE_IDENT', 'quoteIdent', 'qualifyIdent']);
+    expect([...PHASE5_KILL_STOPGAP_OWNER_FILES]).toEqual(['packages/clickhouse-http/src/client.ts']);
+    expect([...PHASE5_KILL_STOPGAP_MOVED_NAMES]).toEqual(['quoteKillQueryId']);
+  });
+
+  it('declares the Phase 5 deleted-implementation-file existence check for all three moved modules', () => {
+    expect(checkerSource).toMatch(/PHASE5_DELETED_ROOT_FILES/);
+    expect(checkerSource).toMatch(/src\/core\/clickhouse-type\.ts/);
+    expect(checkerSource).toMatch(/src\/core\/sql-spans\.ts/);
+    expect(checkerSource).toMatch(/src\/core\/quoted-span\.ts/);
+  });
+});
+
+// Issue #630 Phase 5 — the moved implementation files must remain absent
+// from SQL Browser src/**; a path-existence check, exercised directly here
+// (mirroring the production checker's own mechanism) since there is no
+// "helper" to call for a plain fs.existsSync check.
+describe('the moved generic-grammar/scanner implementation files no longer exist under SQL Browser src/** (issue #630 Phase 5)', () => {
+  it.each([
+    'src/core/clickhouse-type.ts',
+    'src/core/sql-spans.ts',
+    'src/core/quoted-span.ts',
+  ])('%s does not exist', (relFile) => {
+    expect(existsSync(join(repoRoot, relFile))).toBe(false);
+  });
+});
+
+// Issue #630 Phase 5 — the former-owner rule for the SQL-quoting helpers,
+// exercised through the same shared helper the production checker calls.
+describe('Phase 5 SQL-quote former-owner rule — src/core/format.ts cannot regain sqlString/BARE_IDENT/quoteIdent/qualifyIdent', () => {
+  it('the real src/core/format.ts carries none of the moved declarations', () => {
+    const text = readFileSync(join(repoRoot, 'src/core/format.ts'), 'utf8');
+    expect(findSqlQuoteOwnerViolations(text, 'src/core/format.ts')).toEqual([]);
+  });
+
+  it('flags a re-added sqlString() function in format.ts (sabotage probe, not written to disk)', () => {
+    const probe = "export function sqlString(s) { return \"'\" + String(s) + \"'\"; }";
+    expect(findSqlQuoteOwnerViolations(probe, 'src/core/format.ts')).toEqual(['sqlString']);
+  });
+
+  it('flags a quoteIdent forwarding re-export in format.ts (sabotage probe, not written to disk)', () => {
+    const probe = "import { quoteIdent } from '@altinity/clickhouse-http';\nexport { quoteIdent };\n";
+    expect(findSqlQuoteOwnerViolations(probe, 'src/core/format.ts')).toEqual(['quoteIdent']);
+  });
+
+  it('flags a re-added private BARE_IDENT in format.ts (sabotage probe, not written to disk)', () => {
+    const probe = 'const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;';
+    expect(findSqlQuoteOwnerViolations(probe, 'src/core/format.ts')).toEqual(['BARE_IDENT']);
+  });
+
+  it('flags a re-added qualifyIdent wrapper delegating to the package implementation (sabotage probe, not written to disk)', () => {
+    const probe = `
+      import { qualifyIdent as packageQualifyIdent } from '@altinity/clickhouse-http';
+      export function qualifyIdent(...parts) { return packageQualifyIdent(...parts); }
+    `;
+    expect(findSqlQuoteOwnerViolations(probe, 'src/core/format.ts')).toEqual(['qualifyIdent']);
+  });
+
+  it('is scoped to format.ts only — the same source under another filename is out of scope', () => {
+    const probe = 'export function sqlString(s) { return s; }';
+    expect(findSqlQuoteOwnerViolations(probe, 'src/core/variable-options.ts')).toEqual([]);
+  });
+});
+
+// Issue #630 Phase 5 — the retired Phase-4 killQuery quoting stopgap must
+// not return to the package's own client.ts.
+describe('Phase 5 killQuery-stopgap former-owner rule — packages/clickhouse-http/src/client.ts cannot regain quoteKillQueryId', () => {
+  it('the real package client.ts carries no quoteKillQueryId declaration', () => {
+    const text = readFileSync(join(repoRoot, 'packages/clickhouse-http/src/client.ts'), 'utf8');
+    expect(findKillStopgapOwnerViolations(text, 'packages/clickhouse-http/src/client.ts')).toEqual([]);
+  });
+
+  it('flags a re-added quoteKillQueryId() function (sabotage probe, not written to disk)', () => {
+    const probe = "function quoteKillQueryId(queryId) { return \"'\" + queryId + \"'\"; }";
+    expect(findKillStopgapOwnerViolations(probe, 'packages/clickhouse-http/src/client.ts')).toEqual(['quoteKillQueryId']);
+  });
+
+  it('does not flag the sanctioned sqlString import/use (a different identifier)', () => {
+    const probe = "import { sqlString } from './sql-quote.js';\nconst x = sqlString('a');\n";
+    expect(findKillStopgapOwnerViolations(probe, 'packages/clickhouse-http/src/client.ts')).toEqual([]);
   });
 });

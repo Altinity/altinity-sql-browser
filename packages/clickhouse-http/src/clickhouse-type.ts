@@ -1,3 +1,14 @@
+// Issue #630 Phase 5 — moved verbatim from SQL Browser's `src/core/
+// clickhouse-type.ts` into `@altinity/clickhouse-http`. `isSupportedOptionScalar`
+// (and its private `SCALAR_NAME_RE`) did NOT move with the rest of this
+// module: that predicate is SQL Browser option/control POLICY (which scalar
+// families are eligible for an option-backed control), not generic ClickHouse
+// grammar, so it now lives in `src/core/param-type.ts` instead — see that
+// module. Everything else below is the package's one generic
+// AST/parser/canonicalization/wrapper/enum implementation; this package may
+// not import SQL Browser `src/**`, so `isSupportedOptionScalar` could not
+// have stayed here even as a thin wrapper.
+//
 // Pure parser and queries for ClickHouse type expressions (#238) — the single
 // recursive AST shared by declared `{name:Type}` parameters (param-type.js and
 // its consumers) and result-column types (KPI, Dashboard Filter helpers).
@@ -477,24 +488,6 @@ export function enumValues(node: TypeNode | null): string[] | null {
   return members && members.length ? members.map((m) => m.name) : null;
 }
 
-const SCALAR_NAME_RE = /^(?:String|FixedString|UUID|U?Int(?:8|16|32|64|128|256)|Decimal(?:32|64|128|256)?|Float(?:32|64)|Bool|Date|Date32|DateTime|DateTime64|Enum(?:8|16))$/;
-
-/**
- * Is `node` an ordinary supported scalar, seen through a *valid* wrapper
- * order? A semantically invalid order (`Nullable(LowCardinality(T))`) is
- * never classified as a supported scalar, even though its inner type would
- * otherwise qualify — see `analyzeTypeModifiers`. Pure.
- */
-export function isSupportedOptionScalar(node: TypeArg | null): boolean {
-  // `node` may structurally be a `LiteralArg` here (a Tuple member's value/
-  // label type is always a `TypeNode`, but a caller-general `TypeArg` result
-  // can, in principle, carry one) — `analyzeTypeModifiers` only ever acts
-  // meaningfully on a `TypeNode`; the cast documents that every real caller
-  // passes a type node.
-  const mods = analyzeTypeModifiers(node as TypeNode | null);
-  if (!mods.valid) return false;
-  return !!mods.valueType && SCALAR_NAME_RE.test(mods.valueType.name);
-}
 
 // ── Canonical formatting (for declaration-identity comparison) ───────────
 

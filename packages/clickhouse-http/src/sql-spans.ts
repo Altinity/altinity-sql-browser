@@ -1,3 +1,12 @@
+// Issue #630 Phase 5 — moved verbatim from SQL Browser's `src/core/sql-
+// spans.ts` into `@altinity/clickhouse-http`, re-exported through the
+// package's public "." surface (`scanSpans`/`Span`/`SpanKind`) because
+// surviving root SQL-analysis modules (sql-lex.ts, sql-split.ts,
+// param-scan.ts, type-display.ts, optional-blocks.ts, format.ts,
+// variable-options.ts) still need it, and because it is also this package's
+// own generic ClickHouse type grammar's tokenizer dependency
+// (clickhouse-type.ts).
+//
 // Canonical lexical span scanner for ClickHouse SQL text (#182). This is the
 // single authoritative core implementation of SQL lexical boundaries used by
 // *string-based application analysis* — statement splitting, parameter

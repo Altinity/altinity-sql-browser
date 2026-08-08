@@ -7,11 +7,15 @@
   <!-- The Dashboard viewer session (and the signals `effect` this harness uses
        to rebuild the bar on a commit) import the signals runtime as a bare
        specifier; the e2e server serves raw /src with no bundler, so map it to
-       the shipped ESM build (same as filter-source.html / editor.html). -->
+       the shipped ESM build (same as filter-source.html / editor.html).
+       #630 Phase 5: this graph also reaches core/param-type.js and
+       core/kpi.js, both of which now import the generic ClickHouse type
+       grammar as a bare `@altinity/clickhouse-http` specifier. -->
   <script type="importmap">
     {
       "imports": {
-        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
+        "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
       }
     }
   </script>

@@ -10,7 +10,9 @@
 import { h, s, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
-import { clamp, formatRows, formatBytes, formatCompressionRatio, qualifyIdent, truncate } from '../core/format.js';
+import { clamp, formatRows, formatBytes, formatCompressionRatio, truncate } from '../core/format.js';
+// Issue #630 Phase 5 — `qualifyIdent` now comes directly from `@altinity/clickhouse-http`.
+import { qualifyIdent } from '@altinity/clickhouse-http';
 import { columnRoles } from '../core/schema-cards.js';
 import type { ColumnRoleFlags } from '../core/schema-cards.js';
 import { compactType, outerTypeName } from '../core/type-display.js';

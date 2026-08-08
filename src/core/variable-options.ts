@@ -36,12 +36,16 @@
 // this a compiler and a reader rather than a scheduler with a dependency graph.
 
 import { splitStatements, leadingKeyword } from './sql-split.js';
-import { scanSpans } from './sql-spans.js';
-import { detectSqlFormat, detectSqlOutfile, sqlString, stripTrailingTrivia } from './format.js';
+import { detectSqlFormat, detectSqlOutfile, stripTrailingTrivia } from './format.js';
 import { scanParamDeclarations } from './param-scan.js';
 import { analysisView } from './param-pipeline.js';
 import { hasOptionalBlocks } from './optional-blocks.js';
-import { parseClickHouseType, analyzeTypeModifiers } from './clickhouse-type.js';
+// Issue #630 Phase 5 — `scanSpans` (the shared lexical scanner), `sqlString`
+// (SQL Browser's one string-literal quoter), and `parseClickHouseType`/
+// `analyzeTypeModifiers` (the generic type grammar) now come directly from
+// `@altinity/clickhouse-http`; the revised architecture Rule D allows these
+// pure-language imports outside `src/net/**`.
+import { scanSpans, sqlString, parseClickHouseType, analyzeTypeModifiers } from '@altinity/clickhouse-http';
 import { isCompoundParamType, multiSelectElementType } from './param-type.js';
 import type { DashboardVariable } from './dashboard-variables.types.js';
 import type {

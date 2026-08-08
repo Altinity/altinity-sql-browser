@@ -4,7 +4,10 @@
 import { batch } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
+import { formatRows } from '../core/format.js';
+// Issue #630 Phase 5 — `quoteIdent`/`qualifyIdent` (SQL Browser's one
+// identifier quoter/qualifier) now come directly from `@altinity/clickhouse-http`.
+import { quoteIdent, qualifyIdent } from '@altinity/clickhouse-http';
 import { compactType, INLINE_TYPE_MAX } from '../core/type-display.js';
 import { IDENT_MIME, SCHEMA_GRAPH_MIME, COLUMN_TYPE_MIME } from './dnd-mime.js';
 import { DBLCLICK_MS } from '../core/tree-click-arbiter.js';

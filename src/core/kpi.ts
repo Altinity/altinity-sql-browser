@@ -2,7 +2,9 @@
 // value; the saved-query Presentation Spec contributes display metadata only.
 
 import { isPlainObject } from './saved-query.js';
-import { namedTupleMembers, parseClickHouseType, unwrapValueTransparentWrappers } from './clickhouse-type.js';
+// Issue #630 Phase 5 — the generic type grammar now comes directly from
+// `@altinity/clickhouse-http`.
+import { namedTupleMembers, parseClickHouseType, unwrapValueTransparentWrappers } from '@altinity/clickhouse-http';
 import { resolveFieldConfig } from './field-config.js';
 import type { FieldPresentation } from './field-config.js';
 import type { DeltaPresentation, FieldConfig } from '../generated/json-schema.types.js';

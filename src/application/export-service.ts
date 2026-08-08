@@ -202,8 +202,8 @@ export interface ExportServiceDeps {
    *  `onAuthFailed` hook, this service already depends on `ctx()` directly
    *  (see above), so there's no separate hook to keep it ignorant of chCtx. */
   getToken(): Promise<string | null>;
-  /** SQL-string-quoting function `killQuery` needs (matches `core/format.js`'s
-   *  `sqlString`). */
+  /** SQL-string-quoting function `killQuery` needs (matches
+   *  `@altinity/clickhouse-http`'s `sqlString`, issue #630 Phase 5). */
   sqlString: (s: unknown) => string;
   /** Perf clock — export/script-row elapsed ms, matches app.ts's `now`. */
   now(): number;

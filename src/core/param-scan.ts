@@ -8,19 +8,14 @@
 //
 // Scoping matches the #134 product decision: placeholders inside '…' / "…" /
 // `…` literals and -- / # / block comments are skipped (via the shared
-// sql-spans.js scanner, also used by sql-split.js so tokenizing can't diverge).
+// scanner, also used by sql-split.js so tokenizing can't diverge).
+//
+// Issue #630 Phase 5 — the scanner (and its `Span` type) now come directly
+// from `@altinity/clickhouse-http`, the package's one scanner implementation
+// (moved verbatim from the former root `sql-spans.ts`) — no local narrowing
+// shim needed any more.
 
-import { scanSpans as _scanSpans } from './sql-spans.js';
-
-// `sql-spans.js` is unconverted (checkJs:false) — a thin typed wrapper over
-// the exact shape this file reads off each span (same convention
-// `optional-blocks.ts` uses for the same scanner).
-interface Span {
-  kind: 'code' | 'string' | 'quoted-ident' | 'comment';
-  start: number;
-  end: number;
-}
-const scanSpans: (text: string) => Iterable<Span> = _scanSpans;
+import { scanSpans } from '@altinity/clickhouse-http';
 
 // A parameter name is a bare SQL identifier; the type is a data-type expression
 // that starts with a letter (String, Nullable(String), Array(UInt8),
