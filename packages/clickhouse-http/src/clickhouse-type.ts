@@ -82,12 +82,14 @@ export interface EnumMember {
 }
 
 /** The full wrapper analysis `analyzeTypeModifiers` returns. `valueType` is
- *  pinned non-null here (matching every real caller — param-type.ts's own
- *  comment on this exact shape): the unwrap loop only ever steps into another
- *  `TypeNode`, so for a real (non-null) `node` it is always a real `TypeNode`.
- *  Calling this directly with a `null` node (only this module's own tests do)
- *  still returns a runtime `null` for `valueType` despite the declared type —
- *  see the cast at the return site below. */
+ *  pinned non-null here: the unwrap loop only ever steps into another
+ *  `TypeNode`, so for a real (non-null) `node` it is always a real
+ *  `TypeNode` — matching every real caller, including `param-type.ts`'s
+ *  (`analyzeTypeModifiers`'s own return-site comment below spells out the
+ *  one case, this module's own unit tests, that passes `null` directly).
+ *  Calling this directly with a `null` node still returns a runtime `null`
+ *  for `valueType` despite the declared type — see the cast at the return
+ *  site below. */
 export interface TypeModifiers {
   valueType: TypeNode;
   nullable: boolean;

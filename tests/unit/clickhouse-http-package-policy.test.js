@@ -57,6 +57,7 @@ import {
   findKillStopgapOwnerViolations,
   PHASE5_KILL_STOPGAP_OWNER_FILES,
   PHASE5_KILL_STOPGAP_MOVED_NAMES,
+  findDeepImportSpecifiers,
   findPackageImportUsages,
   PHASE5_PACKAGE_LANGUAGE_EXPORTS,
 } from '../../build/lib/check-legacy-owners.mjs';
@@ -156,21 +157,24 @@ function bareSpecifierViolations(dir, virtualFiles = []) {
   return found;
 }
 
-// Rule D mirror (deep-import half only — independently reimplemented, same
-// accepted-risk convention as Rules A-C above, since a plain specifier-text
-// check needs no real parser). The bare-specifier, name/shape-aware half
-// below (issue #630 Phase 5) is NOT independently reimplemented — it shares
-// `findPackageImportUsages` with the production checker instead, for the
-// same reason the Phase 3 legacy-owner rule stopped being a text scanner: a
-// specifier-text regex cannot tell which NAMES a named import binds.
+// Rule D mirror (deep-import half). NOT independently reimplemented as a
+// specifier-text regex — it shares `findDeepImportSpecifiers` with the
+// production checker, same reason as the bare-specifier half just below and
+// the Phase 3 legacy-owner rule before it: a hand-rolled regex scan stayed
+// vulnerable to comment-trivia bypasses (a comment sitting between `import`
+// and its call parens, or between the open paren and the specifier) that no
+// amount of pattern-widening could close, while a real parse resolves
+// comments as trivia by construction. Both halves of Rule D now call the
+// same shared real-parser helper module.
 const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
 function deepImportViolations(dir, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
     const relFile = relative(repoRoot, file).split(sep).join('/');
     const text = source ?? readFileSync(file, 'utf8');
-    for (const spec of extractSpecifiers(text)) {
-      if (spec.startsWith(`${CLICKHOUSE_HTTP_SPECIFIER}/`)) found.push(`${relFile} → ${spec}`);
+    if (!text.includes(CLICKHOUSE_HTTP_SPECIFIER)) continue; // cheap pre-filter before spawning the real parser, matching the production checker
+    for (const spec of findDeepImportSpecifiers(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+      found.push(`${relFile} → ${spec}`);
     }
   }
   return found;
@@ -328,6 +332,28 @@ describe('Rule D, deep-import half — the deep-import subpath form is forbidden
         "import { chUrl } from '@altinity/clickhouse-http/url';\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_deepnet__'))).toBe(true);
+  });
+
+  // Regression for a real escape found in review pass 2: the regex-based
+  // predecessor of this check required `\s*` (whitespace only) between
+  // `import` and `(`, and between `(` and the specifier delimiter. A block
+  // comment in either gap is not whitespace, so the specifier was never
+  // extracted at all — a real parse has no such gap to defeat, since
+  // comments are trivia to the grammar, never AST nodes.
+  it('flags a deep-import subpath with a block comment between "import" and its call parens (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_deepcomment1__.ts',
+        "export async function f() { await import/*comment*/('@altinity/clickhouse-http/src/client'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deepcomment1__'))).toBe(true);
+  });
+
+  it('flags a deep-import subpath with a block comment between the open paren and the specifier (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_deepcomment2__.ts',
+        "export async function f() { await import(/*comment*/'@altinity/clickhouse-http/src/client'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deepcomment2__'))).toBe(true);
   });
 });
 
@@ -720,6 +746,11 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/findPackageImportUsages\(/);
     expect(checkerSource).toMatch(/PHASE5_PACKAGE_LANGUAGE_EXPORTS/);
     expect(checkerSource).toMatch(/relFile\.startsWith\('src\/net\/'\)/);
+    // Review pass 2 — the deep-import half must ALSO call the shared
+    // real-parser helper, not the hand-rolled `extractSpecifiers` regex: a
+    // comment sitting between `import`/`export` and the specifier defeated
+    // that regex no matter how far its patterns were widened.
+    expect(checkerSource).toMatch(/findDeepImportSpecifiers\(/);
   });
 
   // Issue #630 Phase 3 — same drift bind, adapted to the shared-helper

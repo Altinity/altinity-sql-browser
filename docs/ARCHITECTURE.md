@@ -43,13 +43,24 @@ Dependency direction is strictly downward. Enforced mechanically by
   restricted to `src/net/**`, exactly as Phase 2 established; pure
   LANGUAGE APIs (SQL quoting, the generic type grammar, the shared
   scanner) may be imported directly by their real SQL Browser consumers
-  anywhere outside `src/net/**` too — but only as a plain named import of
-  an approved name; every other access form (default/namespace/
+  anywhere outside `src/net/**` too — but only as a plain VALUE named import
+  of an approved name; every other access form (default/namespace/
   side-effect/dynamic import, package re-export gateway) and every
   transport/protocol name stay `src/net/**`-only, no matter where the
   import site lives. This name/shape-aware half of the rule is a real
   TypeScript parse (`build/lib/check-legacy-owners.mjs`), not a specifier-
   text regex, because a regex cannot tell which names a named import binds.
+  The check is value-import-only: a whole `import type`/`export type`
+  declaration, or an individual `import { type X }` specifier, naming a
+  transport/protocol name is never flagged — it is erased before bundling
+  (esbuild's own `import type` elision), so it carries no runtime package
+  access even though the package's public surface exports transport types
+  (`ClickHouseHttpClient`, `ClickHouseHttpRequest`, …) alongside the
+  approved pure-language types (`Span`, `TypeNode`, `TypeModifiers`, …).
+  The deep-import-subpath half above has no such carve-out: it is
+  unconditional on `import type`, since the "only the package's `.` export
+  is public" contract applies to a type-only deep import exactly as much as
+  a value one.
 
 Two known, deliberate exceptions predate #276 and are out of its scope:
 `core/saved-io.ts` imports a type from `editor/spec-editor.types.js`, and

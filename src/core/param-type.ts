@@ -31,8 +31,12 @@ import {
 } from '@altinity/clickhouse-http';
 import type { TypeArg, TypeNode } from '@altinity/clickhouse-http';
 
-// An Array's single argument is always a type node, never a literal one (see
-// the `TypeArg` comment above) — this narrows that invariant for the
+// An Array's single argument is always a type node, never a literal one —
+// the package's clickhouse-type.ts documents the `TypeArg`/`LiteralArg`/
+// `TypeNode` discriminated union this narrows (a `LiteralArg` argument only
+// ever appears for a numeric-arg type constructor's own arity check —
+// `Decimal`'s precision/scale, `FixedString`'s length, `DateTime`'s
+// timezone — never for `Array`). This narrows that invariant for the
 // recursive `elem` projection below without inventing a new runtime state
 // (the check is always true for real data; it never changes behavior).
 function isTypeNode(arg: TypeArg): arg is TypeNode {

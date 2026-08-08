@@ -43,7 +43,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   shared scanner — a plain named import of an approved name only), while
   transport/protocol APIs (`createClickHouseHttpClient`, `chUrl`,
   `streamLines`, the response consumers, `ClickHouseError`) remain
-  `src/net/**`-only and deep imports remain forbidden everywhere; the
+  `src/net/**`-only for VALUE access — a whole `import type`/`export type`
+  or an individual `import { type X }` specifier naming one of them is
+  never flagged outside `src/net/**`, since it is erased before bundling
+  and carries no runtime package access — and deep imports remain
+  forbidden everywhere regardless of `import type`; the
   identifier/import-shape analysis reuses the existing real-TypeScript-parser
   mechanism (`build/lib/check-legacy-owners.mjs`, generalized from the
   Phase 3 legacy-owner rule) rather than a new hand-rolled scanner. The

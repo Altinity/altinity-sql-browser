@@ -243,6 +243,79 @@ export function findKillStopgapOwnerViolations(source, filename) {
   return findNamedIdentifierViolations(source, filename, PHASE5_KILL_STOPGAP_OWNER_FILES, PHASE5_KILL_STOPGAP_MOVED_NAMES);
 }
 
+// ── Revised Rule D: deep-import subpath detection ────────────────────────────
+
+/**
+ * Find every module-specifier string in `source` that names a DEEP subpath
+ * of `packageSpecifier` (`${packageSpecifier}/...`) — a real TypeScript
+ * parse, not a specifier-text regex. Unlike `findPackageImportUsages` below,
+ * this is intentionally unconditional on `import type`/type-only: the
+ * deep-import ban (only the package's `.` export is public) applies to a
+ * type-only deep import exactly as much as a value one, so there is no
+ * type-only carve-out to encode here.
+ *
+ * Covers every module-specifier-bearing form: a static `import ... from`
+ * (with or without a clause — including a bare side-effect `import 'pkg'`),
+ * a static `export ... from`, and a dynamic `import(...)` call — matching
+ * `findPackageImportUsages`'s own form coverage below. This function exists
+ * because a hand-rolled regex scan (`build/check-boundaries.mjs`'s retired
+ * `extractSpecifiers`) stayed vulnerable to comment-trivia bypasses no
+ * amount of further pattern-widening could close — e.g. a block comment
+ * sitting between the `import` keyword and its call parens, or between the
+ * open paren and the specifier itself — the exact class of lexical bypass
+ * the real parser is immune to by construction (comments are trivia, never
+ * AST nodes).
+ *
+ * The module specifier itself may be a plain string literal OR a
+ * no-substitution template literal (`` import(`pkg`) ``), for the same
+ * grammar reason `findPackageImportUsages` matches both kinds.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated (used only
+ *   for the virtual-file basename/grammar selection)
+ * @param {string} packageSpecifier the exact bare specifier whose deep
+ *   subpaths are forbidden
+ * @returns {string[]} every deep-subpath specifier text found (not deduped —
+ *   callers report one violation per occurrence, matching prior behavior)
+ */
+export function findDeepImportSpecifiers(source, filename, packageSpecifier) {
+  const prefix = `${packageSpecifier}/`;
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = [];
+    const deepSpecifierText = (node) => {
+      if (
+        !node
+        || (node.kind !== SyntaxKind.StringLiteral && node.kind !== SyntaxKind.NoSubstitutionTemplateLiteral)
+      ) return null;
+      return node.text.startsWith(prefix) ? node.text : null;
+    };
+    const walk = (node) => {
+      if (is.isImportDeclaration(node)) {
+        const spec = deepSpecifierText(node.moduleSpecifier);
+        if (spec) found.push(spec);
+      }
+      if (is.isExportDeclaration(node)) {
+        const spec = deepSpecifierText(node.moduleSpecifier);
+        if (spec) found.push(spec);
+      }
+      // Dynamic `import('pkg/deep')`: a CallExpression whose callee is the
+      // bare `import` keyword token, exactly as `findPackageImportUsages`
+      // recognizes it below.
+      if (
+        is.isCallExpression(node)
+        && node.expression
+        && node.expression.kind === SyntaxKind.ImportKeyword
+      ) {
+        const spec = deepSpecifierText(node.arguments[0]);
+        if (spec) found.push(spec);
+      }
+      node.forEachChild(walk);
+    };
+    walk(sourceFile);
+    return found;
+  });
+}
+
 // ── Revised Rule D: package import shape/name analysis ──────────────────────
 
 /**

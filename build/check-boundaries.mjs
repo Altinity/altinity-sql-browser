@@ -13,16 +13,22 @@
 // compile time. Extend RULES below in later phases rather than growing a
 // second script.
 //
-// Hand-rolled regex scan for the import-specifier rules: the codebase has no
-// exotic import syntax, so scanning for import/export specifiers is enough
-// and keeps those rules a zero-dependency, sub-second pretest step. The
-// exceptions are the former-owner rules and the revised package Rule D
-// below, which need identifier/import-shape-level (not specifier-text-level)
+// Hand-rolled regex scan for the internal src-layering rules (RULES below)
+// and the plain package-specifier bans (the @clickhouse/client-web ban, Rule
+// B's zero-bare-specifier check): the codebase has no exotic import syntax
+// there, so scanning for import/export specifiers is enough and keeps those
+// rules a zero-dependency, sub-second pretest step. The exceptions are the
+// former-owner rules and BOTH halves of the revised package Rule D below
+// (the deep-import-subpath ban and the bare-specifier name/shape check),
+// which need identifier/import-shape-level (not specifier-text-level)
 // detection and therefore delegate to a real TypeScript parse in
 // `build/lib/check-legacy-owners.mjs` — see that module for why textual
 // matching was retired there (issue #630 Phase 3), and why the same
 // real-parser mechanism (not a new hand-rolled scanner) was required again
-// for issue #630 Phase 5's revised Rule D.
+// for issue #630 Phase 5's revised Rule D, for both halves: a comment sitting
+// between `import`/`export` and the specifier defeats a regex (however far
+// its whitespace/delimiter patterns are widened) but is ordinary parser
+// trivia to a real parse.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,6 +40,7 @@ import {
   PHASE5_SQL_QUOTE_OWNER_FILES,
   findKillStopgapOwnerViolations,
   PHASE5_KILL_STOPGAP_OWNER_FILES,
+  findDeepImportSpecifiers,
   findPackageImportUsages,
   PHASE5_PACKAGE_LANGUAGE_EXPORTS,
 } from './lib/check-legacy-owners.mjs';
@@ -184,6 +191,10 @@ function collectFiles(target) {
 // identifier/brace/comma/whitespace characters between the keyword and
 // `from`, so it can't skip past a from-less import into a later statement's
 // clause, and `\b` keeps it off the word "import" inside an identifier.
+// Used only by the checks named in the comment above (internal src layering,
+// the @clickhouse/client-web ban, Rule B) — NEITHER half of Rule D's
+// `@altinity/clickhouse-http` check calls this anymore (both now delegate to
+// the real-parser helpers in `build/lib/check-legacy-owners.mjs`, below).
 //
 // Only the dynamic-import pattern also accepts a backtick-delimited
 // no-substitution template literal (`` import(`pkg`) ``): a static
@@ -191,9 +202,7 @@ function collectFiles(target) {
 // import's specifier must be a plain string literal per grammar — only a
 // dynamic `import(...)` call can take a template literal argument — so
 // widening the other three patterns to backticks would only ever match
-// syntax that can't occur. Without this, a deep-import subpath spelled
-// through a template literal (`` import(`@altinity/clickhouse-http/src/
-// client`) ``) silently escaped Rule D's deep-import half.
+// syntax that can't occur.
 const SPECIFIER_PATTERNS = [
   /\bimport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bexport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
@@ -338,15 +347,26 @@ if (fs.existsSync(PACKAGE_SRC_DIR)) {
 // Issue #630 Phase 2 — Rule D (revised Phase 5, plan §8.2): the deep-import
 // subpath form (`@altinity/clickhouse-http/...`) is forbidden EVERYWHERE
 // under src/** — only the package's "." export is public (contract A4).
-// This half stays a plain specifier-text check; it doesn't need to know
-// which names are imported.
+// This half is a real TypeScript parse (`findDeepImportSpecifiers`), not a
+// specifier-text regex: a hand-rolled scanner stayed vulnerable to
+// comment-trivia bypasses no amount of pattern-widening could close (e.g.
+// `import/*c*/('@altinity/clickhouse-http/src/client')` or
+// `import(/*c*/'@altinity/clickhouse-http/src/client')` never matched
+// `\bimport\s*\(\s*['"\`]` because a comment token isn't whitespace) — the
+// same real-parser mechanism the bare-specifier half below already needed,
+// now applied to both halves of Rule D. Deliberately unconditional on
+// `import type`: the deep-import ban applies to a type-only deep import
+// exactly as much as a value one (see `findDeepImportSpecifiers`'s own
+// comment).
 const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
 for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
   checkedFiles += 1;
   const source = fs.readFileSync(file, 'utf8');
-  for (const spec of extractSpecifiers(source)) {
-    if (spec.startsWith(`${CLICKHOUSE_HTTP_SPECIFIER}/`)) {
+  const mentionsPackage = source.includes(CLICKHOUSE_HTTP_SPECIFIER); // cheap pre-filter before spawning the real parser — a deep or bare specifier must contain this substring
+
+  if (mentionsPackage) {
+    for (const spec of findDeepImportSpecifiers(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http exposes only its "." export — deep imports are forbidden everywhere)`);
     }
   }
@@ -365,7 +385,7 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   // `src/net/**` every access form/name remains unrestricted, matching
   // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
   if (relFile.startsWith('src/net/')) continue;
-  if (!source.includes(CLICKHOUSE_HTTP_SPECIFIER)) continue; // cheap pre-filter before spawning the real parser
+  if (!mentionsPackage) continue;
   for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
     if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
     const label = usage.kind === 'named' ? `named import of '${usage.name}' (transport/protocol API)`
