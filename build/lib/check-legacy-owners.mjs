@@ -309,6 +309,18 @@ export function findDeepImportSpecifiers(source, filename, packageSpecifier) {
         const spec = deepSpecifierText(node.arguments[0]);
         if (spec) found.push(spec);
       }
+      // TypeScript's inline import-type expression — `type T =
+      // import('pkg/deep').Foo` or `typeof import('pkg/deep')` — is a FOURTH
+      // module-specifier-bearing form distinct from all three above (it is
+      // its own `ImportTypeNode`, never an ImportDeclaration/
+      // ExportDeclaration/dynamic-import CallExpression), so none of the
+      // three walks above ever visits it. The specifier lives one level
+      // deeper than the others: `node.argument` is a `LiteralTypeNode`, and
+      // `node.argument.literal` is the actual string/template literal.
+      if (is.isImportTypeNode(node)) {
+        const spec = deepSpecifierText(node.argument && node.argument.literal);
+        if (spec) found.push(spec);
+      }
       node.forEachChild(walk);
     };
     walk(sourceFile);
@@ -329,7 +341,19 @@ export function findDeepImportSpecifiers(source, filename, packageSpecifier) {
  *   - `{ kind: 'side-effect' }` — a bare `import 'pkg'` with no clause;
  *   - `{ kind: 'dynamic' }` — a dynamic `import('pkg')` call;
  *   - `{ kind: 'reexport-gateway' }` — `export { ... } from 'pkg'` or
- *     `export * from 'pkg'` (bypasses ever binding an import at all).
+ *     `export * from 'pkg'` (bypasses ever binding an import at all);
+ *   - `{ kind: 'import-type' }` — TypeScript's inline import-type expression,
+ *     `type T = import('pkg').Foo` or `typeof import('pkg')`. This is its
+ *     own `ImportTypeNode` grammar production, never an ImportDeclaration/
+ *     ExportDeclaration/dynamic-import CallExpression, so none of the other
+ *     branches below ever visits it — a real, previously-unhandled parser
+ *     gap, not a deliberate omission. Reported unconditionally, regardless
+ *     of which member it qualifies into (`import('pkg').Span` included): the
+ *     caller's per-name allowlist is specifically for a PLAIN named import
+ *     of an approved pure-language export, and an import-type expression is
+ *     a different access mechanism, not that form — narrowing this to
+ *     inspect the qualifier and allowlist it too would broaden the
+ *     documented contract, not just close the gap.
  * `import type`/`export type` declarations and individual type-only
  * specifiers (`import { type X }`) are reported on exactly the same terms as
  * their value counterparts — there is no type-only carve-out. A named
@@ -412,6 +436,14 @@ export function findPackageImportUsages(source, filename, packageSpecifier) {
         && isTargetSpecifier(node.arguments[0])
       ) {
         found.push({ kind: 'dynamic' });
+      }
+      // `type T = import('pkg').Foo` / `typeof import('pkg')`: an
+      // `ImportTypeNode` whose `argument` is a `LiteralTypeNode` wrapping the
+      // actual string/template literal — one level deeper than every other
+      // form above, and structurally distinct from all of them (see this
+      // function's own doc comment for why no other branch can reach it).
+      if (is.isImportTypeNode(node) && isTargetSpecifier(node.argument && node.argument.literal)) {
+        found.push({ kind: 'import-type' });
       }
       node.forEachChild(walk);
     };

@@ -387,7 +387,12 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   // exactly the same terms as a value one (see its own doc comment), so a
   // transport/protocol name stays `src/net/**`-only no matter how it is
   // referenced — matching the deep-import half above, which was already
-  // unconditional on `import type` for the identical reason. Inside
+  // unconditional on `import type` for the identical reason. This also
+  // covers TypeScript's inline import-type expression (`type T =
+  // import('pkg').Foo` / `typeof import('pkg')`) — a distinct grammar
+  // production none of the other forms' checks can reach, reported
+  // unconditionally rather than allowlisted by qualifier (see
+  // `findPackageImportUsages`'s own doc comment for why). Inside
   // `src/net/**` every access form/name remains unrestricted, matching
   // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
   if (relFile.startsWith('src/net/')) continue;
@@ -399,7 +404,8 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
         : usage.kind === 'namespace' ? 'namespace import'
           : usage.kind === 'side-effect' ? 'side-effect import'
             : usage.kind === 'dynamic' ? 'dynamic import'
-              : 'package re-export gateway';
+              : usage.kind === 'import-type' ? 'inline import-type expression'
+                : 'package re-export gateway';
     violations.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${label}) (issue #630 Phase 5: outside src/net/**, only a named import of an approved pure-language export is allowed — the transport/client surface and every other access form stay src/net/**-only)`);
   }
 }

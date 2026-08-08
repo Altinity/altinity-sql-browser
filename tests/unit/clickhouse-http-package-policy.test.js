@@ -355,6 +355,21 @@ describe('Rule D, deep-import half — the deep-import subpath form is forbidden
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_deepcomment2__'))).toBe(true);
   });
+
+  // Regression for a real escape found in ChatGPT's post-review advisory
+  // (not a formal review pass): TypeScript's inline import-type expression
+  // (`type T = import('pkg/deep').Foo`) is its own `ImportTypeNode` grammar
+  // production, structurally distinct from every form the checks above
+  // handle (ImportDeclaration/ExportDeclaration/dynamic-import
+  // CallExpression) — none of them ever visits it, so a deep-subpath
+  // reference spelled this way silently escaped the ban entirely.
+  it('flags a deep-import subpath spelled through an inline import-type expression (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_deepimporttype__.ts',
+        "type T = import('@altinity/clickhouse-http/src/client').ClickHouseHttpClient;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deepimporttype__'))).toBe(true);
+  });
 });
 
 // Issue #630 Phase 5 — Rule D's revised bare-specifier half (plan §8.2):
@@ -461,6 +476,41 @@ describe('Rule D, revised bare-specifier half (issue #630 Phase 5) — outside s
         "export type { ClickHouseError } from '@altinity/clickhouse-http';\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_exporttype__'))).toBe(true);
+  });
+
+  // Regression for a real escape found in ChatGPT's post-review advisory
+  // (not a formal review pass): TypeScript's inline import-type expression
+  // (`type T = import('pkg').Foo`, `typeof import('pkg')`) is its own
+  // `ImportTypeNode` grammar production — structurally distinct from every
+  // form the checks above handle — so neither of the three historical
+  // review passes' type-only fixes ever touched it. Reported unconditionally
+  // regardless of which member it qualifies into: even `import('pkg').Span`
+  // (a name that WOULD be allowed as a plain named import) must still be
+  // flagged here, because allowlisting a qualifier would broaden the
+  // documented contract (a plain named import) rather than just closing the
+  // gap — see `findPackageImportUsages`'s own doc comment.
+  it('flags an inline `import(...).Foo` import-type expression naming a transport export outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_importtypeexpr__.ts',
+        "type T = import('@altinity/clickhouse-http').ClickHouseHttpClient;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_importtypeexpr__'))).toBe(true);
+  });
+
+  it('flags an inline `import(...).Foo` import-type expression even for an approved language export name (allowlist is for plain named imports only)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_importtypeexprlang__.ts',
+        "type T = import('@altinity/clickhouse-http').Span;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_importtypeexprlang__'))).toBe(true);
+  });
+
+  it('flags a `typeof import(...)` import-type expression naming the package outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_typeofimport__.ts',
+        "type Pkg = typeof import('@altinity/clickhouse-http');\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_typeofimport__'))).toBe(true);
   });
 
   // The allowlist filter still applies to type-only named imports: a
