@@ -6,13 +6,12 @@
 // header for why this env-gate is mandatory, not optional.
 
 import { describe, it, expect } from 'vitest';
-import { ClickHouseError } from '@clickhouse/client-web';
 import { runCurrent } from './current-adapter.js';
 import { createOfficialConnection, runOfficial, officialAuthFor, type OfficialConnection } from './official-adapter.js';
 import { bridgeNdjsonProgress } from './progress-bridge.js';
 import { createQueryExecutionService } from '../../../src/application/query-execution-service.js';
 import { BASIC_USER_A } from './auth-fixtures.js';
-import type { ChCtx, RunQueryOptions, RunQueryResult } from '../../../src/net/ch-client.js';
+import type { QueryExecutionRequest } from '../../../src/application/query-execution-service.js';
 import type { SpikeCredential, SpikeRequest } from './types.js';
 
 // See live-precision.test.ts's header comment for why this reads `process`
@@ -36,39 +35,44 @@ function baseReq(overrides: Partial<SpikeRequest> = {}): SpikeRequest {
 
 /**
  * A SESSION-AWARE variant of `official-adapter.ts`'s own
- * `makeOfficialRunQueryShim` — that exported shim has no `session_id`
- * parameter at all (every deterministic scenario that needs one drives
- * `runOfficial` directly instead — see its own docstring), so a session-
- * carrying shim for the LIVE `SESSION_IS_LOCKED` proof below is written
- * locally rather than expanding `official-adapter.ts`'s public surface
- * outside this sub-task's declared file scope. Mirrors that function's own
- * throw/return contract EXACTLY (a ClickHouseError response classifies as
- * `{ error }`; any other rejection propagates as a throw, matching real
- * `runQuery`'s contract) so `QueryExecutionService`'s real, unmodified
- * `attemptStatement`/`SESSION_BUSY` retry logic runs unmodified against it —
+ * `makeOfficialQueryExecutionAdapter` — that adapter's `runText` has no
+ * `session_id` parameter at all (every deterministic scenario that needs one
+ * drives `runOfficial` directly instead — see its own docstring), so a
+ * session-carrying `QueryExecutionDeps['runText']` for the LIVE
+ * `SESSION_IS_LOCKED` proof below is written locally rather than expanding
+ * `official-adapter.ts`'s public surface outside this sub-task's declared
+ * file scope (#630 Phase 7, plan §19). Uses `exec()` +
+ * `FORMAT JSONStringsEachRowWithProgress` (the same Table-shaped bridge
+ * `official-adapter.ts`'s `runProgress` uses) rather than `command()` (unlike
+ * `runOfficialCommand` below) — this test's ONLY statement routed through it
+ * is `SELECT 1` (row-returning). Matching the new "package consumers throw"
+ * contract (#630 Phase 7 §6.5): a pre-header rejection (a `ClickHouseError`
+ * thrown by `exec()` itself), a mid-stream network failure, and an in-band
+ * `{"exception"}` line ALL propagate as a throw now, never a returned
+ * `{error}` — so `QueryExecutionService`'s real, unmodified
+ * `attemptStatement`/`SESSION_BUSY` retry logic runs unmodified against it,
  * never a reimplementation of that policy, only of the session_id plumbing
- * `makeOfficialRunQueryShim` doesn't carry.
+ * `makeOfficialQueryExecutionAdapter` doesn't carry.
  */
-function makeSessionAwareRunQueryShim(conn: OfficialConnection, credential: SpikeCredential, sessionId: string) {
-  return async function sessionAwareShim(_ctx: ChCtx, sql: string, o: RunQueryOptions = {}): Promise<RunQueryResult> {
+function makeSessionAwareRunText(conn: OfficialConnection, credential: SpikeCredential, sessionId: string): (request: QueryExecutionRequest) => Promise<string> {
+  return async function sessionAwareRunText(request: QueryExecutionRequest): Promise<string> {
+    const { query_id: queryId, ...nativeParams } = request.params || {};
     const auth = officialAuthFor(credential);
-    const fullSql = `${sql}\nFORMAT JSONStringsEachRowWithProgress`;
-    let res;
-    try {
-      res = await conn.client.exec({
-        query: fullSql, query_id: o.queryId, session_id: sessionId, abort_signal: o.signal, auth, query_params: o.params,
-      });
-    } catch (e) {
-      if (e instanceof ClickHouseError) return { error: e.message };
-      throw e; // network-level — propagate for attemptStatement's own classification
-    }
+    const fullSql = `${request.sql}\nFORMAT JSONStringsEachRowWithProgress`;
+    const res = await conn.client.exec({
+      query: fullSql,
+      query_id: queryId != null ? String(queryId) : undefined,
+      session_id: sessionId,
+      abort_signal: request.signal,
+      auth,
+      query_params: nativeParams,
+    });
     let sawException: string | null = null;
     await bridgeNdjsonProgress(res.stream, (line) => {
       if (line.exception) sawException = line.exception;
-      o.onLine?.(line);
     });
-    if (sawException) return { error: sawException };
-    return { streamed: true };
+    if (sawException) throw new Error(sawException);
+    return '';
   };
 }
 
@@ -90,30 +94,6 @@ function makeSessionAwareRunQueryShim(conn: OfficialConnection, credential: Spik
  */
 async function runOfficialCommand(conn: OfficialConnection, credential: SpikeCredential, sessionId: string | undefined, sql: string): Promise<void> {
   await conn.client.command({ query: sql, session_id: sessionId, auth: officialAuthFor(credential) });
-}
-
-/** #630 Phase 7 compile-compat bridge — NOT the real Checkpoint 2C spike
- *  retarget (plan §19: a dedicated later sub-task's job). Adapts the
- *  pre-Phase-7 `(ctx, sql, RunQueryOptions) => Promise<RunQueryResult>` shim
- *  shape `makeSessionAwareRunQueryShim` above already has to the new narrow
- *  `QueryExecutionDeps.runText` shape, preserving runtime behavior for the
- *  ONLY thing the test below routes through it — `executeScript`'s
- *  whole-body text mode. A `{error}` outcome now throws (matching the new
- *  "package consumers throw" contract). */
-function runTextViaShim(
-  shim: (ctx: ChCtx, sql: string, o?: RunQueryOptions) => Promise<RunQueryResult>,
-): (request: { sql: string; defaultFormat: string; params?: Record<string, string | number>; signal?: AbortSignal }) => Promise<string> {
-  return async (request) => {
-    const { query_id, ...rest } = request.params || {};
-    const out = await shim({} as ChCtx, request.sql, {
-      format: request.defaultFormat,
-      queryId: query_id != null ? String(query_id) : undefined,
-      params: rest,
-      signal: request.signal,
-    });
-    if (out.error != null) throw new Error(out.error);
-    return out.raw ?? '';
-  };
 }
 
 describe.skipIf(!CH_URL)('live sessions, temporary tables, and SESSION_IS_LOCKED against a real ClickHouse server (plan §23)', () => {
@@ -203,7 +183,7 @@ describe.skipIf(!CH_URL)('live sessions, temporary tables, and SESSION_IS_LOCKED
     const svc = createQueryExecutionService({
       // Never exercised — this test only calls `executeScript`.
       runProgress: async () => { throw new Error('runProgress not exercised by this spike helper'); },
-      runText: runTextViaShim(makeSessionAwareRunQueryShim(conn, BASIC_USER_A, sessionId)),
+      runText: makeSessionAwareRunText(conn, BASIC_USER_A, sessionId),
       cancel: async () => {},
       now: () => Date.now(),
       uid: (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
