@@ -10,18 +10,27 @@
 // the low-level request/dependency types owned by `@altinity/clickhouse-http`
 // (see that package's `client.ts`), not separate shapes: the package is the
 // single source of truth for the low-level request boundary. `ClickHouseTransport`
-// itself stays here — Phase 2 still has the SQL-Browser-local `streamLines`
+// itself stays here — Phase 2 still had the SQL-Browser-local `streamLines`
 // method, deferred to Phase 3.
 //
+// Issue #630 Phase 3 — `streamLines`/`StreamCallbacks` are GONE from this
+// contract: the progress-bearing JSON-lines read loop and its callback shape
+// are now package-owned (`@altinity/clickhouse-http`'s `streamLines`/
+// `StreamCallbacks`), consumed directly by `ch-client.ts`'s `runQuery`
+// (which is itself under `src/net/**`) rather than through this transport
+// seam. `ClickHouseTransport` is now a REQUEST/SEND-ONLY compatibility
+// adapter contract — `send()` is its only member. There is exactly one
+// stream implementation in the repository (the package's); this seam no
+// longer describes one.
+//
 // Ownership boundary: this file (and its implementation,
-// `clickhouse-http-transport.ts`) may depend only on `src/core` (the narrow
-// `StreamLine` type) and the `@altinity/clickhouse-http` public package export
-// — never on `ch-client.ts`, `oauth.ts`, `oauth-config.ts`, `src/application/`,
+// `clickhouse-http-transport.ts`) may depend only on `src/core` and the
+// `@altinity/clickhouse-http` public package export — never on
+// `ch-client.ts`, `oauth.ts`, `oauth-config.ts`, `src/application/`,
 // or `src/ui/`, even type-only. `build/check-boundaries.mjs` enforces this
 // mechanically (twin `RULES` entries for this file and the implementation file).
 
 import type { ClickHouseHttpClientDeps, ClickHouseHttpRequest } from '@altinity/clickhouse-http';
-import type { StreamLine } from '../core/stream.js';
 
 /** What the transport is allowed to see of the environment. Deliberately
  * excludes tokens, refresh, epochs, lifecycle callbacks: a transport
@@ -59,14 +68,10 @@ export type TransportRequest = ClickHouseHttpRequest;
 // gives raw bytes (`body`, hard invariant 17) and `clone()` for authedFetch's
 // non-destructive error-body peek for free.
 
-/** Callbacks driving `streamLines`' progress-bearing JSON-lines read loop. */
-export interface StreamCallbacks {
-  onLine?: (line: StreamLine) => void;
-  onChunk?: () => void;
-}
-
-/** The SQL Browser transport contract. In Phase 1 exactly one implementation
- * exists (`createHttpTransport`, `clickhouse-http-transport.ts`); a Phase 2
+/** The SQL Browser transport contract. Since #630 Phase 3, request/send is
+ * the ONLY thing this contract describes — see the module doc above for why
+ * `streamLines` is gone. In Phase 1 exactly one implementation exists
+ * (`createHttpTransport`, `clickhouse-http-transport.ts`); a Phase 2
  * official-client implementation (does not proceed without a new decision)
  * would satisfy the same contract. */
 export interface ClickHouseTransport {
@@ -87,11 +92,4 @@ export interface ClickHouseTransport {
    * or wrapping of either failure kind — that policy distinction is made by
    * the caller (`ch-client.ts`'s `authedFetch`), not here. */
   send(request: TransportRequest): Promise<Response>;
-  /** Supported-stream mechanics for the progress-bearing JSON-lines formats:
-   * drives the read loop (decode, line split, JSON.parse, trailing-buffer
-   * flush, malformed-line skip), invoking onLine per parsed object and
-   * onChunk per network chunk — byte-for-byte the loop currently inlined in
-   * runQuery. Consuming a body is a caller decision made AFTER policy has
-   * classified the settled response. */
-  streamLines(body: ReadableStream<Uint8Array>, cbs: StreamCallbacks): Promise<void>;
 }

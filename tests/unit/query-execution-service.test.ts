@@ -108,6 +108,34 @@ describe('executeRead', () => {
     expect(calls[0].sql).toBe('SELECT 1');
   });
 
+  // Issue #630 Phase 3 §11.8 — proves the package callback-order contract
+  // (every onLine for a chunk, THEN that chunk's onChunk) still produces the
+  // same visible row/progress state before the caller's own repaint hook
+  // fires — the real-time UI/result compatibility invariant this move must
+  // not disturb. `fakeRunQuery`'s behavior pulses onLine/onChunk synchronously
+  // in exactly the order the real production `runQuery` (via the package's
+  // `streamLines`) drives them.
+  it('reflects every line mutation from a chunk in the caller-owned result BEFORE that chunk\'s onChunk repaint fires', async () => {
+    const result = newResult('Table');
+    const onChunk = vi.fn(() => {
+      // At the moment onChunk fires, the result must already carry both the
+      // meta and the row line dispatched earlier in this same chunk.
+      expect(result.columns).toEqual([{ name: 'x', type: 'Int32' }]);
+      expect(result.rows).toEqual([[1]]);
+    });
+    const { fn } = fakeRunQuery([
+      (opts) => {
+        opts.onLine!({ meta: [{ name: 'x', type: 'Int32' }] });
+        opts.onLine!({ row: { x: 1 } });
+        opts.onChunk!();
+        return { streamed: true };
+      },
+    ]);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));
+    await svc.executeRead(result, { sql: 'SELECT 1', onChunk });
+    expect(onChunk).toHaveBeenCalledTimes(1);
+  });
+
   it('sets result.error from out.error', async () => {
     const { fn } = fakeRunQuery([() => ({ error: 'boom' })]);
     const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));

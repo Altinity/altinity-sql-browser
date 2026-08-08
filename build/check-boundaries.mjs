@@ -13,13 +13,21 @@
 // compile time. Extend RULES below in later phases rather than growing a
 // second script.
 //
-// Hand-rolled regex scan, no AST parser: the codebase has no exotic import
-// syntax, so scanning for import/export specifiers is enough and keeps this
-// a zero-dependency, sub-second pretest step.
+// Hand-rolled regex scan for the import-specifier rules: the codebase has no
+// exotic import syntax, so scanning for import/export specifiers is enough
+// and keeps those rules a zero-dependency, sub-second pretest step. The one
+// exception is the Phase 3 legacy-owner rule at the bottom, which needs
+// identifier-level (not specifier-level) detection and therefore delegates to
+// a real TypeScript parse in `build/lib/check-legacy-owners.mjs` — see that
+// module for why textual matching was retired there.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  findLegacyOwnerViolations,
+  PHASE3_LEGACY_OWNER_FILES,
+} from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
@@ -330,6 +338,27 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
     if (spec.startsWith(`${CLICKHOUSE_HTTP_SPECIFIER}/`)) {
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http exposes only its "." export — deep imports are forbidden everywhere)`);
     }
+  }
+}
+
+// Issue #630 Phase 3 — narrow legacy-owner regression rule: the former
+// production owners of the moved progress-stream/exception-parsing
+// primitives must not regain them — not as a second implementation and not
+// as a forwarding wrapper. The detection is a real TypeScript parse (an AST
+// identifier/property walk), shared with the unit suite via
+// `build/lib/check-legacy-owners.mjs`; see that module for the owner/name
+// lists and for why the earlier hand-rolled comment/string/template/regex
+// scanner was retired. Deliberately narrower than a repository-wide
+// function-name ban (Phase 8 owns broader anti-regrowth hardening): exactly
+// the three former owners, exactly the names Phase 3 moved out of them.
+// `applyStreamLine` (SQL Browser result policy, never moved) stays allowed:
+// it is a different identifier, and the AST walk matches exact names only.
+for (const relFile of PHASE3_LEGACY_OWNER_FILES) {
+  const file = path.join(repoRoot, relFile);
+  if (!fs.existsSync(file)) continue;
+  checkedFiles += 1;
+  for (const name of findLegacyOwnerViolations(fs.readFileSync(file, 'utf8'), relFile)) {
+    violations.push(`${relFile} → regained ${name} (issue #630 Phase 3: the moved stream/exception primitives are owned by @altinity/clickhouse-http — a former owner must not redeclare, re-import, or forward them)`);
   }
 }
 

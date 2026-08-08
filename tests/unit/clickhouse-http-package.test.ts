@@ -1,33 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
 import { chUrl, createClickHouseHttpClient } from '@altinity/clickhouse-http';
-import { createHttpTransport } from '../../src/net/clickhouse-http-transport.js';
 import { runTransportContractSuite } from './clickhouse-transport-contract.js';
 
 // Issue #630 Phase 2 — direct spec for the new @altinity/clickhouse-http
 // package, consumed exclusively through its public package name (contract
 // A4) — never a relative/deep import into its own src/**. The package units
 // under test (`chUrl`, `createClickHouseHttpClient`) come from the package's
-// public export; the shared contract-suite factory and the SQL Browser
-// compatibility adapter are separately imported test/production
-// infrastructure, which does not itself violate A4 (see the Phase 2 plan
-// §11's "package-test import wording" note).
+// public export; the shared contract-suite factory is separately imported
+// test infrastructure, which does not itself violate A4 (see the Phase 2
+// plan §11's "package-test import wording" note).
 
 // Register the exact same Phase-1 contract suite directly against the
 // package's own request() — not the compatibility adapter — so every
 // existing request invariant (native Response identity, exactly-one-Fetch,
 // exact SQL, opaque Authorization, live origin/fetch, abort behavior, raw
 // invalid UTF-8, …) is proven against the package implementation itself.
-// The suite's one stream-mechanics case is fulfilled by the root-local
-// `createHttpTransport().streamLines` (streamLines stays out of the package
-// until Phase 3) — this does not exercise "streamLines migrated early",
-// just reuses the untouched adapter for the one case the low-level package
-// client structurally has no equivalent for.
+//
+// Issue #630 Phase 3 — the suite is now REQUEST/SEND-ONLY (its one
+// stream-mechanics case moved out — see `clickhouse-transport-contract.ts`'s
+// header comment), so this registration no longer needs to construct the
+// SQL Browser compatibility adapter (`createHttpTransport`) at all merely to
+// borrow its `streamLines` for that case — it registers the package's
+// `request()` directly with nothing else attached.
 runTransportContractSuite('@altinity/clickhouse-http request()', (deps) => {
   const client = createClickHouseHttpClient(deps);
-  const legacy = createHttpTransport(deps);
   return {
     send: (request) => client.request(request),
-    streamLines: legacy.streamLines,
   };
 });
 

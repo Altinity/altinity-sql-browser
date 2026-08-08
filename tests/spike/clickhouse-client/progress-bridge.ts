@@ -6,7 +6,8 @@
 //   * incrementally decode this one newline-delimited UTF-8 JSON format;
 //   * retain an incomplete line between chunks;
 //   * parse complete JSON records;
-//   * emit existing `StreamLine` values (core/stream.js's own type);
+//   * emit `StreamLine` values (the canonical progress-line wire type,
+//     `@altinity/clickhouse-http`'s own — #630 Phase 3);
 //   * surface in-band exceptions;
 //   * reproduce current malformed/truncated handling.
 // It must NOT perform result normalization, parse arbitrary formats, consume
@@ -15,12 +16,24 @@
 // measured separately (plan §16 "Bridge size") for the ADR's deletion
 // estimate.
 //
-// It reuses `core/stream.ts`'s own `splitBuffer` — the exact buffering rule
-// `ch-client.ts`'s `runQuery` streaming branch applies inline — so this is
-// provably the SAME line-splitting behavior, not an independent reimplementation.
+// Issue #630 Phase 3 — this bridge used to reuse `core/stream.ts`'s own
+// `splitBuffer` (the exact buffering rule `ch-client.ts`'s `runQuery`
+// streaming branch applied inline) so its line-splitting was provably the
+// SAME behavior, not an independent reimplementation. `splitBuffer` moved
+// into the package's own `streamLines` loop as an inlined implementation
+// detail (no longer a separately exported/testable primitive — see that
+// module's doc comment), and this archived #585 spike harness is loaded
+// directly into a real browser via `browser-harness.ts`/`spike-server.mjs`'s
+// raw-ESM serving, so it deliberately does NOT reach for the package's
+// runtime export either (that would need its own browser import-map entry
+// for a rejected-decision spike with no production consumer). The
+// split/retain-remainder logic below is therefore spike-owned and
+// self-contained — byte-for-byte the same rule the production loop uses, just
+// duplicated here on purpose per the Phase 3 plan's own instruction (§13): do
+// not preserve `src/core/splitBuffer` or add a second production stream
+// helper merely to keep this archived harness importing it.
 
-import { splitBuffer } from '../../../src/core/stream.js';
-import type { StreamLine } from '../../../src/core/stream.js';
+import type { StreamLine } from '@altinity/clickhouse-http';
 
 export interface BridgeStats {
   /** Physical bytes read off the stream (compressed-agnostic — post fetch
@@ -54,9 +67,12 @@ export async function bridgeNdjsonProgress(
     stats.bytesRead += value.byteLength;
     stats.chunkCount += 1;
     buffer += decoder.decode(value, { stream: true });
-    const { lines, rest } = splitBuffer(buffer);
-    buffer = rest;
-    for (const line of lines) {
+    // Spike-owned split/retain-remainder (see the module doc above for why
+    // this duplicates, rather than imports, the production splitting rule).
+    const lines = buffer.split('\n');
+    buffer = lines[lines.length - 1];
+    for (const line of lines.slice(0, -1)) {
+      if (!line) continue;
       try {
         onLine(JSON.parse(line) as StreamLine);
       } catch {

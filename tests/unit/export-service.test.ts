@@ -92,6 +92,42 @@ function exceptionFrame(tag: string, message: string): string {
   return '\r\n__exception__\r\n' + tag + '\r\n' + message + '\n' + len + ' ' + tag + '\r\n__exception__\r\n';
 }
 
+// Issue #630 Phase 3 §11.9 — the same frame shape as `exceptionFrame` above,
+// but as raw bytes rather than a string: used to prove `streamToFile`'s
+// package-owned `findExceptionFrame` cutover is genuinely byte-safe (no
+// caller-side latin1 conversion, no TextDecoder over the clean prefix).
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+function exceptionFrameBytes(tag: string, message: string): Uint8Array {
+  const enc = new TextEncoder();
+  const msgBytes = enc.encode(message);
+  return concatBytes(
+    enc.encode('\r\n__exception__\r\n' + tag + '\r\n'),
+    msgBytes,
+    enc.encode('\n' + msgBytes.length + ' ' + tag + '\r\n__exception__\r\n'),
+  );
+}
+// A `FakeBody` yielding exact raw byte chunks, in order — needed for the
+// invalid-UTF-8 byte-boundary proof, which a string-per-chunk helper
+// (`streamBody`) is structurally incapable of producing.
+function streamBodyBytes(chunks: Uint8Array[]): FakeBody {
+  let i = 0;
+  return {
+    getReader: () => ({
+      read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true }),
+      releaseLock: () => {},
+    }),
+  };
+}
+function writtenBytes(chunks: Uint8Array[]): Uint8Array {
+  return concatBytes(...chunks);
+}
+
 interface FakeWritable { write(chunk: Uint8Array): Promise<void>; close(): Promise<void>; abort(): Promise<void> }
 interface FakeFileHandle { name: string; createWritable(): Promise<FakeWritable>; move?(name: string): Promise<void> }
 function fakeFileHandle(name = 'export.tsv'): { handle: FakeFileHandle; writable: FakeWritable; chunks: Uint8Array[] } {
@@ -461,6 +497,51 @@ describe('createExportService: exportDirect (issue #87)', () => {
     expect(writable.close).toHaveBeenCalledTimes(1);
     expect(writable.abort).not.toHaveBeenCalled();
     expect(h.hooks.toast).toHaveBeenCalledWith('Export incomplete — server error mid-stream: DB::Exception: Memory limit (total) exceeded');
+  });
+
+  // Issue #630 Phase 3 §11.9 — the real production `streamToFile` byte
+  // cutover: `findExceptionFrame` (package-owned) now takes the raw held
+  // bytes directly, with no caller-side latin1 conversion. Arbitrary invalid
+  // UTF-8 bytes in the clean prefix must reach the file byte-identical, and
+  // the trailing tagged frame's bytes must never be written.
+  it('excises a mid-stream exception frame after an invalid-UTF-8 clean prefix — the clean bytes are written byte-identical, never decoded', async () => {
+    const TAG = 'abcdef0123456789';
+    const { handle, writable, chunks } = fakeFileHandle();
+    const enc = new TextEncoder();
+    const cleanBytes = concatBytes(
+      enc.encode('col1\tcol2\n'),
+      new Uint8Array([0xff, 0xfe, 0x00]), // invalid UTF-8 on their own
+      enc.encode('\teuro=€\n'), // a valid multibyte UTF-8 sequence alongside them
+    );
+    const frameBytes = exceptionFrameBytes(TAG, 'DB::Exception: Memory limit (total) exceeded');
+    const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
+    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({
+      body: streamBodyBytes([cleanBytes, frameBytes]),
+      headers: { 'X-ClickHouse-Exception-Tag': TAG },
+    })));
+    await createExportService(h.deps).exportDirect('SELECT 1', 0);
+    expect(writtenBytes(chunks)).toEqual(cleanBytes);
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(writable.abort).not.toHaveBeenCalled();
+    expect(h.hooks.toast).toHaveBeenCalledWith('Export incomplete — server error mid-stream: DB::Exception: Memory limit (total) exceeded');
+  });
+
+  // Issue #630 Phase 3 §11.9 — a clean payload that merely CONTAINS
+  // marker-looking ordinary bytes (the literal `__exception__` text, e.g. a
+  // `system.query_log.exception` column value) but carries no real frame
+  // (no `X-ClickHouse-Exception-Tag` header, so the legacy no-tag path
+  // applies and finds no `Code: N. DB::Exception:` suffix either) must be
+  // written completely — `findExceptionFrame` returning null must not
+  // truncate anything.
+  it('writes a clean payload containing marker-looking ordinary bytes completely when findExceptionFrame finds no real frame', async () => {
+    const { handle, writable, chunks } = fakeFileHandle();
+    const data = 'note\t__exception__ mentioned in this row, not a real frame\n';
+    const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
+    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([data]) })));
+    await createExportService(h.deps).exportDirect('SELECT 1', 0);
+    expect(writtenText(chunks)).toBe(data);
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(h.hooks.toast).toHaveBeenCalledWith('Export complete');
   });
 
   it('a stream read failure mid-export closes (not aborts) the writable and renames it .partial', async () => {

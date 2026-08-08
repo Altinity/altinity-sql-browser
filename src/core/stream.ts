@@ -6,6 +6,22 @@
 //   { exception: "..." }           — server-side error
 // `applyStreamLine` folds one parsed object into a mutable result; keeping it
 // pure (no fetch, no DOM) makes the streaming parser fully unit-testable.
+//
+// Issue #630 Phase 3 — the canonical progress-line wire type (`StreamLine`)
+// and the generic stream/exception-parsing primitives (`splitBuffer`,
+// `parseExceptionText`, `ExceptionFrame`, `findExceptionFrame`) moved to
+// `@altinity/clickhouse-http` (`progress-stream.ts`/`exceptions.ts`) — they
+// are protocol mechanics, not SQL Browser result policy. `applyStreamLine`
+// stays here (SQL Browser owns row caps, progress/percentage folding, and
+// in-band exception -> result.error), but now accepts an open parsed-record
+// boundary (`Record<string, unknown>`) rather than re-declaring a second
+// copy of the package's wire-shape interface — see this module's doc on
+// `applyStreamLine` below for why. `parseErrorPos`/`isAuthExpiredBody`/
+// `authDeniedMessage` (editor caret + auth-expiry/denial UI policy) stay
+// here unchanged; `src/core/**` cannot import `src/net/**` or the package
+// (`build/check-boundaries.mjs` Rule for `src/core`), so this module never
+// imports the package type either — it narrows the fields it needs from the
+// open record instead.
 
 /** One streamed result column, as reported by a `{meta}` line. */
 export interface StreamColumn {
@@ -61,27 +77,23 @@ export function newResult(fmt: string, rowLimit = 0): StreamResult {
   };
 }
 
-/** One line of the streaming format — see the module doc above for the four
- *  shapes a line can take; unrecognized lines (no known key) are a no-op. */
-export interface StreamLine {
-  meta?: StreamColumn[];
-  row?: Record<string, unknown>;
-  progress?: {
-    total_rows_to_read?: unknown;
-    read_rows?: unknown;
-    read_bytes?: unknown;
-    elapsed_ns?: unknown;
-  };
-  exception?: string;
-  [k: string]: unknown;
-}
-
-/** Fold one parsed stream object into `result` (mutated in place). */
-export function applyStreamLine(json: StreamLine, result: StreamResult): StreamResult {
+/**
+ * Fold one parsed progress-stream record into `result` (mutated in place).
+ * `json` is deliberately typed as an open `Record<string, unknown>` boundary
+ * rather than a re-declared structural mirror of the package's `StreamLine`
+ * (issue #630 Phase 3 §8.1) — the canonical progress-line wire shape is
+ * package-owned (`@altinity/clickhouse-http`'s `StreamLine`); this module
+ * only needs to recognize the four property names a consumer must interpret
+ * (`meta`/`row`/`progress`/`exception`), narrowing each locally, without
+ * re-exporting a second declared wire contract. Unrecognized records are a
+ * no-op — the module doc above lists the four shapes a line can take.
+ */
+export function applyStreamLine(json: Record<string, unknown>, result: StreamResult): StreamResult {
   if (json.meta) {
-    result.columns = json.meta.map((m) => ({ name: m.name, type: m.type }));
+    const meta = json.meta as { name: string; type: string }[];
+    result.columns = meta.map((m) => ({ name: m.name, type: m.type }));
   } else if (json.row) {
-    const row = json.row;
+    const row = json.row as Record<string, unknown>;
     // At the cap: drop the row (block-boundary overage from `break`) and flag it.
     if (result.rowLimit > 0 && result.rows.length >= result.rowLimit) {
       result.capped = true;
@@ -89,7 +101,7 @@ export function applyStreamLine(json: StreamLine, result: StreamResult): StreamR
       result.rows.push(result.columns.map((c) => row[c.name]));
     }
   } else if (json.progress) {
-    const p = json.progress;
+    const p = json.progress as Record<string, unknown>;
     const total = Number(p.total_rows_to_read) || 0;
     const read = Number(p.read_rows) || 0;
     result.progress = {
@@ -100,89 +112,9 @@ export function applyStreamLine(json: StreamLine, result: StreamResult): StreamR
     };
     result.pct = total > 0 ? Math.min(100, (read / total) * 100) : 0;
   } else if (json.exception) {
-    result.error = json.exception;
+    result.error = json.exception as string;
   }
   return result;
-}
-
-/**
- * Split a streaming text buffer into complete lines plus the trailing
- * remainder. Returns { lines, rest } where `rest` is the (possibly partial)
- * last line to carry into the next chunk.
- */
-export function splitBuffer(buffer: string): { lines: string[]; rest: string } {
-  const lines = buffer.split('\n');
-  const rest = lines[lines.length - 1];
-  return { lines: lines.slice(0, -1).filter((l) => l !== ''), rest };
-}
-
-/**
- * Pull the ClickHouse exception out of an error response body. CH emits one
- * `{"exception": "..."}` line; fall back to the raw text if absent.
- */
-export function parseExceptionText(text: string): string {
-  for (const line of text.split('\n')) {
-    if (line.startsWith('{"exception"')) {
-      try {
-        return JSON.parse(line).exception;
-      } catch {
-        break;
-      }
-    }
-  }
-  return text;
-}
-
-const EXCEPTION_MARKER = '__exception__'; // ClickHouse WriteBufferFromHTTPServerResponse
-
-// Re-decode a latin1 (1 byte -> 1 char) slice back into proper UTF-8 text.
-const utf8 = (latin1: string): string => new TextDecoder().decode(Uint8Array.from(latin1, (c) => c.charCodeAt(0)));
-
-/** `findExceptionFrame`'s successful-match shape — the decoded/trimmed
- *  message plus how many leading bytes of the tail are real data. */
-export interface ExceptionFrame {
-  message: string;
-  cleanBytes: number;
-}
-
-/**
- * Find ClickHouse's mid-stream exception frame in the retained tail of a
- * streamed HTTP response. Once headers (HTTP 200) are sent, a later server-side
- * failure can't change the status — so ClickHouse (since v24.11) appends a
- * structured frame to the very end of the body instead:
- *   \r\n__exception__\r\n<tag>\r\n<message>\n<len> <tag>\r\n__exception__\r\n
- * `tag` is the 16-byte value ClickHouse ALSO sends up front in the
- * `X-ClickHouse-Exception-Tag` response header — read it from the response and
- * pass it here, so a server-chosen random tag (never present in real data by
- * accident) frames the match with zero false positives. `tailLatin1` is the
- * retained tail of the body decoded 1 byte -> 1 char (so a char index is a byte
- * offset, even though the message itself may be UTF-8 multibyte).
- *
- * Legacy fallback (`tag` falsy — servers < 24.11 send no tag header): scan for
- * the plain-text `\nCode: <n>. DB::Exception:` prefix instead (less precise
- * excision, but still detected + reported). Anchored to the *end* of the tail
- * (optionally one trailing newline) — a genuine unframed exception is always
- * the last thing ClickHouse writes, and anchoring avoids misidentifying real
- * exported data that happens to *contain* that text (e.g. a `system.query_log`
- * `exception` column) as a server failure, so long as more data follows it.
- *
- * Returns `{ message, cleanBytes }` (`cleanBytes` = the byte length of real
- * data before the frame — what the caller should keep) or `null` when the
- * tail carries no exception frame. Pure.
- */
-export function findExceptionFrame(tailLatin1: string | null | undefined, tag: string | null | undefined): ExceptionFrame | null {
-  const s = String(tailLatin1 || '');
-  if (tag) {
-    const open = '\r\n' + EXCEPTION_MARKER + '\r\n' + tag + '\r\n';
-    const start = s.indexOf(open);
-    if (start < 0) return null;
-    const body = s.slice(start + open.length);
-    const close = body.indexOf('\r\n' + EXCEPTION_MARKER + '\r\n'); // closing trailer
-    const raw = close < 0 ? body : body.slice(0, body.lastIndexOf('\n', close - 1));
-    return { message: utf8(raw).trim(), cleanBytes: start };
-  }
-  const m = /\nCode:\s*\d+\.\s*DB::Exception:[^\n]*\n?$/.exec(s);
-  return m ? { message: utf8(m[0]).trim(), cleanBytes: m.index } : null;
 }
 
 /**

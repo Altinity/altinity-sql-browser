@@ -142,7 +142,7 @@ test.describe('#630 Phase 1 — native Fetch/Response/cancellation characterizat
     expect(after.sendResponseOk).toBe(true);
   });
 
-  test('Scenario 6 — production streamLines() emits no callbacks after observable cancellation', async ({ page }, testInfo) => {
+  test('Scenario 6 — package streamLines() emits no callbacks after observable cancellation', async ({ page }, testInfo) => {
     test.setTimeout(30_000);
     const queryId = qid('post-header-abort-hold', testInfo.project.name);
     const result = await page.evaluate(

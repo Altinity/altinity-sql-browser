@@ -21,7 +21,14 @@
        #630 Phase 2 — the transport module now imports the bare
        `@altinity/clickhouse-http` package specifier. build/e2e-serve.mjs is a
        raw file server, not a bundler/resolver, so this import map resolves
-       that ONE bare specifier to the workspace source directly. -->
+       that ONE bare specifier to the workspace source directly.
+
+       #630 Phase 3 — Scenario 6 and Scenario 8 below no longer call
+       `transport.streamLines()` (the transport adapter no longer has a
+       stream member at all): they import the package's own `streamLines`
+       directly, exercising the SAME real production call path
+       `ch-client.ts`'s `runQuery` uses — no additional import-map entry is
+       needed, since the specifier is already mapped above. -->
   <script type="importmap">
     { "imports": {
       "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
@@ -29,6 +36,7 @@
   </script>
   <script type="module">
     import { createHttpTransport } from '/src/net/clickhouse-http-transport.js';
+    import { streamLines } from '@altinity/clickhouse-http';
 
     // A counting wrapper around the real, native `window.fetch` — the ONLY
     // thing under `deps.fetch()`. It never replaces/derives the signal,
@@ -201,11 +209,15 @@
       return { rejectedName, sendResponseStatus: resp.status, sendResponseOk: resp.ok };
     };
 
-    // ── Scenario 6 — no later streamLines() callbacks after cancellation
-    //    (bullet 12) — single call: the abort is scheduled from inside the
-    //    first onChunk callback, then the scenario itself waits out the
-    //    fixture's hold before returning, so the Node side never needs its
-    //    own timing loop. ───────────────────────────────────────────────────
+    // ── Scenario 6 — no later package streamLines() callbacks after
+    //    cancellation (bullet 12) — single call: the abort is scheduled from
+    //    inside the first onChunk callback, then the scenario itself waits
+    //    out the fixture's hold before returning, so the Node side never
+    //    needs its own timing loop. Requests through the production
+    //    `createHttpTransport().send()` adapter, then streams the resulting
+    //    native `resp.body` through the package's own `streamLines` — the
+    //    exact call path `ch-client.ts`'s `runQuery` uses in production
+    //    since Phase 3. ───────────────────────────────────────────────────
     window.__scenario6 = async function (baseUrl, queryId, holdMs) {
       const { transport } = makeTransport(baseUrl);
       const controller = new AbortController();
@@ -219,7 +231,7 @@
       const lines = [];
       let chunkCount = 0;
       let aborted = false;
-      const streamPromise = transport.streamLines(resp.body, {
+      const streamPromise = streamLines(resp.body, {
         onLine: (l) => lines.push(l),
         onChunk: () => {
           chunkCount++;
@@ -268,6 +280,8 @@
     };
 
     // ── Scenario 8 — abort after full completion has no effect (bullet 14) ─
+    //    Also uses the package's own `streamLines` (#630 Phase 3) — see
+    //    Scenario 6's comment above.
     window.__scenario8 = async function (baseUrl, queryId) {
       const { transport } = makeTransport(baseUrl);
       const controller = new AbortController();
@@ -280,7 +294,7 @@
       });
       const lines = [];
       let chunkCount = 0;
-      await transport.streamLines(resp.body, { onLine: (l) => lines.push(l), onChunk: () => { chunkCount++; } });
+      await streamLines(resp.body, { onLine: (l) => lines.push(l), onChunk: () => { chunkCount++; } });
       const linesBefore = lines.length;
       const chunksBefore = chunkCount;
       let abortThrew = false;

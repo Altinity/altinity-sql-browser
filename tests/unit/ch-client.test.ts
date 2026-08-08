@@ -3,9 +3,8 @@ import type { Mock } from 'vitest';
 import {
   chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
-import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
+import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable, StreamLine } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
-import type { StreamLine } from '../../src/core/stream.js';
 
 // --- Response stubs -------------------------------------------------------
 

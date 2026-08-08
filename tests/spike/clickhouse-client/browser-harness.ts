@@ -36,7 +36,12 @@
 import { createClient, ClickHouseError, isProgressRow, isRow, type ClickHouseClient } from '@clickhouse/client-web';
 import { bridgeNdjsonProgress } from './progress-bridge.js';
 import { IncrementalSha256 } from './normalize.js';
-import type { StreamLine } from '../../../src/core/stream.js';
+// Issue #630 Phase 3 — `StreamLine` is package-owned now
+// (`@altinity/clickhouse-http`); this is a type-only import (erased before
+// this module is served to the browser by `spike-server.mjs`'s type-strip —
+// see that file's header), so it needs no browser import-map entry, unlike
+// the genuine runtime `@clickhouse/client-web` import above.
+import type { StreamLine } from '@altinity/clickhouse-http';
 
 export interface SpikeAuth { username: string; password: string }
 

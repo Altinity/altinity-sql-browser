@@ -24,12 +24,14 @@ all bundled — see hard rule 4). Quality is held by tests.
    policy* (OAuth, `ChCtx`, auth/epoch/retry, product operations) goes in
    `src/net/`, with the fetch seam *injected*, never imported. Reusable,
    product-agnostic ClickHouse HTTP/Fetch mechanics (URL serialization, the
-   low-level request) may live in the first-party workspace package
-   `packages/clickhouse-http` (#630 Phase 2) instead — `src/net/**` is the
-   only place allowed to import it, by its exact public package name, never
-   a deep import into its `src/**`; the package itself may depend on
-   nothing under SQL Browser `src/**` and declares zero runtime
-   dependencies (mechanically enforced, `build/check-boundaries.mjs`).
+   low-level request, the progress-stream wire shape and its reader/decoder
+   loop, and HTTP exception-text/late-exception byte framing) may live in the
+   first-party workspace package `packages/clickhouse-http` (#630 Phase 2;
+   the progress-stream/exception primitives since Phase 3) instead —
+   `src/net/**` is the only place allowed to import it, by its exact public
+   package name, never a deep import into its `src/**`; the package itself
+   may depend on nothing under SQL Browser `src/**` and declares zero
+   runtime dependencies (mechanically enforced, `build/check-boundaries.mjs`).
    DOM rendering goes in `src/ui/` as functions that take the
    `app` controller — except the editor, which lives in `src/editor/` behind the
    injected editor seams (#143/#212): only `main.js` imports concrete adapters,

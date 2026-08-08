@@ -206,32 +206,45 @@ folded via the pure `applyStreamLine`; a single automatic token refresh on
 401/403/`token_verification_exception` (before `authConfirmed` flips, an auth
 failure signs out; after, it is a query error).
 
-### Transport seam (#585 Phase 1) and the clickhouse-http package (#630 Phase 2)
+### Transport seam (#585 Phase 1) and the clickhouse-http package (#630 Phases 2-3)
 
 Generic request construction and stream mechanics are split out behind a
 narrow contract: `net/clickhouse-transport.types.ts` declares
-`ClickHouseTransport` (`send`/`streamLines`), and re-exports its
-`TransportDeps`/`TransportRequest` types as aliases of
+`ClickHouseTransport` (`send()` only, since Phase 3 — see below), and
+re-exports its `TransportDeps`/`TransportRequest` types as aliases of
 `@altinity/clickhouse-http`'s own `ClickHouseHttpClientDeps`/
 `ClickHouseHttpRequest`. `net/clickhouse-http-transport.ts`'s
-`createHttpTransport` is now a temporary COMPATIBILITY ADAPTER: its `send()`
-delegates to the package's `createClickHouseHttpClient(deps).request()`
-instead of building the request itself; `streamLines()` (the
-progress-bearing JSON-lines read loop) stays local, deferred to a later
-phase. `chUrl`/`ChUrlOpts` and the low-level `request()`/Fetch invocation now
-live in `packages/clickhouse-http` — the repository's first npm workspace
-(private, zero runtime dependencies, zero bare-specifier imports in its own
-source, no dependency on SQL Browser `src/**`) — and are exposed only
-through its public `.` export; `ch-client.ts` re-exports `chUrl` from that
-package unchanged for its own existing importers. `build/check-boundaries.mjs`
-mechanically restricts the bare `@altinity/clickhouse-http` import to
-`src/net/**` and bans any deep import into the package's `src/**`
-implementation (from either side), so the network-layer boundary can't be
-bypassed just because the low-level mechanics moved behind a package name.
-`ch-client.ts` keeps every auth/epoch/retry/lifecycle policy (`authedFetch`),
-product operation, and `ChCtx` exactly as before; a module-private
-`transportFor(ctx)` delegates unconditionally to `createHttpTransport` —
-`ChCtx` gained no field and there is no runtime transport switch.
+`createHttpTransport` is now a temporary COMPATIBILITY ADAPTER, and is
+REQUEST/SEND-ONLY: its `send()` delegates to the package's
+`createClickHouseHttpClient(deps).request()` instead of building the request
+itself. `chUrl`/`ChUrlOpts`, the low-level `request()`/Fetch invocation, the
+progress-bearing JSON-lines read loop (`streamLines`, plus its
+`StreamLine`/`StreamCallbacks`/`ProgressMetaColumn` wire types), and the HTTP
+exception-text parser + byte-safe late-exception framer
+(`parseExceptionText`, `findExceptionFrame`/`ExceptionFrame`) all live in
+`packages/clickhouse-http` — the repository's first npm workspace (private,
+zero runtime dependencies, zero bare-specifier imports in its own source, no
+dependency on SQL Browser `src/**`) — exposed only through its public `.`
+export. `ch-client.ts` re-exports `chUrl`/`parseExceptionText`/
+`findExceptionFrame`/`StreamLine`/`StreamCallbacks`/`ChUrlOpts` from that
+package unchanged, as zero-logic migration plumbing for existing importers
+(including `export-service.ts`'s `findExceptionFrame` use, since
+`src/application/**` cannot import the package directly). `build/check-
+boundaries.mjs` mechanically restricts the bare `@altinity/clickhouse-http`
+import to `src/net/**`, bans any deep import into the package's `src/**`
+implementation (from either side), and — since Phase 3 — mechanically
+rejects the three former owners (the transport adapter, the transport
+contract, `core/stream.ts`) regaining any of the identifiers moved out of
+them, so the network-layer boundary can't be bypassed just because the
+mechanics moved behind a package name, and no duplicate stream/exception
+implementation can silently reappear. `ch-client.ts` keeps every
+auth/epoch/retry/lifecycle policy (`authedFetch`), product operation, and
+`ChCtx` exactly as before; a module-private `transportFor(ctx)` delegates
+unconditionally to `createHttpTransport` for the request/send half — `ChCtx`
+gained no field and there is no runtime transport switch. `runQuery` (itself
+under `src/net/**`) calls the package's `streamLines` directly rather than
+going through the transport seam, since there is exactly one production
+stream implementation and no longer a stream member on the contract.
 `authedFetch` snapshots the caller's `settings`/`params` synchronously at
 entry, before its first await, calling the package's `chUrl` directly as an
 eager pre-credential preflight (a malformed value throws synchronously here,
@@ -239,11 +252,27 @@ before any token read), as one centralized defense against a caller mutating
 those objects while a token/refresh await is pending — the low-level
 `request()`/`send()` API instead resolves this same failure as a REJECTED
 promise, since both remain `async`. A reusable contract-test-suite factory
-(`tests/unit/clickhouse-transport-contract.ts`) registers against both the
-package's own `request()` and the compatibility adapter; a future
-official-client implementation (ADR-0005 is Rejected; that cutover does not
-proceed without a new decision) would satisfy the same
-`ClickHouseTransport` contract and reuse the same suite.
+(`tests/unit/clickhouse-transport-contract.ts`) is now request/send-only and
+registers against both the package's own `request()` and the compatibility
+adapter; the progress-stream loop is tested once, directly against the
+package's `streamLines` (`tests/unit/clickhouse-http-progress-stream.test.ts`),
+and the exception parser/framer once, directly against the package
+(`tests/unit/clickhouse-http-exceptions.test.ts`) — deliberately not
+dual-registered, since there is intentionally only one production
+implementation of each. A future official-client implementation (ADR-0005 is
+Rejected; that cutover does not proceed without a new decision) would
+satisfy the same `ClickHouseTransport` contract and reuse the same suite.
+
+SQL Browser still owns everything downstream of the wire: `core/stream.ts`
+keeps `StreamResult`, row caps, progress/percentage folding, and in-band
+exception → `result.error` (`applyStreamLine`, now narrowed to accept an open
+`Record<string, unknown>` parsed-record boundary rather than re-declaring a
+second copy of the package's `StreamLine` wire type), plus editor-caret
+(`parseErrorPos`) and auth-expiry/denial (`isAuthExpiredBody`,
+`authDeniedMessage`) UI policy. `export-service.ts`'s `streamToFile` calls
+the package's byte-oriented `findExceptionFrame` directly on its retained
+`Uint8Array` holdback — the caller-side latin1 conversion it used to carry
+is gone, since the package computes byte-exact offsets internally.
 
 ## Build
 

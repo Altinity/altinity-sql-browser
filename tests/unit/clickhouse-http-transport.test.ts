@@ -1,16 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHttpTransport } from '../../src/net/clickhouse-http-transport.js';
-import type { StreamLine } from '../../src/core/stream.js';
 import { runTransportContractSuite } from './clickhouse-transport-contract.js';
 
 // Issue #585 Phase 1 — direct spec for the moved current-HTTP transport
 // implementation. Registers the shared contract suite once (this is the
 // ONLY implementation Phase 1 registers — see the suite factory's header
-// comment), then covers the mechanics the shared suite deliberately leaves
-// implementation-specific: the moved progress-line stream loop, including
-// two edge cases a manual move can silently alter (a split multi-byte UTF-8
-// character across byte chunks, and per-chunk onLine-before-onChunk
-// ordering).
+// comment).
 //
 // Issue #630 Phase 2 — `chUrl`'s own exact-URL-shape suite moved (not
 // duplicated) to tests/unit/clickhouse-http-package.test.ts, since `chUrl`
@@ -18,29 +13,19 @@ import { runTransportContractSuite } from './clickhouse-transport-contract.js';
 // COMPATIBILITY-ADAPTER-specific tests: `send()`'s exact request shape
 // (still true through delegation) and its promise-settlement shape on a
 // request-preparation failure.
+//
+// Issue #630 Phase 3 — the moved progress-line stream loop's own mechanics
+// tests (the split-multi-byte-UTF-8/onLine-before-onChunk-ordering cases this
+// file used to cover locally) moved to
+// `tests/unit/clickhouse-http-progress-stream.test.ts`, directly against the
+// package's own `streamLines` — this adapter no longer has a stream member
+// at all.
 
 runTransportContractSuite('createHttpTransport', createHttpTransport);
 
 function deps(fetchImpl: (url: string, init: RequestInit) => Response | Promise<Response>, origin = 'https://ch.example') {
   const fetchMock = vi.fn(fetchImpl);
   return { fetchMock, deps: { fetch: () => fetchMock as unknown as typeof fetch, origin: () => origin } };
-}
-
-// A stream that yields exactly the given byte chunks, in order — needed for
-// the UTF-8-split case, which a whole-string-per-chunk helper is structurally
-// incapable of producing.
-function byteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
-  let i = 0;
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (i < chunks.length) controller.enqueue(chunks[i++]);
-      else controller.close();
-    },
-  });
-}
-
-function stringStream(chunks: string[]): ReadableStream<Uint8Array> {
-  return byteStream(chunks.map((c) => new TextEncoder().encode(c)));
 }
 
 describe('createHttpTransport().send — exact request shape', () => {
@@ -91,97 +76,5 @@ describe('createHttpTransport().send — exact request shape', () => {
     }).not.toThrow();
     await expect(result).rejects.toBeInstanceOf(URIError);
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-});
-
-describe('createHttpTransport().streamLines — moved progress-line loop mechanics', () => {
-  it('reassembles a line split across multiple chunks', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const lines: StreamLine[] = [];
-    const stream = stringStream(['{"row":{"a"', ':"1"}}\n']);
-    await createHttpTransport(d).streamLines(stream, { onLine: (l) => lines.push(l) });
-    expect(lines).toEqual([{ row: { a: '1' } }]);
-  });
-
-  it('skips empty lines between JSON objects', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const lines: StreamLine[] = [];
-    const stream = stringStream(['\n\n{"row":{"a":"1"}}\n\n']);
-    await createHttpTransport(d).streamLines(stream, { onLine: (l) => lines.push(l) });
-    expect(lines).toEqual([{ row: { a: '1' } }]);
-  });
-
-  it('skips a malformed JSON line without throwing', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const lines: StreamLine[] = [];
-    const stream = stringStream(['not json\n', '{"row":{"a":"1"}}\n']);
-    await createHttpTransport(d).streamLines(stream, { onLine: (l) => lines.push(l) });
-    expect(lines).toEqual([{ row: { a: '1' } }]);
-  });
-
-  it('flushes a valid trailing partial line (no terminating newline)', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const lines: StreamLine[] = [];
-    const stream = stringStream(['{"row":{"a":"1"}}']);
-    await createHttpTransport(d).streamLines(stream, { onLine: (l) => lines.push(l) });
-    expect(lines).toEqual([{ row: { a: '1' } }]);
-  });
-
-  it('discards a malformed trailing partial line without throwing', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const lines: StreamLine[] = [];
-    const stream = stringStream(['{bad trailing']);
-    await expect(createHttpTransport(d).streamLines(stream, { onLine: (l) => lines.push(l) })).resolves.toBeUndefined();
-    expect(lines).toEqual([]);
-  });
-
-  it('delivers an in-band exception line via onLine (hard invariant 10 feed-through)', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const lines: StreamLine[] = [];
-    const stream = stringStream(['{"exception":"DB::Exception: boom"}\n']);
-    await createHttpTransport(d).streamLines(stream, { onLine: (l) => lines.push(l) });
-    expect(lines).toEqual([{ exception: 'DB::Exception: boom' }]);
-  });
-
-  it('calls onChunk once per network read', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    let chunkCalls = 0;
-    const stream = stringStream(['{"row":{}}\n', '{"row":{}}\n', '{"row":{}}\n']);
-    await createHttpTransport(d).streamLines(stream, { onChunk: () => { chunkCalls++; } });
-    expect(chunkCalls).toBe(3);
-  });
-
-  it('fires every onLine callback produced from a chunk before that chunk\'s onChunk (call-order)', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const order: string[] = [];
-    const stream = stringStream(['{"row":{"a":"1"}}\n{"row":{"a":"2"}}\n']);
-    await createHttpTransport(d).streamLines(stream, {
-      onLine: () => order.push('line'),
-      onChunk: () => order.push('chunk'),
-    });
-    expect(order).toEqual(['line', 'line', 'chunk']);
-  });
-
-  it('tolerates entirely missing onLine/onChunk callbacks', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const stream = stringStream(['{"row":{}}\n', '{"row":{}}']);
-    await expect(createHttpTransport(d).streamLines(stream, {})).resolves.toBeUndefined();
-  });
-
-  it('decodes a multi-byte UTF-8 character split across two byte chunks correctly (single TextDecoder with {stream:true})', async () => {
-    const { deps: d } = deps(() => new Response('ok'));
-    const line = '{"row":{"a":"€"}}\n'; // '€' — 3 UTF-8 bytes: 0xE2 0x82 0xAC
-    const fullBytes = new TextEncoder().encode(line);
-    let euroIdx = -1;
-    for (let i = 0; i < fullBytes.length - 2; i++) {
-      if (fullBytes[i] === 0xe2 && fullBytes[i + 1] === 0x82 && fullBytes[i + 2] === 0xac) { euroIdx = i; break; }
-    }
-    expect(euroIdx).toBeGreaterThan(-1);
-    const splitAt = euroIdx + 1; // split INSIDE the euro sign's 3-byte sequence
-    const chunk1 = fullBytes.slice(0, splitAt);
-    const chunk2 = fullBytes.slice(splitAt);
-    const lines: StreamLine[] = [];
-    await createHttpTransport(d).streamLines(byteStream([chunk1, chunk2]), { onLine: (l) => lines.push(l) });
-    expect((lines[0].row as Record<string, unknown>).a).toBe('€');
   });
 });
