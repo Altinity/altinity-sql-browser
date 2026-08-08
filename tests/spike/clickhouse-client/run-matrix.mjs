@@ -753,39 +753,50 @@ async function checkFormatTypeProbeCompiles() {
 //                                     mechanics the official client's own
 //                                     exec()/query()/command() supersede.
 //   rewrite-narrow-adapter          — credential-epoch fencing folded into
-//                                     authedFetch; a Phase 2 adapter would
+//                                     the now-deleted authedFetch (issue #630
+//                                     Phase 6 moved that wiring into
+//                                     authenticated-clickhouse-request.ts; a
+//                                     Phase 2 official-client adapter would
 //                                     reimplement this as its own narrow
-//                                     guard (this spike's guarded-fetch.ts is
-//                                     the working precedent).
-//   retain-temporary-bridge         — KILL QUERY + the frozen cancellation
-//                                     lease; plan §28 names both explicitly
-//                                     as their own bucket, not deletion-
-//                                     eligible.
+//                                     guard — this spike's guarded-fetch.ts
+//                                     is the working precedent). No current
+//                                     ch-client.ts symbol carries this bucket
+//                                     any more; the definition is kept for
+//                                     completeness.
+//   retain-temporary-bridge         — the frozen-lease KILL QUERY policy
+//                                     (killQueryWithLease); plan §28 named
+//                                     this its own bucket, not deletion-
+//                                     eligible — issue #630 Phase 7 kept it
+//                                     as a permanent SQL Browser policy seam,
+//                                     never a forwarding wrapper.
 //   unrelated-product-operation     — schema/lineage/reference-data/doc
 //                                     browsing: domain-specific SQL, never
 //                                     generic transport, unaffected by which
 //                                     client library issues the request.
 //
-// `chUrl` is NOT here — issue #585 Phase 1 (PR #621) moved it verbatim to
-// `clickhouse-http-transport.ts` (see HTTP_TRANSPORT_CLASSIFICATION below);
+// `chUrl` is NOT here — the package (`@altinity/clickhouse-http`) owns it;
 // ch-client.ts only re-exports the name (`export { chUrl };`, no `const`/
 // `function` keyword), which the boundary regex correctly does not match, so
 // keeping a `chUrl` entry here would itself be exactly the stale-
 // classification drift the mirror guard now catches.
+//
+// Issue #630 Phase 7 deleted `isCurrentEpoch`, `staleEpochAbort`,
+// `transportFor`, and `authedFetch` outright (their credential-epoch/generic-
+// transport wiring had already folded into `authenticated-clickhouse-
+// request.ts` in Phase 6, with no forwarding wrapper left in this file),
+// plus the ordinary mutable-context `killQuery`, `exportQuery`, and
+// `runQuery` (their SQL Browser policy moved to `query-execution-
+// service.ts`/`export-service.ts`, driving the package's request/response
+// primitives directly — Checkpoint 2D). None of those seven names has a
+// classification entry below any more — re-adding one without the symbol
+// itself returning would be exactly the stale-classification drift the
+// mirror guard now catches.
 const CH_CLIENT_CLASSIFICATION = {
   isAbort: 'delete-after-cutover',
   errMessage: 'delete-after-cutover',
-  isCurrentEpoch: 'rewrite-narrow-adapter',
-  staleEpochAbort: 'rewrite-narrow-adapter',
-  // Thin wiring from `ChCtx` to the current generic transport — no auth/
-  // epoch policy of its own (that stays in authedFetch); Phase 2 replaces
-  // `createHttpTransport` itself, so this wiring goes with it.
-  transportFor: 'delete-after-cutover',
-  authedFetch: 'rewrite-narrow-adapter',
   queryJson: 'delete-after-cutover',
   querySystemAware: 'unrelated-product-operation',
   loadDataLakeCatalogTableNames: 'unrelated-product-operation',
-  killQuery: 'retain-temporary-bridge',
   killQueryWithLease: 'retain-temporary-bridge',
   loadServerVersion: 'unrelated-product-operation',
   byUnderscoreThenName: 'unrelated-product-operation',
@@ -808,23 +819,20 @@ const CH_CLIENT_CLASSIFICATION = {
   loadDocRow: 'unrelated-product-operation',
   loadFunctionsDocColumns: 'unrelated-product-operation',
   loadFunctionDocRow: 'unrelated-product-operation',
-  exportQuery: 'delete-after-cutover',
-  runQuery: 'delete-after-cutover',
 };
 
-// src/net/clickhouse-http-transport.ts (issue #585 Phase 1, PR #621) — the
-// current custom generic-transport implementation `chUrl` moved into,
-// alongside the progress-line stream-read loop and the transport factory
-// itself. All three are generic HTTP/URL/stream mechanics (ADR-0005's
-// "Official client owns" column — request construction, response streaming),
-// never SQL Browser policy, so all three are `delete-after-cutover`: a Phase
-// 2 official-client-backed transport implementation replaces this whole
-// file, not just parts of it.
-const HTTP_TRANSPORT_CLASSIFICATION = {
-  chUrl: 'delete-after-cutover',
-  streamLines: 'delete-after-cutover',
-  createHttpTransport: 'delete-after-cutover',
-};
+// src/net/clickhouse-http-transport.ts — the custom generic-transport
+// implementation `chUrl`/`streamLines`/`createHttpTransport` moved into
+// after issue #585 Phase 1 — is DELETED as of issue #630 Phase 7
+// Checkpoint 2D: `killQueryWithLease` (above) was rewritten onto the
+// package's own stateless `createClickHouseHttpClient(...).killQuery(...)`,
+// which was that file's last remaining caller, and `src/net/clickhouse-
+// transport.types.ts` went with it. There is exactly one generic ClickHouse
+// HTTP transport implementation left in the repository now (the package's)
+// — no manifest entry, classification table, or disk read for either
+// deleted file remains in this module (see the real-tree regression in
+// run-matrix.test.ts proving `computeDeletionEstimate()` works with the
+// adapter file absent).
 
 // official-adapter.ts symbols that are SPIKE-TEST-ONLY harness scaffolding
 // (exist to let parity.test.ts hand-drive specific retry-safety scenarios),
@@ -832,7 +840,13 @@ const HTTP_TRANSPORT_CLASSIFICATION = {
 // test or orchestration code counted as production deletion". Excluded from
 // the "estimated official adapter executable LOC" figure entirely (not
 // classified into a bucket at all).
-const OFFICIAL_ADAPTER_TEST_ONLY_SYMBOLS = ['RefreshDrivenResult', 'runOfficialRefreshThenRetry', 'makeOfficialRunQueryShim'];
+// `makeOfficialRunQueryShim` (retired, issue #630 Phase 7 Checkpoint 2C's
+// spike portion) is replaced here by `makeOfficialQueryExecutionAdapter` —
+// same test-only-harness role (per its own doc comment, "the direct
+// replacement for the retired `makeOfficialRunQueryShim`"), just satisfying
+// `QueryExecutionService`'s narrow post-Phase-7 dependency shape instead of
+// the retiring `typeof runQuery`.
+const OFFICIAL_ADAPTER_TEST_ONLY_SYMBOLS = ['RefreshDrivenResult', 'runOfficialRefreshThenRetry', 'makeOfficialQueryExecutionAdapter'];
 // NOTE: `OfficialConnection` is deliberately NOT a key here (and never was
 // matched by either the old or the broadened boundary regex): it is an
 // `export interface`, and this function's boundary detection only ever
@@ -868,14 +882,13 @@ const OFFICIAL_ADAPTER_CORE_CLASSIFICATION = {
 export async function computeDeletionEstimate() {
   const chClientPath = join(repoRoot, 'src/net/ch-client.ts');
   const chClientBuckets = await classifyFunctionRanges(chClientPath, CH_CLIENT_CLASSIFICATION);
-  // Issue #585 Phase 1 (PR #621) moved chUrl/streamLines/createHttpTransport
-  // out of ch-client.ts into their own file — classified and measured
-  // separately here (its own manifest entry, own boundary set) so a drift in
-  // EITHER file fails loudly on its own, then combined into one
-  // `currentGenericLoc` below since both files together are the current
-  // generic-transport surface the deletion estimate is about.
-  const httpTransportPath = join(repoRoot, 'src/net/clickhouse-http-transport.ts');
-  const httpTransportBuckets = await classifyFunctionRanges(httpTransportPath, HTTP_TRANSPORT_CLASSIFICATION);
+  // Issue #630 Phase 7 deleted src/net/clickhouse-http-transport.ts (and its
+  // type seam) outright — there is no second file's `delete-after-cutover`
+  // bucket to classify/measure/combine any more. `currentGenericLoc` below
+  // is ch-client.ts's own bucket alone, and this function deliberately never
+  // opens `src/net/clickhouse-http-transport.ts` (confirmed absent by the
+  // real-tree regression in run-matrix.test.ts) — reintroducing a read of
+  // that path here would just reopen the ENOENT this checkpoint removed.
   const officialAdapterPath = join(spikeDir, 'official-adapter.ts');
   const officialBuckets = await classifyFunctionRanges(
     officialAdapterPath, OFFICIAL_ADAPTER_CORE_CLASSIFICATION, OFFICIAL_ADAPTER_TEST_ONLY_SYMBOLS,
@@ -886,8 +899,7 @@ export async function computeDeletionEstimate() {
   const streamTsLines = (await readFile(join(repoRoot, 'src/core/stream.ts'), 'utf8')).split('\n').length;
   const qesLines = (await readFile(join(repoRoot, 'src/application/query-execution-service.ts'), 'utf8')).split('\n').length;
 
-  const currentGenericLoc = (chClientBuckets['delete-after-cutover'] || 0)
-    + (httpTransportBuckets['delete-after-cutover'] || 0);
+  const currentGenericLoc = chClientBuckets['delete-after-cutover'] || 0;
   const estimatedOfficialAdapterLoc = officialBuckets['official-adapter-core'] || 0;
   const acceptedBridgeGuardLoc = bridgeLoc.physical + guardLoc.physical;
   const netExecutableDeletion = currentGenericLoc - estimatedOfficialAdapterLoc - acceptedBridgeGuardLoc;
@@ -899,7 +911,6 @@ export async function computeDeletionEstimate() {
     netExecutableDeletion,
     manifest: {
       'ch-client.ts': chClientBuckets,
-      'clickhouse-http-transport.ts': httpTransportBuckets,
       'official-adapter.ts (test-only harness excluded)': officialBuckets,
       'progress-bridge.ts (physical)': bridgeLoc.physical,
       'guarded-fetch.ts (physical)': guardLoc.physical,
@@ -917,29 +928,20 @@ export function renderDeletionEstimateMd(d) {
   L.push('# Future production deletion estimate (plan §28)');
   L.push('');
   L.push('Estimate only — actual deletion is Phase 4, per plan §4/§28. Computed mechanically');
-  L.push('from `src/net/ch-client.ts`\'s and `src/net/clickhouse-http-transport.ts`\'s own top-level');
-  L.push('symbol boundaries (see `run-matrix.mjs`\'s `CH_CLIENT_CLASSIFICATION`/');
-  L.push('`HTTP_TRANSPORT_CLASSIFICATION` data tables) so the figures stay tied to the real files');
-  L.push('rather than a hand-typed guess; an unclassified symbol, or a classification-table entry');
-  L.push('that no longer matches anything, makes `run-matrix.mjs` throw instead of silently under/');
-  L.push('over-counting in either direction.');
+  L.push('from `src/net/ch-client.ts`\'s own top-level symbol boundaries (see `run-matrix.mjs`\'s');
+  L.push('`CH_CLIENT_CLASSIFICATION` data table) so the figures stay tied to the real file rather');
+  L.push('than a hand-typed guess; an unclassified symbol, or a classification-table entry that no');
+  L.push('longer matches anything, makes `run-matrix.mjs` throw instead of silently under/over-');
+  L.push('counting in either direction. `src/net/clickhouse-http-transport.ts` — a second file this');
+  L.push('estimate used to classify separately and sum in (issue #585 Phase 1, PR #621) — is deleted');
+  L.push('as of issue #630 Phase 7 Checkpoint 2D; this estimate has no classification table, manifest');
+  L.push('entry, or disk read for it any more.');
   L.push('');
   L.push('## `src/net/ch-client.ts` buckets (physical LOC per top-level symbol range)');
   L.push('');
   L.push('| Bucket | Physical LOC |');
   L.push('|---|---|');
   for (const [bucket, loc] of Object.entries(d.manifest['ch-client.ts'])) L.push(`| \`${bucket}\` | ${loc} |`);
-  L.push('');
-  L.push('## `src/net/clickhouse-http-transport.ts` buckets (physical LOC per top-level symbol range)');
-  L.push('');
-  L.push('Issue #585 Phase 1 (PR #621) moved `chUrl` (+ the progress-line stream-read loop and the');
-  L.push('transport factory) out of `ch-client.ts` into this file — classified here on its own so it');
-  L.push('stays tied to the real file, then combined with `ch-client.ts`\'s own `delete-after-cutover`');
-  L.push('bucket below for the net-deletion formula.');
-  L.push('');
-  L.push('| Bucket | Physical LOC |');
-  L.push('|---|---|');
-  for (const [bucket, loc] of Object.entries(d.manifest['clickhouse-http-transport.ts'])) L.push(`| \`${bucket}\` | ${loc} |`);
   L.push('');
   L.push('## Other named responsibilities');
   L.push('');
@@ -960,13 +962,13 @@ export function renderDeletionEstimateMd(d) {
   L.push('official-adapter.ts terms, which inflated those two terms (concentrated in');
   L.push('comment-heavy functions like `runOfficial`) relative to the bridge/guard terms.');
   L.push('');
-  L.push('Issue #585 Phase 1 (PR #621) split the current generic-transport surface across TWO files —');
-  L.push('`ch-client.ts`\'s own `delete-after-cutover` bucket plus `clickhouse-http-transport.ts`\'s');
-  L.push('(where `chUrl` now lives); the formula\'s first term is their SUM, not `ch-client.ts` alone.');
+  L.push('Issue #630 Phase 7 Checkpoint 2D deleted `src/net/clickhouse-http-transport.ts` outright (the');
+  L.push('second file issue #585 Phase 1, PR #621 had split the generic-transport surface across) — the');
+  L.push('formula\'s first term is `ch-client.ts`\'s own `delete-after-cutover` bucket alone now, not a sum.');
   L.push('');
   L.push('```text');
   L.push('current generic physical LOC eligible for deletion');
-  L.push(`  = ${d.currentGenericLocEligibleForDeletion}   (ch-client.ts "delete-after-cutover" bucket + clickhouse-http-transport.ts "delete-after-cutover" bucket)`);
+  L.push(`  = ${d.currentGenericLocEligibleForDeletion}   (ch-client.ts "delete-after-cutover" bucket)`);
   L.push('- estimated official adapter physical LOC');
   L.push(`  = ${d.estimatedOfficialAdapterLoc}   (official-adapter.ts production-shaped core)`);
   L.push('- accepted narrow bridge/guard physical LOC');
@@ -977,22 +979,11 @@ export function renderDeletionEstimateMd(d) {
   L.push('');
   L.push(`Net deletion is ${d.positiveNetDeletion ? 'POSITIVE' : 'NOT positive'} — an Accepted ADR requires positive net deletion (plan §30 "Mark Accepted only if ... future net deletion is positive").`);
   L.push('');
-  if (!d.positiveNetDeletion) {
-    L.push('**Caveat on this specific measurement**: the `delete-after-cutover` bucket above is computed');
-    L.push('at WHOLE-FUNCTION granularity (a function is classified in full, never split). `authedFetch`');
-    L.push('(56 physical lines) is classified entirely as `rewrite-narrow-adapter` because it currently');
-    L.push('interleaves generic fetch/response mechanics with the narrow credential-epoch guard — a finer,');
-    L.push('sub-function split (out of scope for this mechanical pass) would likely move a meaningful');
-    L.push('fraction of those lines into `delete-after-cutover` instead, which would make the net figure');
-    L.push('less negative or positive. Reported as computed, not adjusted, so the ADR sees the real');
-    L.push('mechanical result and can decide whether a finer split is warranted before relying on it.');
-    L.push('');
-  }
   L.push('Buckets NOT counted toward deletion (retained, rewritten, or unrelated — each with exactly');
   L.push('one final owner, per plan §28 "no permanent dual generic transport"):');
   L.push('');
-  L.push('- `rewrite-narrow-adapter` — credential-epoch fencing folds into the official adapter\'s own request construction (this spike\'s `guarded-fetch.ts` is the working precedent).');
-  L.push('- `retain-temporary-bridge` — `KILL QUERY` + the frozen cancellation lease.');
+  L.push('- `rewrite-narrow-adapter` — credential-epoch fencing folds into the official adapter\'s own request construction (this spike\'s `guarded-fetch.ts` is the working precedent). No current `ch-client.ts` symbol carries this bucket (issue #630 Phase 7 deleted its former members, `isCurrentEpoch`/`staleEpochAbort`/`authedFetch`, outright); kept for definitional completeness.');
+  L.push('- `retain-temporary-bridge` — the frozen-lease `killQueryWithLease` policy (the ordinary mutable-context `killQuery` this bucket also used to cover was deleted outright in issue #630 Phase 7, with no forwarding wrapper).');
   L.push('- `unrelated-product-operation` — schema/lineage/reference-data/doc-browsing SQL: never generic transport.');
   L.push('- `retain-as-sql-browser-policy` — `src/core/stream.ts` (normalized outcome) and `src/application/query-execution-service.ts` (retry safety): both already isolated from ch-client.ts and untouched by transport choice.');
   L.push('');
