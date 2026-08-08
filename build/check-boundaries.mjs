@@ -13,13 +13,21 @@
 // compile time. Extend RULES below in later phases rather than growing a
 // second script.
 //
-// Hand-rolled regex scan, no AST parser: the codebase has no exotic import
-// syntax, so scanning for import/export specifiers is enough and keeps this
-// a zero-dependency, sub-second pretest step.
+// Hand-rolled regex scan for the import-specifier rules: the codebase has no
+// exotic import syntax, so scanning for import/export specifiers is enough
+// and keeps those rules a zero-dependency, sub-second pretest step. The one
+// exception is the Phase 3 legacy-owner rule at the bottom, which needs
+// identifier-level (not specifier-level) detection and therefore delegates to
+// a real TypeScript parse in `build/lib/check-legacy-owners.mjs` — see that
+// module for why textual matching was retired there.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  findLegacyOwnerViolations,
+  PHASE3_LEGACY_OWNER_FILES,
+} from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
@@ -335,288 +343,22 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 
 // Issue #630 Phase 3 — narrow legacy-owner regression rule: the former
 // production owners of the moved progress-stream/exception-parsing
-// primitives must not regain them. This mechanically rejects re-adding a
-// `streamLines` forwarding wrapper to the old transport adapter, a
-// `StreamCallbacks`/`streamLines` member to the transport contract, or a
-// `StreamLine`/`splitBuffer`/`parseExceptionText`/`ExceptionFrame`/
-// `findExceptionFrame` declaration to `core/stream.ts` — the "no duplicate
-// stream/error implementation remains" contract this phase requires.
-// Deliberately narrower than a repository-wide function-name ban (Phase 8
-// owns broader anti-regrowth hardening): this names exactly the three former
-// owners and the exact identifiers Phase 3 moved out of them.
-// `applyStreamLine` stays explicitly allowed (SQL Browser result policy,
-// never moved) — the word-boundary match below cannot mistake it for
-// `StreamLine` (no boundary between "apply" and "StreamLine", so `\bStreamLine\b`
-// never matches inside it).
-//
-// Comments are stripped by a small hand-rolled lexical scanner (matching
-// this file's existing regex-only, non-AST approach for everything else,
-// but comment-vs-string ambiguity needs real character-by-character state,
-// not a regex) before matching, so this rule flags only a real code
-// re-declaration/re-import — never this phase's own doc comments narrating
-// the move, and never a `/*`, `*/`, or `//` substring that only *looks*
-// like a comment delimiter because it sits inside a string, a template
-// literal, or a regex literal. A single alternation regex over the raw text
-// (the earlier approach) cannot tell those apart: `const marker = "/*";
-// export interface StreamLine {} const end = "*/";` reads as one big block
-// comment because the regex has no notion of "inside a string", silently
-// deleting the real `StreamLine` declaration between the two string
-// literals; likewise `const u = "https://example"; export function
-// streamLines() {}` reads the `//` inside the URL string as a line-comment
-// opener and deletes the real `streamLines` declaration that follows on the
-// same line; likewise `const re = /\/\//; export function streamLines() {}`
-// reads the second half of the regex literal's own escaped-slash-then-
-// closing-delimiter as a `//` line-comment opener and deletes the real
-// `streamLines` declaration that follows. All three are covered as
-// regression tests. The scanner below walks the source once, tracking
-// whether it is inside a single/double-quoted string or a template literal
-// (including nested `${ … }` substitutions, which are itself code and can
-// contain further strings/templates/comments/regexes) — only outside all of
-// those does a `//` or `/*` actually start a comment, and a lone `/` that
-// isn't a comment opener is resolved as regex-literal-open vs division by
-// `regexAllowedAfter` below before falling through to a plain character.
-//
-// Regex vs division is the classic JS tokenizer ambiguity (resolved by every
-// real engine from surrounding token context, e.g. Acorn's `exprAllowed`):
-// a `/` opens a regex literal when the last non-whitespace text already
-// emitted leaves a value *expected* next (an operator/punctuation, the
-// start of the file, or one of a short list of keywords like `return` or
-// `typeof`); it is division when a value has just been *produced* (a
-// closing `)`/`]`, a completed identifier/number that isn't one of those
-// keywords, or a just-closed string/template). `//`/`/*` immediately
-// following such a division `/` are still unconditionally comments — that
-// check runs first, above — so this only ever fires for a genuine regex
-// open.
-//
-// A closing `)` is *not* uniformly "a value was just produced": when it
-// closes the condition of an `if`/`while`/`for`, the grammar expects the
-// controlled *statement* next, which may itself open with a regex literal
-// (`if (true) /\//.test(x);`) — the same context every real tokenizer
-// tracks via a parenthesis-is-a-statement-header stack (e.g. Acorn/Esprima's
-// `exprAllowed` handling for keyword-controlled parens). Plain grouping/call
-// parens (`(read / total)`) still close on a produced value, so `/` right
-// after those is division. `stripComments` below pushes, for every `(` it
-// scans, whether the last word before it is one of those three keywords,
-// and pops that flag on the matching `)`, tracked in
-// `lastCloseParenIsControlFlow`.
-const REGEX_PRECEDING_WORDS = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
-  'throw', 'else', 'do', 'yield', 'await', 'case', 'default', 'extends',
-]);
-const CONTROL_FLOW_PAREN_WORDS = new Set(['if', 'while', 'for']);
-function precedingWord(out) {
-  let j = out.length - 1;
-  while (j >= 0 && /\s/.test(out[j])) j -= 1;
-  if (j < 0 || !/[\w$]/.test(out[j])) return null;
-  let k = j;
-  while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
-  return out.slice(k + 1, j + 1);
-}
-function regexAllowedAfter(out, lastCloseParenIsControlFlow) {
-  let j = out.length - 1;
-  while (j >= 0 && /\s/.test(out[j])) j -= 1;
-  if (j < 0) return true; // start of file/expression — a value is expected
-  const lastChar = out[j];
-  if (lastChar === ')') return lastCloseParenIsControlFlow;
-  if (lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
-  if (/[\w$]/.test(lastChar)) {
-    const word = precedingWord(out);
-    return word !== null && REGEX_PRECEDING_WORDS.has(word);
-  }
-  return true; // trailing operator/punctuation — a value is expected next
-}
-function stripComments(source) {
-  let out = '';
-  let i = 0;
-  const n = source.length;
-  // Stack of open template literals. Each entry is either the string
-  // 'template' (currently scanning raw template text, looking for a
-  // closing backtick or a `${` substitution start) or an object
-  // `{ type: 'expr', depth }` (currently scanning the code inside an open
-  // `${ … }`, tracking `{`/`}` nesting so an object literal inside the
-  // substitution doesn't get mistaken for the substitution's own closing
-  // brace).
-  const stack = [];
-  // Stack of booleans, one per currently-open `(`, pushed with whether the
-  // word immediately preceding that `(` was `if`/`while`/`for` — see
-  // `regexAllowedAfter`'s comment above. Popped on the matching `)`, whose
-  // value then feeds `lastCloseParenIsControlFlow` for the very next
-  // regex-vs-division decision.
-  const parenControlStack = [];
-  let lastCloseParenIsControlFlow = false;
-  while (i < n) {
-    const top = stack[stack.length - 1];
-    if (top === 'template') {
-      const c = source[i];
-      if (c === '\\') {
-        out += c;
-        i += 1;
-        if (i < n) {
-          out += source[i];
-          i += 1;
-        }
-        continue;
-      }
-      if (c === '`') {
-        out += c;
-        i += 1;
-        stack.pop();
-        continue;
-      }
-      if (c === '$' && source[i + 1] === '{') {
-        out += '${';
-        i += 2;
-        stack.push({ type: 'expr', depth: 0 });
-        continue;
-      }
-      out += c;
-      i += 1;
-      continue;
-    }
-    // Code-scanning mode: either top-level (stack empty) or inside a
-    // template's `${ … }` substitution (top.type === 'expr').
-    const c = source[i];
-    const c2 = source[i + 1];
-    if (c === '/' && c2 === '/') {
-      while (i < n && source[i] !== '\n') i += 1;
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
-    }
-    if (c === '/' && regexAllowedAfter(out, lastCloseParenIsControlFlow)) {
-      // Regex-literal open: consume through the matching unescaped closing
-      // `/` (an unescaped `/` inside a `[...]` character class does not
-      // close it — regex character classes don't need `/` escaped), then
-      // any trailing flag letters, and append the whole literal verbatim —
-      // exactly like the string-literal branch above preserves its content.
-      let j = i + 1;
-      let inClass = false;
-      while (j < n) {
-        const cj = source[j];
-        if (cj === '\\') {
-          j += 2;
-          continue;
-        }
-        if (cj === '\n') break; // unterminated — bail without consuming the newline
-        if (cj === '[') {
-          inClass = true;
-          j += 1;
-          continue;
-        }
-        if (cj === ']') {
-          inClass = false;
-          j += 1;
-          continue;
-        }
-        if (cj === '/' && !inClass) {
-          j += 1;
-          break;
-        }
-        j += 1;
-      }
-      while (j < n && /[a-zA-Z]/.test(source[j])) j += 1; // flags
-      out += source.slice(i, j);
-      i = j;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      const quote = c;
-      out += c;
-      i += 1;
-      while (i < n && source[i] !== quote) {
-        if (source[i] === '\\') {
-          out += source[i];
-          i += 1;
-          if (i < n) {
-            out += source[i];
-            i += 1;
-          }
-          continue;
-        }
-        out += source[i];
-        i += 1;
-      }
-      if (i < n) {
-        out += source[i];
-        i += 1;
-      }
-      continue;
-    }
-    if (c === '`') {
-      out += c;
-      i += 1;
-      stack.push('template');
-      continue;
-    }
-    if (top && top.type === 'expr') {
-      if (c === '{') {
-        top.depth += 1;
-        out += c;
-        i += 1;
-        continue;
-      }
-      if (c === '}') {
-        if (top.depth === 0) {
-          out += c;
-          i += 1;
-          stack.pop();
-          continue;
-        }
-        top.depth -= 1;
-        out += c;
-        i += 1;
-        continue;
-      }
-    }
-    if (c === '(') {
-      const word = precedingWord(out);
-      parenControlStack.push(word !== null && CONTROL_FLOW_PAREN_WORDS.has(word));
-      out += c;
-      i += 1;
-      continue;
-    }
-    if (c === ')') {
-      lastCloseParenIsControlFlow = parenControlStack.length > 0 ? parenControlStack.pop() : false;
-      out += c;
-      i += 1;
-      continue;
-    }
-    out += c;
-    i += 1;
-  }
-  return out;
-}
-const PHASE3_LEGACY_OWNER_RULES = [
-  {
-    file: 'src/net/clickhouse-http-transport.ts',
-    forbiddenWords: ['streamLines'],
-    why: 'issue #630 Phase 3: the transport adapter must not regain a streamLines implementation/member — the package is the one stream owner',
-  },
-  {
-    file: 'src/net/clickhouse-transport.types.ts',
-    forbiddenWords: ['StreamCallbacks', 'streamLines'],
-    why: 'issue #630 Phase 3: the transport contract must not regain StreamCallbacks or a streamLines member',
-  },
-  {
-    file: 'src/core/stream.ts',
-    forbiddenWords: ['StreamLine', 'splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame'],
-    why: 'issue #630 Phase 3: core/stream.ts must not regain the package-owned StreamLine/splitBuffer/parseExceptionText/ExceptionFrame/findExceptionFrame declarations',
-  },
-];
-for (const rule of PHASE3_LEGACY_OWNER_RULES) {
-  const file = path.join(repoRoot, rule.file);
+// primitives must not regain them — not as a second implementation and not
+// as a forwarding wrapper. The detection is a real TypeScript parse (an AST
+// identifier/property walk), shared with the unit suite via
+// `build/lib/check-legacy-owners.mjs`; see that module for the owner/name
+// lists and for why the earlier hand-rolled comment/string/template/regex
+// scanner was retired. Deliberately narrower than a repository-wide
+// function-name ban (Phase 8 owns broader anti-regrowth hardening): exactly
+// the three former owners, exactly the names Phase 3 moved out of them.
+// `applyStreamLine` (SQL Browser result policy, never moved) stays allowed:
+// it is a different identifier, and the AST walk matches exact names only.
+for (const relFile of PHASE3_LEGACY_OWNER_FILES) {
+  const file = path.join(repoRoot, relFile);
   if (!fs.existsSync(file)) continue;
   checkedFiles += 1;
-  const code = stripComments(fs.readFileSync(file, 'utf8'));
-  for (const word of rule.forbiddenWords) {
-    const re = new RegExp(`\\b${word}\\b`);
-    if (re.test(code)) {
-      violations.push(`${rule.file} → regained ${word} (${rule.why})`);
-    }
+  for (const name of findLegacyOwnerViolations(fs.readFileSync(file, 'utf8'), relFile)) {
+    violations.push(`${relFile} → regained ${name} (issue #630 Phase 3: the moved stream/exception primitives are owned by @altinity/clickhouse-http — a former owner must not redeclare, re-import, or forward them)`);
   }
 }
 

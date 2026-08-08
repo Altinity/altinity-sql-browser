@@ -14,18 +14,28 @@
 // progress-stream/exception-parsing primitives
 // (`src/net/clickhouse-http-transport.ts`, `src/net/clickhouse-transport.
 // types.ts`, `src/core/stream.ts`) must not regain
-// `streamLines`/`StreamCallbacks`/`StreamLine`/`splitBuffer`/
-// `parseExceptionText`/`ExceptionFrame`/`findExceptionFrame`. Same
-// independent-scanner convention as the Phase 2 rules above — this file's
-// own `stripComments`/word-boundary logic is a fresh reimplementation, not an
-// import of `build/check-boundaries.mjs`'s own copy — and the drift-binding
-// describe block at the bottom is extended to cover this rule too.
+// `streamLines`/`StreamCallbacks`/`StreamLine`/`ProgressMetaColumn`/
+// `splitBuffer`/`parseExceptionText`/`ExceptionFrame`/`findExceptionFrame`.
+// UNLIKE the Phase 2 rules above, this rule is NOT independently
+// reimplemented here: three review passes each found a real lexical bypass
+// in the hand-rolled comment/string/template/regex scanner this file and the
+// checker used to duplicate, so both now import the ONE pure helper,
+// `build/lib/check-legacy-owners.mjs` (a real TypeScript parse + AST
+// identifier/property walk — importing it runs no top-level check). These
+// tests exercise that helper's contract; the drift-binding describe block at
+// the bottom confirms `build/check-boundaries.mjs` still calls the same
+// helper over the same owner files.
 
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
+import {
+  findLegacyOwnerViolations,
+  PHASE3_LEGACY_OWNER_FILES,
+  PHASE3_MOVED_NAMES,
+} from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
@@ -288,218 +298,28 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
   });
 });
 
-// Issue #630 Phase 3 — independent reimplementation of the narrow
-// legacy-owner rule (comments stripped, then a bare word-boundary check per
-// forbidden identifier — see build/check-boundaries.mjs's own comment for
-// why `applyStreamLine` can never false-positive against `StreamLine`). A
-// hand-rolled lexical scanner, not a regex — see the production checker's
-// own comment for why a naive `/\*[\s\S]*?\*\/|\/\/.*/` alternation is
-// fooled by `/*`/`*/`/`//` substrings that only look like comment
-// delimiters because they sit inside a string or template literal (e.g.
-// `const marker = "/*"; export interface StreamLine {} const end = "*/";`
-// or `const u = "https://example"; export function streamLines() {}`).
-// This mirror must stay lexically identical to the production scanner —
-// see its comment for the walk-through.
-const REGEX_PRECEDING_WORDS = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
-  'throw', 'else', 'do', 'yield', 'await', 'case', 'default', 'extends',
-]);
-const CONTROL_FLOW_PAREN_WORDS = new Set(['if', 'while', 'for']);
-function precedingWord(out) {
-  let j = out.length - 1;
-  while (j >= 0 && /\s/.test(out[j])) j -= 1;
-  if (j < 0 || !/[\w$]/.test(out[j])) return null;
-  let k = j;
-  while (k >= 0 && /[\w$]/.test(out[k])) k -= 1;
-  return out.slice(k + 1, j + 1);
-}
-function regexAllowedAfter(out, lastCloseParenIsControlFlow) {
-  let j = out.length - 1;
-  while (j >= 0 && /\s/.test(out[j])) j -= 1;
-  if (j < 0) return true;
-  const lastChar = out[j];
-  if (lastChar === ')') return lastCloseParenIsControlFlow;
-  if (lastChar === ']' || lastChar === '"' || lastChar === "'" || lastChar === '`') return false;
-  if (/[\w$]/.test(lastChar)) {
-    const word = precedingWord(out);
-    return word !== null && REGEX_PRECEDING_WORDS.has(word);
-  }
-  return true;
-}
-function stripComments(source) {
-  let out = '';
-  let i = 0;
-  const n = source.length;
-  const stack = [];
-  const parenControlStack = [];
-  let lastCloseParenIsControlFlow = false;
-  while (i < n) {
-    const top = stack[stack.length - 1];
-    if (top === 'template') {
-      const c = source[i];
-      if (c === '\\') {
-        out += c;
-        i += 1;
-        if (i < n) {
-          out += source[i];
-          i += 1;
-        }
-        continue;
-      }
-      if (c === '`') {
-        out += c;
-        i += 1;
-        stack.pop();
-        continue;
-      }
-      if (c === '$' && source[i + 1] === '{') {
-        out += '${';
-        i += 2;
-        stack.push({ type: 'expr', depth: 0 });
-        continue;
-      }
-      out += c;
-      i += 1;
-      continue;
-    }
-    const c = source[i];
-    const c2 = source[i + 1];
-    if (c === '/' && c2 === '/') {
-      while (i < n && source[i] !== '\n') i += 1;
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
-    }
-    if (c === '/' && regexAllowedAfter(out, lastCloseParenIsControlFlow)) {
-      let j = i + 1;
-      let inClass = false;
-      while (j < n) {
-        const cj = source[j];
-        if (cj === '\\') {
-          j += 2;
-          continue;
-        }
-        if (cj === '\n') break;
-        if (cj === '[') {
-          inClass = true;
-          j += 1;
-          continue;
-        }
-        if (cj === ']') {
-          inClass = false;
-          j += 1;
-          continue;
-        }
-        if (cj === '/' && !inClass) {
-          j += 1;
-          break;
-        }
-        j += 1;
-      }
-      while (j < n && /[a-zA-Z]/.test(source[j])) j += 1;
-      out += source.slice(i, j);
-      i = j;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      const quote = c;
-      out += c;
-      i += 1;
-      while (i < n && source[i] !== quote) {
-        if (source[i] === '\\') {
-          out += source[i];
-          i += 1;
-          if (i < n) {
-            out += source[i];
-            i += 1;
-          }
-          continue;
-        }
-        out += source[i];
-        i += 1;
-      }
-      if (i < n) {
-        out += source[i];
-        i += 1;
-      }
-      continue;
-    }
-    if (c === '`') {
-      out += c;
-      i += 1;
-      stack.push('template');
-      continue;
-    }
-    if (top && top.type === 'expr') {
-      if (c === '{') {
-        top.depth += 1;
-        out += c;
-        i += 1;
-        continue;
-      }
-      if (c === '}') {
-        if (top.depth === 0) {
-          out += c;
-          i += 1;
-          stack.pop();
-          continue;
-        }
-        top.depth -= 1;
-        out += c;
-        i += 1;
-        continue;
-      }
-    }
-    if (c === '(') {
-      const word = precedingWord(out);
-      parenControlStack.push(word !== null && CONTROL_FLOW_PAREN_WORDS.has(word));
-      out += c;
-      i += 1;
-      continue;
-    }
-    if (c === ')') {
-      lastCloseParenIsControlFlow = parenControlStack.length > 0 ? parenControlStack.pop() : false;
-      out += c;
-      i += 1;
-      continue;
-    }
-    out += c;
-    i += 1;
-  }
-  return out;
-}
-const PHASE3_LEGACY_OWNER_RULES = [
-  {
-    file: 'src/net/clickhouse-http-transport.ts',
-    forbiddenWords: ['streamLines'],
-  },
-  {
-    file: 'src/net/clickhouse-transport.types.ts',
-    forbiddenWords: ['StreamCallbacks', 'streamLines'],
-  },
-  {
-    file: 'src/core/stream.ts',
-    forbiddenWords: ['StreamLine', 'splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame'],
-  },
-];
-function legacyOwnerViolations(fileText, forbiddenWords) {
-  const code = stripComments(fileText);
-  return forbiddenWords.filter((word) => new RegExp(`\\b${word}\\b`).test(code));
-}
+// Issue #630 Phase 3 — the narrow legacy-owner rule, exercised through the
+// SAME shared helper the production `check:arch` gate calls
+// (`build/lib/check-legacy-owners.mjs`): a real TypeScript parse + AST
+// identifier/property walk, so comments/strings/template literals/regex
+// literals are resolved by the actual grammar rather than a hand-rolled
+// scanner (three review passes each found a real lexical bypass in the
+// previous duplicated implementation — those bypasses live on below as
+// regression probes). Every probe is checked under a legacy-owner filename;
+// the helper scopes itself to exactly those three files.
+const TRANSPORT_OWNER = 'src/net/clickhouse-http-transport.ts';
+const CONTRACT_OWNER = 'src/net/clickhouse-transport.types.ts';
+const STREAM_OWNER = 'src/core/stream.ts';
 
 describe('Phase 3 legacy-owner rule — the moved stream/exception primitives cannot regain their former owners', () => {
-  for (const rule of PHASE3_LEGACY_OWNER_RULES) {
-    it(`the real ${rule.file} carries none of its former declarations`, () => {
-      const text = readFileSync(join(repoRoot, rule.file), 'utf8');
-      expect(legacyOwnerViolations(text, rule.forbiddenWords)).toEqual([]);
+  for (const file of PHASE3_LEGACY_OWNER_FILES) {
+    it(`the real ${file} carries none of its former declarations`, () => {
+      const text = readFileSync(join(repoRoot, file), 'utf8');
+      expect(findLegacyOwnerViolations(text, file)).toEqual([]);
     });
   }
 
-  it('flags a re-added streamLines forwarding wrapper in the transport adapter (sabotage probe, not written to disk)', () => {
+  it('flags a re-added streamLines forwarding-property wrapper in the transport adapter (sabotage probe, not written to disk)', () => {
     const probe = `
       export function createHttpTransport(deps) {
         const client = createClickHouseHttpClient(deps);
@@ -509,7 +329,29 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
         };
       }
     `;
-    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
+  });
+
+  it('flags an import-and-re-export forwarding of the package streamLines (sabotage probe, not written to disk)', () => {
+    const probe = `
+      import { streamLines } from '@altinity/clickhouse-http';
+      export { streamLines };
+    `;
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
+  });
+
+  it('flags an async streamLines(...) method wrapper delegating to the package implementation (sabotage probe, not written to disk)', () => {
+    const probe = `
+      export const transport = {
+        async streamLines(body, cbs) { return packageStreamLines(body, cbs); },
+      };
+    `;
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
+  });
+
+  it('flags a quoted (non-computed) "streamLines" property name too (sabotage probe, not written to disk)', () => {
+    const probe = 'export const transport = { "streamLines": packageStreamLines };';
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
   });
 
   it('flags a re-added StreamCallbacks/streamLines member on the transport contract (sabotage probe, not written to disk)', () => {
@@ -520,7 +362,8 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
         streamLines(body: ReadableStream<Uint8Array>, cbs: StreamCallbacks): Promise<void>;
       }
     `;
-    expect(legacyOwnerViolations(probe, ['StreamCallbacks', 'streamLines'])).toEqual(['StreamCallbacks', 'streamLines']);
+    // Returned in PHASE3_MOVED_NAMES order, deduplicated.
+    expect(findLegacyOwnerViolations(probe, CONTRACT_OWNER)).toEqual(['streamLines', 'StreamCallbacks']);
   });
 
   it('flags a re-added export interface StreamLine in core/stream.ts (sabotage probe, not written to disk)', () => {
@@ -528,9 +371,10 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
       export interface StreamLine { meta?: unknown[]; row?: Record<string, unknown>; }
       export function applyStreamLine(json, result) { return result; }
     `;
-    // applyStreamLine must never trip the StreamLine check — no word
-    // boundary between "apply" and "StreamLine".
-    expect(legacyOwnerViolations(probe, ['StreamLine'])).toEqual(['StreamLine']);
+    // applyStreamLine must never trip the StreamLine check — the AST walk
+    // compares whole identifier names, and applyStreamLine is a different
+    // identifier.
+    expect(findLegacyOwnerViolations(probe, STREAM_OWNER)).toEqual(['StreamLine']);
   });
 
   it('does not flag applyStreamLine as a regained StreamLine declaration', () => {
@@ -538,7 +382,7 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
       export interface StreamColumn { name: string; type: string; }
       export function applyStreamLine(json, result) { return result; }
     `;
-    expect(legacyOwnerViolations(probe, ['StreamLine'])).toEqual([]);
+    expect(findLegacyOwnerViolations(probe, STREAM_OWNER)).toEqual([]);
   });
 
   it('flags a re-added splitBuffer/parseExceptionText/ExceptionFrame/findExceptionFrame in core/stream.ts (sabotage probe, not written to disk)', () => {
@@ -548,86 +392,97 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
       export interface ExceptionFrame { message: string; cleanBytes: number; }
       export function findExceptionFrame(tailBytes, tag) { return null; }
     `;
-    expect(legacyOwnerViolations(probe, ['splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame']))
-      .toEqual(['splitBuffer', 'parseExceptionText', 'ExceptionFrame', 'findExceptionFrame']);
+    expect(findLegacyOwnerViolations(probe, STREAM_OWNER))
+      .toEqual(['parseExceptionText', 'findExceptionFrame', 'splitBuffer', 'ExceptionFrame']);
   });
 
-  it('does not flag a doc comment merely narrating the move (comments are stripped before matching)', () => {
+  it('flags a re-added ProgressMetaColumn type on the transport contract (sabotage probe, not written to disk)', () => {
+    const probe = 'export interface ProgressMetaColumn { name: string; type: string; }';
+    expect(findLegacyOwnerViolations(probe, CONTRACT_OWNER)).toEqual(['ProgressMetaColumn']);
+  });
+
+  it('does not flag a doc comment merely narrating the move (comments are parser trivia, never AST nodes)', () => {
     const probe = `
       // streamLines() moved to the package; StreamCallbacks moved too.
+      /** See also parseExceptionText and findExceptionFrame in the package. */
       export function createHttpTransport(deps) {
         return { async send(request) { return null; } };
       }
     `;
-    expect(legacyOwnerViolations(probe, ['streamLines', 'StreamCallbacks'])).toEqual([]);
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual([]);
   });
 
-  // Regression cases for a real bypass of the earlier regex-only
-  // stripComments: a naive `/\*[\s\S]*?\*\/|\/\/.*/` alternation has no
-  // notion of "inside a string", so a `/*`/`*/`/`//` substring that only
-  // *looks* like a comment delimiter because it sits inside a string
-  // literal used to swallow the real forbidden declaration between (or
-  // after) the string literals, producing a false-clean scan. The scanner
-  // must track string-literal boundaries so these are flagged.
-  it('flags a re-added StreamLine sitting between two string literals that contain /* and */ (regex-stripComments bypass 1)', () => {
+  it('is scoped to the three legacy owners only — the same source under any other filename is out of scope', () => {
+    const probe = 'export function streamLines() {}';
+    // src/net/ch-client.ts is the sanctioned consumer of the package
+    // exports, not a legacy owner.
+    expect(findLegacyOwnerViolations(probe, 'src/net/ch-client.ts')).toEqual([]);
+    expect(findLegacyOwnerViolations(probe, 'src/core/chart-data.ts')).toEqual([]);
+  });
+
+  // The four probes below are the historical bypasses of the retired
+  // hand-rolled scanner, kept as regression coverage. Review pass 1: a
+  // naive comment-stripping regex read the "/*"/"*/" INSIDE string literals
+  // as a block comment and deleted the real declaration between them, and
+  // read the "//" inside a URL string as a line-comment opener. Review pass
+  // 2: it had no notion of regex literals, so the two adjacent slashes
+  // produced by /\/\// were misread as a line comment. Review pass 3: its
+  // regex-vs-division heuristic treated every ")" as "a value was just
+  // produced", so a regex literal opening a control-flow statement body
+  // (if (true) /\//.test("/");) was misread as division and then a comment.
+  // A real parse has none of these failure modes: each probe's forbidden
+  // declaration is an ordinary AST node.
+  it('flags a re-added StreamLine sitting between two string literals that contain /* and */ (historical bypass 1)', () => {
     const probe = 'const marker = "/*"; export interface StreamLine {} const end = "*/";';
-    expect(legacyOwnerViolations(probe, ['StreamLine'])).toEqual(['StreamLine']);
+    expect(findLegacyOwnerViolations(probe, STREAM_OWNER)).toEqual(['StreamLine']);
   });
 
-  it('flags a re-added streamLines following a string literal containing a "//" URL (regex-stripComments bypass 2)', () => {
+  it('flags a re-added streamLines following a string literal containing a "//" URL (historical bypass 2)', () => {
     const probe = 'const u = "https://example"; export function streamLines() {}';
-    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
   });
 
-  // Regression case for a real bypass of the earlier regex-unaware
-  // stripComments: it had no notion of "inside a regex literal" either, so
-  // `/\/\//` — a regex whose escaped-slash content plus closing delimiter
-  // happen to place two literal `/` characters side by side — was misread as
-  // a `//` line-comment opener partway through the regex, silently deleting
-  // everything after it on that line, including the real `streamLines`
-  // declaration. The scanner must recognize the regex-literal open (via
-  // `regexAllowedAfter`) and consume through its real closing `/` before
-  // comment detection ever runs on the characters inside it.
-  it('flags a re-added streamLines declared right after a regex literal containing "//" (regex-stripComments bypass 3)', () => {
+  it('flags a re-added streamLines declared right after a regex literal containing "//" (historical bypass 3)', () => {
     const probe = 'const re = /\\/\\//; export function streamLines() {}';
-    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
   });
 
-  it('does not flag a division inside a regex-adjacent expression as a false regex-literal open (regexAllowedAfter negative case)', () => {
+  it('flags a re-added streamLines declared after an if-controlled statement that opens with a regex literal (historical bypass 4)', () => {
+    const probe = 'if (true) /\\//.test("/"); export function streamLines() {}';
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
+  });
+
+  // Ordinary division, in both shapes the old heuristic had to classify
+  // (after a grouping paren and after a call paren). The parser needs no
+  // regex-vs-division classification from us at all — these prove the real
+  // declaration is still found with division present.
+  it('still flags the real declaration when ordinary division follows a grouping paren', () => {
     const probe = `
       export function pct(read, total) {
         return (read / total) * 100;
       }
       export function streamLines() {}
     `;
-    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
   });
 
-  // Regression case for review-pass-3's bypass: `regexAllowedAfter` used to
-  // return false unconditionally whenever the last emitted character was
-  // `)`, without checking whether that `)` closed an `if`/`while`/`for`
-  // condition — where the grammar expects the *controlled statement* next,
-  // which may itself open with a regex literal — versus a call/grouping
-  // paren, where division is expected. `if (true) /\//.test("/");` is valid
-  // JS (a regex matching a single slash, tested against the string "/"): the
-  // old scanner misread the `/` right after `)` as division, then read the
-  // escaped-slash-adjacent-to-closing-slash pair as a `//` line-comment
-  // opener, deleting the rest of the line including the real `streamLines`
-  // declaration. The scanner must track, per open `(`, whether it followed
-  // `if`/`while`/`for`, and let a regex open right after that paren's `)`.
-  it('flags a re-added streamLines declared after an if-controlled statement that opens with a regex literal (regexAllowedAfter control-flow-paren bypass)', () => {
-    const probe = 'if (true) /\\//.test("/"); export function streamLines() {}';
-    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
-  });
-
-  it('does not flag a division right after a plain grouping/call paren as a false regex-literal open (control-flow-paren negative case)', () => {
+  it('still flags the real declaration when ordinary division follows a call paren', () => {
     const probe = `
       export function ratio(fn, total) {
         return fn(total) / total;
       }
       export function streamLines() {}
     `;
-    expect(legacyOwnerViolations(probe, ['streamLines'])).toEqual(['streamLines']);
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual(['streamLines']);
+  });
+
+  it('does not flag division-only source at all (no dependence on regex-vs-division classification)', () => {
+    const probe = `
+      export function pct(read, total) {
+        return (read / total) * 100;
+      }
+    `;
+    expect(findLegacyOwnerViolations(probe, TRANSPORT_OWNER)).toEqual([]);
   });
 });
 
@@ -681,19 +536,35 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/deep imports are forbidden everywhere/);
   });
 
-  // Issue #630 Phase 3 — same drift bind, extended to the narrow
-  // legacy-owner rule: deleting `PHASE3_LEGACY_OWNER_RULES` (or its
-  // `stripComments` gate) from the real checker must not leave this file's
-  // own independent mirror as the only thing enforcing it.
-  it('declares the Phase 3 legacy-owner rule for all three former owners, with comments stripped before matching', () => {
-    expect(checkerSource).toMatch(/PHASE3_LEGACY_OWNER_RULES/);
-    expect(checkerSource).toMatch(/function stripComments\(/);
-    for (const rule of PHASE3_LEGACY_OWNER_RULES) {
-      const escapedFile = rule.file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const entry = checkerSource.match(new RegExp(`file:\\s*'${escapedFile}',\\s*forbiddenWords:\\s*\\[([^\\]]*)\\]`));
-      expect(entry, `Phase 3 rule entry missing for ${rule.file}`).not.toBeNull();
-      const words = [...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-      expect(words).toEqual(rule.forbiddenWords);
-    }
+  // Issue #630 Phase 3 — same drift bind, adapted to the shared-helper
+  // convention: the Phase 3 tests above exercise
+  // `build/lib/check-legacy-owners.mjs` directly, so what could silently
+  // drift is the CHECKER — it must still import that same helper and feed it
+  // every legacy-owner file. The owner/name lists themselves cannot drift
+  // between suite and gate anymore (both read the helper's exported
+  // constants), so here we pin the helper's contract instead: the exact
+  // three former owners and the exact moved-name set Phase 3 banned.
+  it('delegates the Phase 3 legacy-owner rule to build/lib/check-legacy-owners.mjs (same helper this suite tests)', () => {
+    expect(checkerSource).toMatch(/from '\.\/lib\/check-legacy-owners\.mjs'/);
+    expect(checkerSource).toMatch(/findLegacyOwnerViolations\(/);
+    expect(checkerSource).toMatch(/for \(const relFile of PHASE3_LEGACY_OWNER_FILES\)/);
+  });
+
+  it('the shared helper still names the three former owners and the full Phase 3 moved-name set', () => {
+    expect([...PHASE3_LEGACY_OWNER_FILES]).toEqual([
+      'src/net/clickhouse-http-transport.ts',
+      'src/net/clickhouse-transport.types.ts',
+      'src/core/stream.ts',
+    ]);
+    expect([...PHASE3_MOVED_NAMES]).toEqual([
+      'streamLines',
+      'parseExceptionText',
+      'findExceptionFrame',
+      'splitBuffer',
+      'StreamLine',
+      'StreamCallbacks',
+      'ProgressMetaColumn',
+      'ExceptionFrame',
+    ]);
   });
 });
