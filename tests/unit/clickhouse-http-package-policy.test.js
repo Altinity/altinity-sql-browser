@@ -67,6 +67,7 @@ import {
   mightReferenceRetiredTopLevelApi,
   PHASE8_NARROW_RULE_D_EXCEPTIONS,
   findModuleSpecifiers,
+  mightReferenceForbiddenRelativeDir,
   findTransportSurfaceOwnershipViolations,
   PHASE8_TRANSPORT_SURFACE_NAMES,
   PHASE8_PARSER_SURFACE_NAMES,
@@ -172,6 +173,19 @@ function relativeViolations(dir, forbidden, virtualFiles = []) {
 // TypeScript-parser child process over every real file for each of those
 // test cases is exactly what already forced `deepImportViolations`/
 // `packageNameShapeViolations`/`retiredApiViolations` above to memoize.
+//
+// Review pass 2 (second CI-only `beforeAll` timeout occurrence — see the
+// comment above `beforeAll` below): this originally shipped with NO
+// pre-filter, unlike every sibling real-parser check in this file
+// (`deepImportViolations` gates on `mightReferencePackage`); it had to parse
+// every real file under `src/**` unconditionally, which made it the single
+// most expensive of the four cache-warming calls. `mightReferenceForbiddenRelativeDir`
+// (imported from the shared helper, same drift-avoidance convention as every
+// other pre-filter here) closes that gap: measured locally, it cuts the
+// files that reach the real parser from all 225 under `src/**` to the ~70
+// that contain either the forbidden directory's own leaf segment
+// (`clickhouse-http`) or a backslash, a ~68% reduction in `beforeAll` wall
+// time for this one call (~7.1s → ~2.3s).
 const realTreeRuleCParserCache = new Map();
 function relativeViolationsParserBacked(dir, forbidden, virtualFiles = []) {
   let cached = realTreeRuleCParserCache.get(dir);
@@ -180,6 +194,7 @@ function relativeViolationsParserBacked(dir, forbidden, virtualFiles = []) {
     for (const file of collectFiles(dir)) {
       const relFile = relative(repoRoot, file).split(sep).join('/');
       const text = readFileSync(file, 'utf8');
+      if (!mightReferenceForbiddenRelativeDir(text, forbidden)) continue;
       for (const { spec } of findModuleSpecifiers(text, relFile)) {
         if (!spec.startsWith('.')) continue;
         const resolved = resolveRelative(file, spec);
@@ -194,6 +209,7 @@ function relativeViolationsParserBacked(dir, forbidden, virtualFiles = []) {
   for (const [rel, source] of virtualFiles) {
     const file = join(repoRoot, rel);
     const relFile = relative(repoRoot, file).split(sep).join('/');
+    if (!mightReferenceForbiddenRelativeDir(source, forbidden)) continue;
     for (const { spec } of findModuleSpecifiers(source, relFile)) {
       if (!spec.startsWith('.')) continue;
       const resolved = resolveRelative(file, spec);
@@ -523,15 +539,30 @@ describe('Rule C — SQL Browser source does not deep-import the package (relati
 // letting whichever test happens to run first inside the Rule C / Rule D /
 // Phase 7 describe blocks below pay for it under the DEFAULT per-test
 // timeout: the cache-filling pass spawns the real TypeScript-parser child
-// process once per real file that matches each check's own pre-filter (Rule
-// C's new parser-backed mirror has none — it must parse every file under
-// `src/**` — so it is the most expensive of the four), and that one-time
-// cost — comfortably under a few seconds on a normal dev machine — has
-// exceeded vitest's 5000ms per-test default under CI's more constrained
-// scheduling. Explicit longer timeout here, attributed to setup rather than
-// to an arbitrary specific test (also robust to test reordering; a top-level
-// `beforeAll` runs before every test in this file regardless of where in the
-// file it or the describe blocks it warms are declared).
+// process once per real file that matches each check's own pre-filter, and
+// that one-time cost — comfortably under a few seconds on a normal dev
+// machine — exceeded vitest's 5000ms per-test default under CI's more
+// constrained scheduling (issue #630 Phase 5's original fix, this comment's
+// first version). Explicit longer timeout here, attributed to setup rather
+// than to an arbitrary specific test (also robust to test reordering; a
+// top-level `beforeAll` runs before every test in this file regardless of
+// where in the file it or the describe blocks it warms are declared).
+//
+// Second occurrence (issue #630 Phase 8, review pass 2): Rule C's new
+// parser-backed mirror (`relativeViolationsParserBacked`) shipped with NO
+// pre-filter at all — it parsed every file under `src/**` unconditionally —
+// which made it the single most expensive of the four calls below and, on
+// top of the other three, pushed this `beforeAll` past even this already
+// -generous 30000ms ceiling under CI's scheduling (it did not reproduce on a
+// normal dev machine, same "comfortably under a human's patience locally"
+// gap Phase 5's fix above already called out). Fixed at the root, not by
+// raising the timeout again: `mightReferenceForbiddenRelativeDir` gives that
+// function the same kind of pre-filter its three siblings already had,
+// cutting the files it hands to the real parser by roughly two-thirds (see
+// that function's own doc comment in `build/lib/check-legacy-owners.mjs` and
+// the measurement noted above `relativeViolationsParserBacked`'s
+// definition). 30000ms stays as comfortable headroom rather than the tight
+// constraint it would otherwise be.
 beforeAll(() => {
   relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http']);
   deepImportViolations(join(repoRoot, 'src'));
@@ -1128,6 +1159,23 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/Guard 2/);
     expect(checkerSource).toMatch(/findModuleSpecifiers\(source,\s*relFile\)/);
     expect(checkerSource).toMatch(/relResolved === 'packages\/clickhouse-http' \|\| relResolved\.startsWith\('packages\/clickhouse-http\/'\)/);
+  });
+
+  // Review pass 2 finding (second CI-only `beforeAll` timeout occurrence,
+  // this suite's own `beforeAll` comment above): Rule C/Guard 2 shipped with
+  // NO pre-filter at all, unlike Guard 5 and Rule D beside it, making it the
+  // single most expensive real-parser call in this file. Same drift-avoidance
+  // convention as the `mightReferencePackage` bind directly below — the fix
+  // is one shared helper (`mightReferenceForbiddenRelativeDir`), imported and
+  // called by both the checker and this suite's own
+  // `relativeViolationsParserBacked`, not two independently hand-copied
+  // pre-filters that could silently diverge.
+  it('Guard 2 gates its real-parser call behind the shared mightReferenceForbiddenRelativeDir pre-filter', () => {
+    const importBlock = checkerSource.match(/import \{([^}]*)\} from '\.\/lib\/check-legacy-owners\.mjs';/);
+    expect(importBlock, 'check-legacy-owners import block missing from build/check-boundaries.mjs').not.toBeNull();
+    expect(importBlock[1]).toMatch(/\bmightReferenceForbiddenRelativeDir\b/);
+    // Must actually CALL the shared helper, not merely import and shadow it.
+    expect(checkerSource).toMatch(/mightReferenceForbiddenRelativeDir\(source,\s*\[?'packages\/clickhouse-http'/);
   });
 
   it('declares Rule D (deep imports banned everywhere; revised bare-specifier policy since issue #630 Phase 5)', () => {

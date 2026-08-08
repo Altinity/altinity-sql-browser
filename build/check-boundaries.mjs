@@ -57,6 +57,7 @@ import {
   mightReferenceRetiredTopLevelApi,
   PHASE8_NARROW_RULE_D_EXCEPTIONS,
   findModuleSpecifiers,
+  mightReferenceForbiddenRelativeDir,
   findTransportSurfaceOwnershipViolations,
   PHASE8_TRANSPORT_SURFACE_NAMES,
   PHASE8_PARSER_SURFACE_NAMES,
@@ -461,10 +462,18 @@ if (fs.existsSync(PACKAGE_SRC_DIR)) {
 // like Guard 1, Guard 5, and Rule D below already do for the identical
 // reason. No `except` carve-outs apply here (none existed for the old RULES
 // entry either).
+//
+// Review pass 2 (second CI-only timeout occurrence, mirrored by the same
+// fix in the in-suite mirror's `beforeAll`): this block originally spawned
+// the real-parser check unconditionally for every file — no pre-filter at
+// all, unlike Guard 5 (`mightReferenceRetiredTopLevelApi`) and Rule D
+// (`mightReferencePackage`) beside it. `mightReferenceForbiddenRelativeDir`
+// closes that gap the same accepted-risk way those two already do.
 for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
   checkedFiles += 1;
   const source = fs.readFileSync(file, 'utf8');
+  if (!mightReferenceForbiddenRelativeDir(source, ['packages/clickhouse-http'])) continue;
   for (const { spec } of findModuleSpecifiers(source, relFile)) {
     if (!spec.startsWith('.')) continue; // bare/package specifiers can't reach src dirs
     const resolved = resolveRelative(file, spec);

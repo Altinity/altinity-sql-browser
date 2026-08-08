@@ -598,6 +598,53 @@ export function mightReferencePackage(source, packageSpecifier) {
   return source.includes(packageSpecifier) || source.includes('\\');
 }
 
+/**
+ * Cheap textual pre-filter for Rule C / Guard 2's parser-backed relative-
+ * import check — the whole-package-directory deep-import ban
+ * (`relativeViolationsParserBacked` in the test mirror; the dedicated Guard 2
+ * block in `build/check-boundaries.mjs`) — added after that check shipped
+ * with NO pre-filter at all (issue #630 Phase 8, review pass 1): it had to
+ * parse every file under the scanned tree unconditionally, which was the
+ * single most expensive of the cache-warming calls this suite's `beforeAll`
+ * makes and, stacked with the other three, pushed CI's more constrained
+ * scheduling past even the already-generous 30000ms setup timeout (a second
+ * occurrence of the exact CI-only class of failure `mightReferencePackage`
+ * above was introduced to fix for Rule D).
+ *
+ * Same accepted-risk shape as `mightReferencePackage`: a relative specifier
+ * can only resolve INTO a directory named `clickhouse-http` (or whatever a
+ * future `forbiddenDirs` entry's own leaf segment is) by literally spelling
+ * that segment somewhere in its own text, once any escape sequence is
+ * decoded — path resolution here is pure textual segment concatenation (via
+ * `node:path`, no symlinks), so there is no way to reach that directory
+ * without a path component that names it. Matching only each forbidden
+ * directory's LAST path segment (rather than its full path, e.g. just
+ * `clickhouse-http`, not `packages/clickhouse-http`) is deliberately looser
+ * than an exact-path match: the segment need not sit textually adjacent to
+ * the rest of the forbidden path in the specifier (e.g.
+ * `../other/../clickhouse-http/src` still resolves under
+ * `packages/clickhouse-http` without ever spelling the two segments
+ * together), so anchoring on the leaf alone keeps this sound for that case
+ * too. As with `mightReferencePackage`, a bare substring test alone is
+ * unsound against an escaped spelling (a hex/Unicode escape, or a
+ * per-character identity escape) — every such form requires at least one
+ * literal backslash in the source, so "no forbidden leaf substring AND no
+ * backslash anywhere in the file" is the only combination that can safely
+ * skip the real-parser check.
+ *
+ * @param {string} source
+ * @param {readonly string[]} forbiddenDirs repo-relative forbidden
+ *   directories (e.g. `['packages/clickhouse-http']`)
+ * @returns {boolean} true if `source` might contain a relative import
+ *   resolving into one of `forbiddenDirs` (via a plain leaf substring OR an
+ *   escape sequence) and must go through the real-parser check; false only
+ *   when it provably cannot
+ */
+export function mightReferenceForbiddenRelativeDir(source, forbiddenDirs) {
+  if (source.includes('\\')) return true;
+  return forbiddenDirs.some((dir) => source.includes(dir.split('/').pop()));
+}
+
 // ── Revised Rule D: deep-import subpath detection ────────────────────────────
 
 /**
