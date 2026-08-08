@@ -371,18 +371,29 @@ Workflow {
 ```
 
 Fable/high reads the plan **and the actual repository state already on the branch**
-(so it excludes whatever a prior partial attempt already committed) and proposes an
-ordered, dependency-respecting sub-task breakdown, sized so one coding agent can
-plausibly finish each in one session. The script then runs one fresh Sonnet agent per
-sub-task, strictly **sequentially** on the same branch (not parallel worktrees —
-sub-task file-scope disjointness is a declared claim, not a verified guarantee, and
-the point is giving each chunk fresh context, not wall-clock speed). Each sub-task
-commits before the next starts. If a running single-agent attempt already exists and
-is approaching its own limit, stop it at a clean commit boundary (`TaskStop`, verify
-`git status` is clean first) before invoking this loop — its committed work becomes
-what the decomposition step reads as already-done. Treat the loop's `error` status
-(a sub-task's agent died) the same as any implementation failure: inspect, fix or
-resume, re-verify — do not silently skip the remaining sub-tasks.
+(so it excludes whatever a prior partial attempt already committed) and proposes a
+dependency-respecting sub-task breakdown, sized so one coding agent can plausibly
+finish each in one session, with an explicit `dependsOn` per sub-task. The script
+groups sub-tasks into dependency-ordered **waves** from that graph: a wave of size 1
+runs on the branch directly, exactly as before; a wave with more than one sub-task
+(no `dependsOn` edge between them) runs those sub-tasks **concurrently**, each in its
+own `isolation: "worktree"` on its own `wip/<unit>-<id>` branch, since none of them can
+see the others' edits until they're merged back. After a concurrent wave, one
+integration agent merges every branch into the unit branch in that wave's order and
+gates the merged result before the next wave starts — a merge conflict there means the
+sub-tasks' declared file scopes were not actually disjoint, and is treated as a real
+planning defect (`error` status), never forced through. `dependsOn` is deliberately the
+only signal that drives this: Fable is instructed to favor adding a `dependsOn` edge
+whenever it isn't fully confident two sub-tasks are safe to run at the same time, so a
+plan with sparse dependency information still comes out mostly or fully sequential,
+matching the old behavior, and only a genuinely independent plan gets real concurrency.
+Each sub-task commits before its wave is considered complete. If a running single-agent
+attempt already exists and is approaching its own limit, stop it at a clean commit
+boundary (`TaskStop`, verify `git status` is clean first) before invoking this loop —
+its committed work becomes what the decomposition step reads as already-done. Treat the
+loop's `error` status (a sub-task's agent died, a wave's integration conflicted, or a
+post-merge gate failed) the same as any implementation failure: inspect, fix or resume,
+re-verify — do not silently skip the remaining sub-tasks or waves.
 
 **Otherwise** (the common case), spawn a **fresh** coding agent (`subagent_type:
 "general-purpose"`, never `fork`, `model: "sonnet"` unless the wave plan marks the unit
