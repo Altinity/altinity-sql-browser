@@ -602,12 +602,27 @@ describe('Rule C — SQL Browser source does not deep-import the package (relati
 // the measurement noted above `relativeViolationsParserBacked`'s
 // definition). 30000ms stays as comfortable headroom rather than the tight
 // constraint it would otherwise be.
+//
+// Third occurrence (same PR, CI run at the review-pass-2 fix commit): CI
+// reported "Hook timed out in 30000ms" at 31783ms — the four cache-warming
+// calls' combined cost, unchanged by that commit's diff (it touched a
+// different file's prefilter and this function's own symlink handling, not
+// the number or shape of real-tree scans here), simply tipped past the
+// ceiling under that run's CI scheduling; the immediately prior CI run of
+// this exact beforeAll body passed. With each call already prefiltered
+// (`mightReferencePackage` / `mightReferenceForbiddenRelativeDir`) and
+// memoized per real tree, there is no further unbounded or accidentally
+// re-triggered work left to cut — this is inherent child-process-spawn
+// scheduling variance under a shared CI runner, not a regression. Widened
+// the ceiling rather than chasing a third micro-optimization of already-
+// minimized, bounded work — the same class of fix as this comment's first
+// occurrence above.
 beforeAll(() => {
   relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http']);
   deepImportViolations(join(repoRoot, 'src'));
   packageNameShapeViolations(join(repoRoot, 'src'));
   retiredApiViolations(join(repoRoot, 'src'));
-}, 30000);
+}, 60000);
 
 describe('Rule D, deep-import half — the deep-import subpath form is forbidden everywhere under src/**', () => {
   it('the real src/** tree has no deep-import subpath', () => {
