@@ -1563,6 +1563,43 @@ describe('Guards 3/4 — the historical generic transport/URL surface and the mo
   });
 });
 
+// The Guard 1/3/4 describe blocks above only prove today's tree is clean and
+// that the shared real-parser helpers this file calls behave correctly —
+// exactly the same gap the Rules A-D drift-bind block above (this file,
+// around line 1011) exists to close for the older rules. Neither proves
+// `build/check-boundaries.mjs` (the actual `check:arch` gate) still wires
+// those helpers into its own Guard 1/3/4 rule blocks: a refactor could delete
+// those blocks from the checker entirely while every test above kept passing,
+// since they call the helpers directly rather than the checker. Same
+// `checkerSource`-text-read convention as the Rules A-D block and
+// `client-web-retirement-policy.test.js`'s Guard 5 equivalent.
+describe('build/check-boundaries.mjs still declares the Guard 1/3/4 rule blocks this spec mirrors (issue #630 Phase 8)', () => {
+  const checkerSource = readFileSync(join(repoRoot, 'build/check-boundaries.mjs'), 'utf8');
+
+  it('declares the Guard 1 package-containment/tooling-dependency rule block', () => {
+    // build/check-boundaries.mjs:549 — the exact four-target list Guard 1
+    // scans (packages/clickhouse-http/{src,test,build.mjs,vitest.config.ts}).
+    expect(checkerSource).toMatch(/guard1Targets\s*=\s*\['src',\s*'test',\s*'build\.mjs',\s*'vitest\.config\.ts'\]/);
+    // build/check-boundaries.mjs:563 — the package-root-escape violation
+    // message, only emitted by the Guard 1 relative-import check.
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guard 1: a relative import cannot escape the package root/);
+    // build/check-boundaries.mjs:576 — the undeclared-root-hoisted-dependency
+    // violation message, only emitted by the Guard 1 bare-specifier check.
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guard 1: package tooling\/tests may bare-import only node:\* or a dependency declared in the package's own devDependencies/);
+  });
+
+  it('declares the Guards 3/4 root-wide transport/parser-surface ownership rule block', () => {
+    // build/check-boundaries.mjs:600 — the combined name list Guards 3/4
+    // scan for, and the two real-parser helper calls it feeds (:605-:606).
+    expect(checkerSource).toMatch(/guard34Names\s*=\s*\[\.\.\.PHASE8_TRANSPORT_SURFACE_NAMES,\s*\.\.\.PHASE8_PARSER_SURFACE_NAMES\]/);
+    expect(checkerSource).toMatch(/mightReferenceRetiredTopLevelApi\(source,\s*guard34Names\)/);
+    expect(checkerSource).toMatch(/findTransportSurfaceOwnershipViolations\(source,\s*relFile,\s*guard34Names,\s*CLICKHOUSE_HTTP_SPECIFIER\)/);
+    // build/check-boundaries.mjs:607 — the violation message, only emitted
+    // by this exact block.
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guards 3\/4: the historical generic transport\/URL surface and the moved progress-stream\/exception-parsing primitives cannot be re-declared or forwarded locally/);
+  });
+});
+
 // Issue #630 Phase 8 (plan §10, §25's "production wrapper build-order
 // invariants") — every clean production build wrapper must build the
 // package's own dist/** before invoking the root application builder.

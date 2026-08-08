@@ -53,6 +53,9 @@ import {
   findTransportSurfaceOwnershipViolations,
   PHASE8_TRANSPORT_SURFACE_NAMES,
   PHASE8_PARSER_SURFACE_NAMES,
+  manifestDependencyFields,
+  lockHasPackage,
+  retiredClientSpikeScriptNames,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -376,16 +379,12 @@ for (const manifestPath of ['package.json', 'packages/clickhouse-http/package.js
   if (!fs.existsSync(fullManifestPath)) continue;
   checkedFiles += 1;
   const manifest = JSON.parse(fs.readFileSync(fullManifestPath, 'utf8'));
-  for (const depField of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-    if (Object.prototype.hasOwnProperty.call(manifest[depField] ?? {}, CLIENT_WEB_SPECIFIER)) {
-      violations.push(`${manifestPath} → ${depField}.${CLIENT_WEB_SPECIFIER} (issue #630 Phase 8 Guard 5: the vendor dependency must not return to any manifest)`);
-    }
+  for (const depField of manifestDependencyFields(manifest, CLIENT_WEB_SPECIFIER)) {
+    violations.push(`${manifestPath} → ${depField}.${CLIENT_WEB_SPECIFIER} (issue #630 Phase 8 Guard 5: the vendor dependency must not return to any manifest)`);
   }
   if (manifestPath === 'package.json') {
-    for (const scriptName of Object.keys(manifest.scripts ?? {})) {
-      if (scriptName === 'check:client-spike:evidence' || scriptName.startsWith('test:client-spike')) {
-        violations.push(`${manifestPath} → scripts.${scriptName} (issue #630 Phase 8 Guard 5: the retired vendor-spike npm scripts must not return)`);
-      }
+    for (const scriptName of retiredClientSpikeScriptNames(manifest.scripts)) {
+      violations.push(`${manifestPath} → scripts.${scriptName} (issue #630 Phase 8 Guard 5: the retired vendor-spike npm scripts must not return)`);
     }
   }
 }
@@ -393,7 +392,7 @@ const lockPath = path.join(repoRoot, 'package-lock.json');
 if (fs.existsSync(lockPath)) {
   checkedFiles += 1;
   const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-  if (Object.keys(lock.packages ?? {}).some((k) => k.endsWith(`node_modules/${CLIENT_WEB_SPECIFIER}`))) {
+  if (lockHasPackage(lock, CLIENT_WEB_SPECIFIER)) {
     violations.push(`package-lock.json → ${CLIENT_WEB_SPECIFIER} (issue #630 Phase 8 Guard 5: the vendor package must not remain installed in the lockfile)`);
   }
 }

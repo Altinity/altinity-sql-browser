@@ -27,7 +27,12 @@ import { existsSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
-import { findModuleSpecifiers } from '../../build/lib/check-legacy-owners.mjs';
+import {
+  findModuleSpecifiers,
+  manifestDependencyFields,
+  lockHasPackage,
+  retiredClientSpikeScriptNames,
+} from '../../build/lib/check-legacy-owners.mjs';
 
 const projectRoot = resolve(fileURLToPath(import.meta.url), '../../..');
 const CLIENT_WEB_SPECIFIER = '@clickhouse/client-web';
@@ -169,30 +174,43 @@ describe('Guard 5 — @clickhouse/client-web cannot be virtually reintroduced an
 });
 
 // Issue #630 Phase 8 (plan §24) — structural manifest/lockfile sabotage
-// probes, proving the CHECKER itself (not merely this test's own mirror
-// assertions above) rejects a virtual reintroduction. These call the real
-// `check:arch` production script text/data shape indirectly by asserting the
-// exact structural conditions it inspects — see build/check-boundaries.mjs's
-// own Guard 5 block for the production enforcement.
+// probes, proving the REAL production predicates
+// (`build/lib/check-legacy-owners.mjs`'s `manifestDependencyFields`/
+// `lockHasPackage`/`retiredClientSpikeScriptNames`) reject a virtual
+// reintroduction — the SAME functions `build/check-boundaries.mjs`'s own
+// Guard 5 structural block (around its `manifestDependencyFields(manifest,
+// CLIENT_WEB_SPECIFIER)` / `retiredClientSpikeScriptNames(manifest.scripts)`
+// / `lockHasPackage(lock, CLIENT_WEB_SPECIFIER)` calls) calls, not an
+// independently reimplemented mirror of the same boolean logic: `check-
+// boundaries.mjs` is a top-level script with no other exported/testable
+// surface for this specific check, so calling a hand-rolled copy here could
+// never have detected a real regression in the production predicate itself.
 describe('Guard 5 structural manifest/lock/script/directory sabotage (virtual, not written to disk)', () => {
   it('a virtual manifest with the vendor dependency restored would trip the structural check', () => {
     const sabotagedManifest = { dependencies: {}, devDependencies: { [CLIENT_WEB_SPECIFIER]: '1.23.1' } };
-    const hasVendorDep = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
-      .some((field) => Object.prototype.hasOwnProperty.call(sabotagedManifest[field] ?? {}, CLIENT_WEB_SPECIFIER));
-    expect(hasVendorDep).toBe(true);
+    expect(manifestDependencyFields(sabotagedManifest, CLIENT_WEB_SPECIFIER)).toEqual(['devDependencies']);
+  });
+
+  it('a real-shaped clean manifest never trips the structural check', () => {
+    expect(manifestDependencyFields({ dependencies: {}, devDependencies: {} }, CLIENT_WEB_SPECIFIER)).toEqual([]);
   });
 
   it('a virtual lockfile with the vendor package restored would trip the structural check', () => {
     const sabotagedLock = { packages: { 'node_modules/@clickhouse/client-web': { version: '1.23.1' } } };
-    const hasVendorInLock = Object.keys(sabotagedLock.packages).some((k) => k.endsWith(`node_modules/${CLIENT_WEB_SPECIFIER}`));
-    expect(hasVendorInLock).toBe(true);
+    expect(lockHasPackage(sabotagedLock, CLIENT_WEB_SPECIFIER)).toBe(true);
+  });
+
+  it('a clean lockfile never trips the structural check', () => {
+    expect(lockHasPackage({ packages: {} }, CLIENT_WEB_SPECIFIER)).toBe(false);
   });
 
   it('a virtual manifest with a retired spike script restored would trip the structural check', () => {
     const sabotagedScripts = { 'test:client-spike': 'echo restored' };
-    const hasRetiredScript = Object.keys(sabotagedScripts)
-      .some((s) => s === 'check:client-spike:evidence' || s.startsWith('test:client-spike'));
-    expect(hasRetiredScript).toBe(true);
+    expect(retiredClientSpikeScriptNames(sabotagedScripts)).toEqual(['test:client-spike']);
+  });
+
+  it('a clean scripts map never trips the structural check', () => {
+    expect(retiredClientSpikeScriptNames({ build: 'echo ok' })).toEqual([]);
   });
 });
 

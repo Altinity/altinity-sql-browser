@@ -806,3 +806,42 @@ export function findPackageImportUsages(source, filename, packageSpecifier) {
     return found;
   });
 }
+
+// Issue #630 Phase 8 (plan §24, Guard 5) — the three plain-object structural
+// predicates behind the manifest/lockfile/script half of the Guard 5 check
+// (`build/check-boundaries.mjs`'s CLIENT_WEB_SPECIFIER block). Unlike every
+// AST-backed check above, these need no parser — they inspect already-parsed
+// JSON shapes — but they still belong here, not duplicated inline in both
+// `build/check-boundaries.mjs` and its mirror
+// `tests/unit/client-web-retirement-policy.test.js`: that file used to
+// reimplement the exact same three booleans as its own "sabotage" test
+// fixtures, which could only ever prove its OWN copy was self-consistent,
+// never that the real production check still matched. Exporting the real
+// predicates and having both call sites use them removes that drift risk
+// outright, the same "one implementation" convention the AST checks above
+// already follow.
+
+/** Returns the dependency field names in `manifest` (a parsed package.json-
+ *  shaped object) that declare `specifier`, out of the four fields npm
+ *  recognizes — empty when none do. The production caller pushes one
+ *  violation per returned field (preserving its existing per-field message);
+ *  a caller that only needs the aggregate yes/no (e.g. a sabotage probe)
+ *  checks `.length > 0`. */
+export function manifestDependencyFields(manifest, specifier) {
+  return ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+    .filter((field) => Object.prototype.hasOwnProperty.call(manifest[field] ?? {}, specifier));
+}
+
+/** True when `lock` (a parsed package-lock.json-shaped object) still
+ *  installs `specifier` anywhere under `lock.packages`. */
+export function lockHasPackage(lock, specifier) {
+  return Object.keys(lock.packages ?? {}).some((k) => k.endsWith(`node_modules/${specifier}`));
+}
+
+/** Returns the script names in `scripts` (a package.json `scripts` map)
+ *  that are one of the retired issue #585 vendor-spike comparison-harness
+ *  npm scripts issue #630 Phase 8 deleted (`check:client-spike:evidence`, or
+ *  any `test:client-spike*` variant) — empty when none remain. */
+export function retiredClientSpikeScriptNames(scripts) {
+  return Object.keys(scripts ?? {}).filter((s) => s === 'check:client-spike:evidence' || s.startsWith('test:client-spike'));
+}
