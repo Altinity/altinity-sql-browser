@@ -135,7 +135,12 @@ function collectEntries(dir, virtualFiles = []) {
   ];
 }
 
-// Rule A/C mirror: relative specifiers resolving into a forbidden directory.
+// Rule A mirror: relative specifiers resolving into a forbidden directory.
+// Review pass 1: this regex-based mirror now covers ONLY Rule A (production
+// still legitimately scans that one with `extractSpecifiers`, same as the
+// other internal src-layering rules) — Rule C/Guard 2 moved to its own
+// dedicated real-parser block in production and has its own parser-backed
+// mirror, `relativeViolationsParserBacked`, below.
 function relativeViolations(dir, forbidden, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
@@ -146,6 +151,55 @@ function relativeViolations(dir, forbidden, virtualFiles = []) {
       const relResolved = relative(repoRoot, resolved).split(sep).join('/');
       const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
       if (hit) found.push(`${relative(repoRoot, file).split(sep).join('/')} → ${spec} (resolved: ${relResolved})`);
+    }
+  }
+  return found;
+}
+
+// Rule C mirror (Guard 2, review pass 1): parser-backed (`findModuleSpecifiers`),
+// matching production's dedicated Guard 2 block in `build/check-boundaries.mjs`
+// — NOT `relativeViolations`'s `extractSpecifiers` regex above, which stayed
+// vulnerable to a comment sitting between `import`/`export` and the
+// specifier, or an escaped string-literal segment spelling out a
+// `packages/clickhouse-http` path without ever containing that raw
+// substring: `extractSpecifiers` captures the raw, still-escaped/comment-
+// adjacent source text, which then fails to resolve into the forbidden
+// directory, so the escape silently slipped this guard entirely before this
+// fix. Memoized the on-disk component the same way `deepImportViolations`
+// above is: the real `src/` tree never changes within one test-file run, but
+// every Rule C test below re-passes `join(repoRoot, 'src')` with a DIFFERENT
+// single virtual sabotage probe appended, and re-spawning the real
+// TypeScript-parser child process over every real file for each of those
+// test cases is exactly what already forced `deepImportViolations`/
+// `packageNameShapeViolations`/`retiredApiViolations` above to memoize.
+const realTreeRuleCParserCache = new Map();
+function relativeViolationsParserBacked(dir, forbidden, virtualFiles = []) {
+  let cached = realTreeRuleCParserCache.get(dir);
+  if (!cached) {
+    cached = [];
+    for (const file of collectFiles(dir)) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      const text = readFileSync(file, 'utf8');
+      for (const { spec } of findModuleSpecifiers(text, relFile)) {
+        if (!spec.startsWith('.')) continue;
+        const resolved = resolveRelative(file, spec);
+        const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+        const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+        if (hit) cached.push(`${relFile} → ${spec} (resolved: ${relResolved})`);
+      }
+    }
+    realTreeRuleCParserCache.set(dir, cached);
+  }
+  const found = [...cached];
+  for (const [rel, source] of virtualFiles) {
+    const file = join(repoRoot, rel);
+    const relFile = relative(repoRoot, file).split(sep).join('/');
+    for (const { spec } of findModuleSpecifiers(source, relFile)) {
+      if (!spec.startsWith('.')) continue;
+      const resolved = resolveRelative(file, spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+      if (hit) found.push(`${relFile} → ${spec} (resolved: ${relResolved})`);
     }
   }
   return found;
@@ -397,11 +451,11 @@ describe('Rule B — package source has zero bare specifiers (empty allowlist)',
 // relative deep-import escape a source-only ban would miss.
 describe('Rule C — SQL Browser source does not deep-import the package (relative, whole package directory)', () => {
   it('the real src/** tree is clean', () => {
-    expect(relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http'])).toEqual([]);
+    expect(relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'])).toEqual([]);
   });
 
   it('flags a relative deep import into the package src/** implementation (sabotage probe, not written to disk)', () => {
-    const found = relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
       ['src/net/__boundary_probe_630_deep__.ts',
         "import { chUrl } from '../../packages/clickhouse-http/src/client.js';\n"],
     ]);
@@ -411,7 +465,7 @@ describe('Rule C — SQL Browser source does not deep-import the package (relati
   // Issue #630 Phase 8 (plan §21) — the NEW escape a source-only ban would
   // have missed: a relative deep import into generated dist/**.
   it('flags a relative deep import into the package dist/** build output (sabotage probe, not written to disk)', () => {
-    const found = relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
       ['src/net/__boundary_probe_630p8_deepdist__.ts',
         "import { chUrl } from '../../packages/clickhouse-http/dist/client.js';\n"],
     ]);
@@ -429,18 +483,57 @@ describe('Rule C — SQL Browser source does not deep-import the package (relati
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdistbare__'))).toBe(true);
   });
+
+  // Review pass 1 finding — before this fix, production's Guard 2 ran the
+  // regex-based `extractSpecifiers` (mirrored by the OLD `relativeViolations`
+  // above), which a comment sitting between `import` and its clause defeats:
+  // the character class between `import` and `from` never accepts `/`, so a
+  // block comment there breaks the match entirely and the whole import
+  // statement goes unseen. Proves the NEW parser-backed mirror still catches
+  // this exact case (a real parse resolves comments as trivia, never as
+  // characters that can break a match).
+  it('flags a relative deep import into the package dist/** with a comment between `import` and its clause (sabotage probe, not written to disk)', () => {
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_deepdist_comment__.ts',
+        "import /*c*/ { chUrl } from '../../packages/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist_comment__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // Review pass 1 finding — an escaped string-literal segment inside the
+  // module specifier: the raw source text never contains the literal
+  // substring "packages" (only "packages"), so a regex-based mirror
+  // that resolves the RAW captured text (as `relativeViolations`/production's
+  // old RULES-array entry did) resolves a path with a literal `k`
+  // sequence in it — which never starts with the forbidden
+  // `packages/clickhouse-http` prefix, so the violation goes completely
+  // undetected. The real parser decodes the escape via `node.text` before
+  // this mirror ever resolves the path, exactly like production's new Guard
+  // 2 block.
+  it('flags a relative deep import whose specifier escapes part of the forbidden directory name (sabotage probe, not written to disk)', () => {
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_deepdist_escaped__.ts',
+        "import { chUrl } from '../../pac\\u006bages/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist_escaped__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
 });
 
-// Pre-warm all three real-tree caches once, in `beforeAll`, rather than
-// letting whichever test happens to run first inside the Rule D / Phase 7
-// describe blocks below pay for it under the DEFAULT per-test timeout: the
-// cache-filling pass spawns the real TypeScript-parser child process once per
-// real file that matches each check's own pre-filter, and that one-time
+// Pre-warm all four real-tree caches once, in `beforeAll`, rather than
+// letting whichever test happens to run first inside the Rule C / Rule D /
+// Phase 7 describe blocks below pay for it under the DEFAULT per-test
+// timeout: the cache-filling pass spawns the real TypeScript-parser child
+// process once per real file that matches each check's own pre-filter (Rule
+// C's new parser-backed mirror has none — it must parse every file under
+// `src/**` — so it is the most expensive of the four), and that one-time
 // cost — comfortably under a few seconds on a normal dev machine — has
 // exceeded vitest's 5000ms per-test default under CI's more constrained
 // scheduling. Explicit longer timeout here, attributed to setup rather than
-// to an arbitrary specific test (also robust to test reordering).
+// to an arbitrary specific test (also robust to test reordering; a top-level
+// `beforeAll` runs before every test in this file regardless of where in the
+// file it or the describe blocks it warms are declared).
 beforeAll(() => {
+  relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http']);
   deepImportViolations(join(repoRoot, 'src'));
   packageNameShapeViolations(join(repoRoot, 'src'));
   retiredApiViolations(join(repoRoot, 'src'));
@@ -1024,11 +1117,17 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
 
   // Issue #630 Phase 8 (plan §21, Guard 2) broadened Rule C's forbidden
   // target from just `packages/clickhouse-http/src` to the whole package
-  // directory (`packages/clickhouse-http`) — dist escape coverage.
-  it('declares Rule C (src forbidden: packages/clickhouse-http, whole package directory)', () => {
-    const entry = checkerSource.match(/\{\s*dir:\s*'src',\s*forbidden:\s*\[([^\]]*)\]/);
-    expect(entry, 'Rule C entry missing from build/check-boundaries.mjs RULES').not.toBeNull();
-    expect([...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual(['packages/clickhouse-http']);
+  // directory (`packages/clickhouse-http`) — dist escape coverage. Review
+  // pass 1: Rule C is NO LONGER a RULES-array entry processed by the generic
+  // regex-based loop (that left it vulnerable to a comment-trivia'd import
+  // clause or an escaped specifier segment) — it is now its own dedicated
+  // real-parser block, so this drift-bind test checks for THAT block's
+  // shape instead of a RULES entry.
+  it('declares Rule C as a dedicated real-parser (Guard 2) block, not a regex-based RULES entry', () => {
+    expect(checkerSource).not.toMatch(/\{\s*dir:\s*'src',\s*forbidden:\s*\[\s*'packages\/clickhouse-http'\s*\]/);
+    expect(checkerSource).toMatch(/Guard 2/);
+    expect(checkerSource).toMatch(/findModuleSpecifiers\(source,\s*relFile\)/);
+    expect(checkerSource).toMatch(/relResolved === 'packages\/clickhouse-http' \|\| relResolved\.startsWith\('packages\/clickhouse-http\/'\)/);
   });
 
   it('declares Rule D (deep imports banned everywhere; revised bare-specifier policy since issue #630 Phase 5)', () => {
@@ -1573,7 +1672,7 @@ describe('Guards 3/4 — the historical generic transport/URL surface and the mo
 // since they call the helpers directly rather than the checker. Same
 // `checkerSource`-text-read convention as the Rules A-D block and
 // `client-web-retirement-policy.test.js`'s Guard 5 equivalent.
-describe('build/check-boundaries.mjs still declares the Guard 1/3/4 rule blocks this spec mirrors (issue #630 Phase 8)', () => {
+describe('build/check-boundaries.mjs still declares the Guard 1/2/3/4 rule blocks this spec mirrors (issue #630 Phase 8)', () => {
   const checkerSource = readFileSync(join(repoRoot, 'build/check-boundaries.mjs'), 'utf8');
 
   it('declares the Guard 1 package-containment/tooling-dependency rule block', () => {
@@ -1586,6 +1685,20 @@ describe('build/check-boundaries.mjs still declares the Guard 1/3/4 rule blocks 
     // build/check-boundaries.mjs:576 — the undeclared-root-hoisted-dependency
     // violation message, only emitted by the Guard 1 bare-specifier check.
     expect(checkerSource).toMatch(/issue #630 Phase 8 Guard 1: package tooling\/tests may bare-import only node:\* or a dependency declared in the package's own devDependencies/);
+  });
+
+  // Review pass 1 — commit d81a672 bound Guards 1/3/4 to production text but
+  // conspicuously omitted Guard 2 despite it governing the identical
+  // relative-deep-import-escape concern; this closes that gap. Unlike Guards
+  // 1/3/4 (which were always their own dedicated blocks), Guard 2/Rule C
+  // moved OUT of the generic RULES array in this same fix — the companion
+  // "declares Rule C as a dedicated real-parser (Guard 2) block" test above
+  // pins the RULES-array-removal half; this test pins the dedicated block's
+  // own real-parser wiring and violation message, matching the Guard 1/3/4
+  // convention below.
+  it('declares the Guard 2 dedicated real-parser (relative deep-import) rule block', () => {
+    expect(checkerSource).toMatch(/findModuleSpecifiers\(source, relFile\)/);
+    expect(checkerSource).toMatch(/issue #630 Phase 2\/8 Guard 2: SQL Browser must use the package public export, never a relative deep import into src\/\*\* or generated dist\/\*\*/);
   });
 
   it('declares the Guards 3/4 root-wide transport/parser-surface ownership rule block', () => {

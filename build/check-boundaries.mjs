@@ -14,21 +14,28 @@
 // second script.
 //
 // Hand-rolled regex scan for the internal src-layering rules (RULES below)
-// and the plain package-specifier bans (the @clickhouse/client-web ban, Rule
-// B's zero-bare-specifier check): the codebase has no exotic import syntax
-// there, so scanning for import/export specifiers is enough and keeps those
-// rules a zero-dependency, sub-second pretest step. The exceptions are the
-// former-owner rules and BOTH halves of the revised package Rule D below
-// (the deep-import-subpath ban and the bare-specifier name/shape check),
-// which need identifier/import-shape-level (not specifier-text-level)
-// detection and therefore delegate to a real TypeScript parse in
-// `build/lib/check-legacy-owners.mjs` — see that module for why textual
-// matching was retired there (issue #630 Phase 3), and why the same
-// real-parser mechanism (not a new hand-rolled scanner) was required again
-// for issue #630 Phase 5's revised Rule D, for both halves: a comment sitting
-// between `import`/`export` and the specifier defeats a regex (however far
-// its whitespace/delimiter patterns are widened) but is ordinary parser
-// trivia to a real parse.
+// and Rule B's zero-bare-specifier check: the codebase has no exotic import
+// syntax there, so scanning for import/export specifiers is enough and keeps
+// those rules a zero-dependency, sub-second pretest step. The exceptions are
+// the former-owner rules, Rule C (the package relative-deep-import ban,
+// Guard 2 — issue #630 Phase 8, review pass 1), BOTH halves of the revised
+// package Rule D (the deep-import-subpath ban and the bare-specifier
+// name/shape check), and the `@clickhouse/client-web` reintroduction ban
+// (Guard 5) below — all of which need identifier/import-shape-level (not
+// specifier-text-level) detection and therefore delegate to a real
+// TypeScript parse in `build/lib/check-legacy-owners.mjs` — see that module
+// for why textual matching was retired there (issue #630 Phase 3), and why
+// the same real-parser mechanism (not a new hand-rolled scanner) was
+// required again for issue #630 Phase 5's revised Rule D, and again for
+// issue #630 Phase 8's Rule C/Guard 2 broadening and Guard 5: a comment
+// sitting between `import`/`export` and the specifier, or an escaped
+// string-literal segment, defeats a regex (however far its
+// whitespace/delimiter patterns are widened) but is ordinary parser
+// trivia/decoded text to a real parse — review pass 1 confirmed Rule C's
+// production enforcement still ran the regex (`extractSpecifiers`) despite
+// this file's own stated Phase 8 design goal, while its unit-test mirror
+// independently reimplemented the identical regex rather than calling the
+// real parser.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -194,12 +201,11 @@ const RULES = [
   // subpath form (`@altinity/clickhouse-http/dist/client.js`) needs no
   // parallel change: Rule D's `findDeepImportSpecifiers` below already bans
   // any subpath of the package specifier regardless of what follows the
-  // slash, dist included.
-  {
-    dir: 'src',
-    forbidden: ['packages/clickhouse-http'],
-    why: 'issue #630 Phase 2/8: SQL Browser must use the package public export, never a relative deep import into src/** or generated dist/**',
-  },
+  // slash, dist included. NOT an entry in this RULES array (review pass 1):
+  // this generic loop's `extractSpecifiers` regex missed a comment-trivia'd
+  // import clause or an escaped string-literal segment spelling out a
+  // `packages/clickhouse-http` path, so Rule C is enforced by its own real-
+  // parser (`findModuleSpecifiers`) block, alongside Rule D, below.
 ];
 
 function collectFiles(target) {
@@ -351,7 +357,16 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // accepted-risk convention above, not Rule D's heavier escape-sequence-aware
 // `mightReferencePackage`) — an exotic escaped spelling of this well-known,
 // no-longer-evolving vendor package name is outside this guard's threat
-// model, same acceptance as this module's own stated scope.
+// model, same acceptance as this module's own stated scope. Review pass 1:
+// the prefilter now CALLS `mightReferenceRetiredTopLevelApi` (imported
+// above) instead of an inline `source.includes(CLIENT_WEB_SPECIFIER)` —
+// production and the in-suite mirror
+// (`tests/unit/client-web-retirement-policy.test.js`) previously each
+// hand-copied that same one-line check independently, so a production-only
+// regression could leave the mirror's own copy — and its sabotage tests —
+// green while production silently diverged; sharing the one implementation
+// closes that drift risk, matching this file's convention for every other
+// pre-filter above.
 const CLIENT_WEB_SPECIFIER = '@clickhouse/client-web';
 const CLIENT_WEB_BAN_ROOTS = ['src', 'packages/clickhouse-http', 'tests', 'build'];
 for (const rootDir of CLIENT_WEB_BAN_ROOTS) {
@@ -362,7 +377,7 @@ for (const rootDir of CLIENT_WEB_BAN_ROOTS) {
     if (relFile.startsWith('packages/clickhouse-http/dist/')) continue; // generated, not source
     checkedFiles += 1;
     const source = fs.readFileSync(file, 'utf8');
-    if (!source.includes(CLIENT_WEB_SPECIFIER)) continue;
+    if (!mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])) continue;
     for (const { spec } of findModuleSpecifiers(source, relFile)) {
       if (spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) {
         violations.push(`${relFile} → ${spec} (issue #630 Phase 8 Guard 5: @clickhouse/client-web must never be reintroduced — ADR-0005 remains Rejected)`);
@@ -424,6 +439,38 @@ if (fs.existsSync(PACKAGE_SRC_DIR)) {
     for (const spec of extractSpecifiers(source)) {
       if (spec.startsWith('.')) continue; // relative — governed by Rule A above
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: clickhouse-http has zero bare package imports)`);
+    }
+  }
+}
+
+// Issue #630 Phase 2 — Rule C (Guard 2, broadened Phase 8 plan §21): SQL
+// Browser source must consume the package through its public export only —
+// no relative deep import into ANY part of the package directory
+// (`packages/clickhouse-http/**`, including generated `dist/**`). This is a
+// real TypeScript parse (`findModuleSpecifiers`), NOT the generic RULES
+// loop's `extractSpecifiers` regex above (review pass 1 finding): production
+// was still running the hand-rolled regex here even though this file's own
+// header comment already required the real-parser mechanism for exactly
+// this class of escape. A comment sitting between `import`/`export` and the
+// specifier, or an escaped string-literal segment (e.g. a hex/unicode escape
+// spelling out `../../packages/clickhouse-http/dist/index.js` without ever
+// containing that raw substring), both defeat `extractSpecifiers` — it
+// captures the still-escaped/comment-adjacent raw source text, which then
+// fails to resolve to the real file on disk, so the escape silently slips
+// the guard — while a real parse decodes the literal via `node.text` exactly
+// like Guard 1, Guard 5, and Rule D below already do for the identical
+// reason. No `except` carve-outs apply here (none existed for the old RULES
+// entry either).
+for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  checkedFiles += 1;
+  const source = fs.readFileSync(file, 'utf8');
+  for (const { spec } of findModuleSpecifiers(source, relFile)) {
+    if (!spec.startsWith('.')) continue; // bare/package specifiers can't reach src dirs
+    const resolved = resolveRelative(file, spec);
+    const relResolved = path.relative(repoRoot, resolved).split(path.sep).join('/');
+    if (relResolved === 'packages/clickhouse-http' || relResolved.startsWith('packages/clickhouse-http/')) {
+      violations.push(`${relFile} → ${spec} (resolved: ${relResolved}; src must not import packages/clickhouse-http — issue #630 Phase 2/8 Guard 2: SQL Browser must use the package public export, never a relative deep import into src/** or generated dist/**)`);
     }
   }
 }

@@ -23,7 +23,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
@@ -32,6 +32,7 @@ import {
   manifestDependencyFields,
   lockHasPackage,
   retiredClientSpikeScriptNames,
+  mightReferenceRetiredTopLevelApi,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const projectRoot = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -124,6 +125,26 @@ async function collectSourceFiles(dir, exts) {
   return files;
 }
 
+// The FULL production Guard 5 pipeline (prefilter → real parser → specifier
+// match), not just the parser half: `findModuleSpecifiers` alone proves the
+// parser-matching logic works, but every sabotage probe below used to call
+// it directly, bypassing the cheap `source.includes`-style prefilter that
+// gates whether the parser even runs at all in production — so none of them
+// could ever have caught a regression in that prefilter (review pass 1).
+// This mirrors production's own two-step shape (`build/check-boundaries.mjs`'s
+// CLIENT_WEB_BAN_ROOTS loop) end to end, including calling the SAME shared
+// prefilter helper production now calls (`mightReferenceRetiredTopLevelApi`)
+// rather than an independently hand-copied `source.includes(...)` — two
+// independently maintained copies of that exact one-line check previously
+// meant a production-only regression could leave this whole describe block
+// green, since every test here exercised only this file's own copy, never
+// production's.
+function findsClientWebViolation(source, relFile) {
+  if (!mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])) return false;
+  return findModuleSpecifiers(source, relFile)
+    .some(({ spec }) => spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`));
+}
+
 describe('Guard 5 — @clickhouse/client-web cannot be virtually reintroduced anywhere in scope (real-parser scan)', () => {
   it('src/**, packages/clickhouse-http/** (excluding dist/**), tests/**, and build/** are all clean', async () => {
     const roots = ['src', 'packages/clickhouse-http', 'tests', 'build'];
@@ -135,41 +156,73 @@ describe('Guard 5 — @clickhouse/client-web cannot be virtually reintroduced an
         const relFile = relative(projectRoot, file).split('/').join('/');
         if (relFile.startsWith('packages/clickhouse-http/dist/')) continue;
         const source = await readFile(file, 'utf8');
-        if (!source.includes(CLIENT_WEB_SPECIFIER)) continue;
-        for (const { spec } of findModuleSpecifiers(source, relFile)) {
-          if (spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) offenders.push(relFile);
-        }
+        if (findsClientWebViolation(source, relFile)) offenders.push(relFile);
       }
     }
     expect(offenders).toEqual([]);
   }, 60_000);
 
-  it('flags a virtual static import of the vendor package (sabotage probe, not written to disk)', () => {
+  it('flags a virtual static import of the vendor package (sabotage probe, not written to disk), through the full prefilter-to-parser path', () => {
     const source = "import { createClient } from '@clickhouse/client-web';\n";
-    const found = findModuleSpecifiers(source, 'src/net/__boundary_probe_630p8_clientweb_static__.ts')
-      .some(({ spec }) => spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`));
-    expect(found).toBe(true);
+    expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_static__.ts')).toBe(true);
   });
 
-  it('flags a virtual dynamic import of the vendor package (sabotage probe, not written to disk)', () => {
+  it('flags a virtual dynamic import of the vendor package (sabotage probe, not written to disk), through the full prefilter-to-parser path', () => {
     const source = "export async function f() { await import('@clickhouse/client-web'); }\n";
-    const found = findModuleSpecifiers(source, 'src/net/__boundary_probe_630p8_clientweb_dynamic__.ts')
-      .some(({ spec }) => spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`));
-    expect(found).toBe(true);
+    expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_dynamic__.ts')).toBe(true);
   });
 
-  it('flags a virtual deep-subpath import of the vendor package (sabotage probe, not written to disk)', () => {
+  it('flags a virtual deep-subpath import of the vendor package (sabotage probe, not written to disk), through the full prefilter-to-parser path', () => {
     const source = "import { createClient } from '@clickhouse/client-web/web';\n";
-    const found = findModuleSpecifiers(source, 'src/net/__boundary_probe_630p8_clientweb_deep__.ts')
-      .some(({ spec }) => spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`));
-    expect(found).toBe(true);
+    expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_deep__.ts')).toBe(true);
   });
 
-  it('does not flag an unrelated import merely mentioning the string in a comment (comments are parser trivia, never AST nodes)', () => {
+  it('does not flag an unrelated import merely mentioning the string in a comment (comments are parser trivia, never AST nodes), through the full prefilter-to-parser path', () => {
     const source = "// see @clickhouse/client-web — rejected by ADR-0005\nexport const x = 1;\n";
-    const found = findModuleSpecifiers(source, 'src/net/__boundary_probe_630p8_clientweb_comment__.ts')
-      .some(({ spec }) => spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`));
-    expect(found).toBe(false);
+    // The prefilter is a plain substring test, so this source still passes
+    // it (the comment DOES contain the raw specifier text) — the real
+    // parser is what correctly finds no import/export/dynamic-import
+    // specifier here, proving the full path, not just the prefilter, must
+    // both agree before a violation is reported.
+    expect(mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])).toBe(true);
+    expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_comment__.ts')).toBe(false);
+  });
+
+  it('the prefilter alone would skip a file with no mention of the specifier at all (proves the prefilter, not just the parser, is exercised)', () => {
+    const source = 'export const x = 1;\n';
+    expect(mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])).toBe(false);
+    expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_none__.ts')).toBe(false);
+  });
+});
+
+// The describe block above only proves this file's OWN mirror (and the
+// shared `mightReferenceRetiredTopLevelApi`/`findModuleSpecifiers` helpers)
+// behave correctly; it does not prove `build/check-boundaries.mjs` (the
+// actual `check:arch` gate) still wires Guard 5 the same way — with that
+// wiring changed, this whole file could stay green while `check:arch`
+// silently regressed to an independently hand-copied prefilter (exactly
+// review pass 1's finding). Read as TEXT, same `checkerSource` convention as
+// `tests/unit/clickhouse-http-package-policy.test.js`'s own drift-bind
+// blocks (`check-boundaries.mjs` runs its whole check-and-exit routine at
+// module top level, so it cannot be imported here).
+describe('build/check-boundaries.mjs still declares the Guard 5 rule block this spec mirrors (issue #630 Phase 8)', () => {
+  const checkerSource = readFileSync(resolve(projectRoot, 'build/check-boundaries.mjs'), 'utf8');
+
+  it('declares the four-tree CLIENT_WEB_BAN_ROOTS scan', () => {
+    expect(checkerSource).toMatch(/CLIENT_WEB_BAN_ROOTS\s*=\s*\['src',\s*'packages\/clickhouse-http',\s*'tests',\s*'build'\]/);
+  });
+
+  it('gates the real-parser call behind the SHARED mightReferenceRetiredTopLevelApi prefilter, not an inline hand-copied substring check', () => {
+    expect(checkerSource).toMatch(/mightReferenceRetiredTopLevelApi\(source,\s*\[CLIENT_WEB_SPECIFIER\]\)/);
+    // Guards exactly the regression review pass 1 found: an independently
+    // hand-copied `source.includes(CLIENT_WEB_SPECIFIER)` prefilter bypassing
+    // the shared helper entirely.
+    expect(checkerSource).not.toMatch(/if\s*\(\s*!\s*source\.includes\(CLIENT_WEB_SPECIFIER\)\s*\)/);
+  });
+
+  it('still calls the real parser and reports the exact Guard 5 violation message', () => {
+    expect(checkerSource).toMatch(/findModuleSpecifiers\(source,\s*relFile\)/);
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guard 5: @clickhouse\/client-web must never be reintroduced — ADR-0005 remains Rejected/);
   });
 });
 
