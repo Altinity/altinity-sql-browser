@@ -83,7 +83,6 @@ import {
   createAuthenticatedExecutionScope,
   type AuthenticatedExecutionScope,
 } from '../application/authenticated-execution-scope.js';
-import type { AuthenticatedCancellationLease } from '../net/ch-client.js';
 // Issue #630 Phase 7 — the composition root wires QES's/ExportService's
 // injected authenticated progress/text/response primitives directly over
 // these three seam functions (never a package import — Rule D restricts the
@@ -448,28 +447,16 @@ export function createApp(env: CreateAppEnv = {}): App {
   const getToken = conn.getToken;
   const ensureConfig = conn.ensureConfig;
 
-  // #630 Phase 7 §9.2 — CRITICAL bridge (verified with `tsc --strict`):
-  // `ch.killQueryWithLease` still REQUIRES a third `sqlString` argument at
-  // this point in the migration (its own rewrite onto the package's
-  // stateless `killQuery` — plan §10 — is a LATER sub-task that will drop
-  // that parameter without touching this file). A plain typed alias without
-  // the cast fails TS2322 (the real function's 3rd parameter isn't
-  // optional). Always pass `sqlString` as the 3rd arg below — required at
-  // runtime pre-cutover, ignored post-cutover.
-  type SqlStringFn = (s: unknown) => string;
-  const killWithLease = ch.killQueryWithLease as (
-    lease: AuthenticatedCancellationLease,
-    queryId: string,
-    sqlStringFn?: SqlStringFn,
-  ) => Promise<void>;
-
   // #630 Phase 7 §9.2-9.4 — the SINGLE owner-scoped explicit-cancel callback:
   // QES (`exec.kill`), the workbench session, and both ExportService cancel
   // paths all delegate here. `ownerEpoch` is the operation's authenticated-
   // execution-scope epoch, captured by the caller at registration/start time
   // (never re-read at cancel time) — `conn.captureCancellationLease` fences a
   // replacement (non-owner) epoch, permitting only a same-epoch refreshed
-  // credential (§9.3).
+  // credential (§9.3). `ch.killQueryWithLease` was rewritten onto the
+  // package's own stateless `killQuery` (plan §10) and now takes only
+  // `(lease, queryId)` — the package owns KILL QUERY's SQL and quoting, so
+  // this call site no longer supplies `sqlString`.
   async function cancelOwnedQuery(
     ownerEpoch: number | null | undefined,
     queryId: string | null | undefined,
@@ -477,7 +464,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (ownerEpoch == null || !queryId) return;
     const lease = conn.captureCancellationLease(ownerEpoch);
     if (!lease) return;
-    await killWithLease(lease, queryId, sqlString);
+    await ch.killQueryWithLease(lease, queryId);
   }
 
   // Identity/auth/config all live on `conn` (see app.types.ts's own doc
@@ -2110,7 +2097,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       activeExecutionScope?.close();
       const scope = createAuthenticatedExecutionScope({
         epoch,
-        cancelRemote: (lease, queryId) => killWithLease(lease, queryId, sqlString),
+        cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId),
       });
       activeExecutionScope = scope;
       // Connection-scoped caches/panes are owners even when they have no live
