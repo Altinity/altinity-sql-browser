@@ -331,10 +331,23 @@ export function findDeepImportSpecifiers(source, filename, packageSpecifier) {
  *   - `{ kind: 'reexport-gateway' }` — `export { ... } from 'pkg'` or
  *     `export * from 'pkg'` (bypasses ever binding an import at all).
  * `import type`/`export type` declarations and individual type-only
- * specifiers (`import { type X }`) are never reported — they are erased
- * before this package's bare specifier would ever reach a browser or the
- * bundled artifact (see `build/e2e-serve.mjs`'s type-stripping, and esbuild's
- * own `import type` elision), so they carry no real package access.
+ * specifiers (`import { type X }`) are reported on exactly the same terms as
+ * their value counterparts — there is no type-only carve-out. A named
+ * specifier's usage is keyed by NAME regardless of `isTypeOnly` (so a
+ * type-only reference to an approved pure-language export, e.g.
+ * `import type { Span }`, is not something the caller need forbid, exactly
+ * like the value form), but a type-only reference to anything else — a
+ * transport/protocol name, or any default/namespace/side-effect/dynamic/
+ * re-export form — is reported exactly like the value form would be. An
+ * earlier revision of this rule treated type-only access as inherently
+ * exempt (erasure before bundling — see `build/e2e-serve.mjs`'s
+ * type-stripping and esbuild's own `import type` elision — was read as "no
+ * real package access"), but the boundary this rule enforces is a
+ * SOURCE-level ownership boundary over which subsystem may even NAME a
+ * transport/protocol export, not a bundle-output boundary, so erasure at
+ * build time does not exempt it. This matches `findDeepImportSpecifiers`
+ * above, which was already unconditional on `import type` for the identical
+ * reason.
  *
  * The module specifier itself may be a plain string literal OR a
  * no-substitution template literal (`` import(`pkg`) ``) — only a dynamic
@@ -364,20 +377,29 @@ export function findPackageImportUsages(source, filename, packageSpecifier) {
         const clause = node.importClause;
         if (!clause) {
           found.push({ kind: 'side-effect' });
-        } else if (!clause.isTypeOnly) {
+        } else {
+          // Deliberately unconditional on `clause.isTypeOnly`/`el.isTypeOnly`:
+          // a type-only reference is reported on exactly the same terms as a
+          // value one (see this function's own doc comment above) — the
+          // per-name allowlist filtering happens in the caller, keyed by
+          // `name` alone, so a type-only named import of an approved
+          // pure-language export still passes there while a type-only named
+          // import of anything else still gets flagged.
           if (clause.name) found.push({ kind: 'default' });
           const bindings = clause.namedBindings;
           if (bindings && is.isNamespaceImport(bindings)) {
             found.push({ kind: 'namespace' });
           } else if (bindings && is.isNamedImports(bindings)) {
             for (const el of bindings.elements) {
-              if (el.isTypeOnly) continue;
               found.push({ kind: 'named', name: (el.propertyName ?? el.name).text });
             }
           }
         }
       }
-      if (is.isExportDeclaration(node) && isTargetSpecifier(node.moduleSpecifier) && !node.isTypeOnly) {
+      // Deliberately unconditional on `node.isTypeOnly` too, for the same
+      // reason: `export type { X } from 'pkg'` is a re-export gateway exactly
+      // like `export { X } from 'pkg'` is.
+      if (is.isExportDeclaration(node) && isTargetSpecifier(node.moduleSpecifier)) {
         found.push({ kind: 'reexport-gateway' });
       }
       // Dynamic `import('pkg')`: a CallExpression whose callee is the bare

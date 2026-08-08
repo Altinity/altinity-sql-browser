@@ -375,13 +375,19 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   // categories of package export (plan §8.2) rather than a blanket
   // net-only ban: TRANSPORT/PROTOCOL APIs (`createClickHouseHttpClient`,
   // `chUrl`, `streamLines`, the response consumers/types, `ClickHouseError`)
-  // remain importable only under `src/net/**`, exactly as Phase 2
-  // established; pure LANGUAGE APIs (SQL quoting, the generic type grammar,
-  // the shared scanner — `PHASE5_PACKAGE_LANGUAGE_EXPORTS`) may now be
-  // imported directly by their real SQL Browser consumers outside
-  // `src/net/**` too, but ONLY as a plain named import of an approved name
-  // — a specifier-text regex cannot tell which names a named import binds,
-  // so this half needs the real parser (`findPackageImportUsages`). Inside
+  // remain importable only under `src/net/**` — value AND type-only alike —
+  // exactly as Phase 2 established; pure LANGUAGE APIs (SQL quoting, the
+  // generic type grammar, the shared scanner — `PHASE5_PACKAGE_LANGUAGE_EXPORTS`)
+  // may now be imported directly by their real SQL Browser consumers outside
+  // `src/net/**` too, but ONLY as a plain named import (value or type-only)
+  // of an approved name — a specifier-text regex cannot tell which names a
+  // named import binds, so this half needs the real parser
+  // (`findPackageImportUsages`). There is no type-only carve-out here:
+  // `findPackageImportUsages` reports a type-only named import/export on
+  // exactly the same terms as a value one (see its own doc comment), so a
+  // transport/protocol name stays `src/net/**`-only no matter how it is
+  // referenced — matching the deep-import half above, which was already
+  // unconditional on `import type` for the identical reason. Inside
   // `src/net/**` every access form/name remains unrestricted, matching
   // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
   if (relFile.startsWith('src/net/')) continue;

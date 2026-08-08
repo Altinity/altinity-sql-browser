@@ -40,14 +40,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (`build/check-boundaries.mjs`) is narrowed from a blanket
   `src/net/**`-only bare-import rule to a parser-backed language-symbol
   allowlist outside `src/net/**` (SQL quoting, the generic type grammar, the
-  shared scanner — a plain named import of an approved name only), while
-  transport/protocol APIs (`createClickHouseHttpClient`, `chUrl`,
-  `streamLines`, the response consumers, `ClickHouseError`) remain
-  `src/net/**`-only for VALUE access — a whole `import type`/`export type`
-  or an individual `import { type X }` specifier naming one of them is
-  never flagged outside `src/net/**`, since it is erased before bundling
-  and carries no runtime package access — and deep imports remain
-  forbidden everywhere regardless of `import type`; the
+  shared scanner — a plain named import, value or type-only, of an approved
+  name only), while transport/protocol APIs (`createClickHouseHttpClient`,
+  `chUrl`, `streamLines`, the response consumers, `ClickHouseError`) remain
+  `src/net/**`-only with no type-only carve-out — a whole `import type`/
+  `export type` or an individual `import { type X }` specifier naming one
+  of them is flagged outside `src/net/**` on exactly the same terms as a
+  value reference, since the boundary is a source-level ownership boundary
+  over which subsystem may even NAME a transport export, not a
+  bundle-output one erasure before bundling could exempt — and deep imports
+  remain forbidden everywhere regardless of `import type`; the
   identifier/import-shape analysis reuses the existing real-TypeScript-parser
   mechanism (`build/lib/check-legacy-owners.mjs`, generalized from the
   Phase 3 legacy-owner rule) rather than a new hand-rolled scanner. The

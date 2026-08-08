@@ -40,27 +40,30 @@ Dependency direction is strictly downward. Enforced mechanically by
   (never a deep subpath) splits into two categories since #630 Phase 5:
   transport/protocol APIs (`createClickHouseHttpClient`, `chUrl`,
   `streamLines`, the response consumers, `ClickHouseError`) remain
-  restricted to `src/net/**`, exactly as Phase 2 established; pure
-  LANGUAGE APIs (SQL quoting, the generic type grammar, the shared
-  scanner) may be imported directly by their real SQL Browser consumers
-  anywhere outside `src/net/**` too — but only as a plain VALUE named import
-  of an approved name; every other access form (default/namespace/
-  side-effect/dynamic import, package re-export gateway) and every
-  transport/protocol name stay `src/net/**`-only, no matter where the
-  import site lives. This name/shape-aware half of the rule is a real
+  restricted to `src/net/**`, exactly as Phase 2 established, no matter
+  where the import site lives and no matter whether the reference is a
+  value or a type-only one; pure LANGUAGE APIs (SQL quoting, the generic
+  type grammar, the shared scanner) may be imported directly by their real
+  SQL Browser consumers anywhere outside `src/net/**` too — but only as a
+  plain named import (value or type-only) of an approved name; every other
+  access form (default/namespace/side-effect/dynamic import, package
+  re-export gateway) stays `src/net/**`-only regardless of name or
+  type-only-ness. This name/shape-aware half of the rule is a real
   TypeScript parse (`build/lib/check-legacy-owners.mjs`), not a specifier-
   text regex, because a regex cannot tell which names a named import binds.
-  The check is value-import-only: a whole `import type`/`export type`
+  The check has no type-only carve-out: a whole `import type`/`export type`
   declaration, or an individual `import { type X }` specifier, naming a
-  transport/protocol name is never flagged — it is erased before bundling
-  (esbuild's own `import type` elision), so it carries no runtime package
-  access even though the package's public surface exports transport types
-  (`ClickHouseHttpClient`, `ClickHouseHttpRequest`, …) alongside the
-  approved pure-language types (`Span`, `TypeNode`, `TypeModifiers`, …).
-  The deep-import-subpath half above has no such carve-out: it is
-  unconditional on `import type`, since the "only the package's `.` export
-  is public" contract applies to a type-only deep import exactly as much as
-  a value one.
+  transport/protocol name is flagged exactly like the value form would be —
+  the boundary this rule enforces is a source-level ownership boundary over
+  which subsystem may even NAME a transport/protocol export, not a
+  bundle-output boundary, so `import type` erasure before bundling
+  (esbuild's own elision) does not exempt it even though the package's
+  public surface exports transport types (`ClickHouseHttpClient`,
+  `ClickHouseHttpRequest`, …) alongside the approved pure-language types
+  (`Span`, `TypeNode`, `TypeModifiers`, …). The deep-import-subpath half
+  above was always unconditional on `import type` for the identical reason:
+  the "only the package's `.` export is public" contract applies to a
+  type-only deep import exactly as much as a value one.
 
 Two known, deliberate exceptions predate #276 and are out of its scope:
 `core/saved-io.ts` imports a type from `editor/spec-editor.types.js`, and

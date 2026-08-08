@@ -429,35 +429,59 @@ describe('Rule D, revised bare-specifier half (issue #630 Phase 5) — outside s
     expect(found.some((line) => line.includes('__boundary_probe_630_dynamic_template__'))).toBe(true);
   });
 
-  // The check is deliberately value-import-only (erasure rationale documented
-  // on `findPackageImportUsages` and in `docs/ARCHITECTURE.md`/`CLAUDE.md`):
-  // a type-only reference to a transport/protocol name carries no runtime
-  // package access, so none of these three type-only forms is flagged, even
-  // though `createClickHouseHttpClient`/`ClickHouseError` are transport
-  // names, not approved pure-language exports. These pin today's actual,
-  // reviewed behavior as an explicit contract rather than leaving it latent.
-  it('passes a whole `import type` clause naming a transport export outside src/net/** (type-only, erased before bundling)', () => {
+  // No type-only carve-out: a type-only reference to a transport/protocol
+  // name is flagged on exactly the same terms as a value one (see the
+  // updated doc comment on `findPackageImportUsages` and
+  // `docs/ARCHITECTURE.md`/`CLAUDE.md`) — the boundary is a source-level
+  // ownership boundary over which subsystem may even NAME a transport
+  // export, not a bundle-output boundary erasure before bundling could
+  // exempt. These are sabotage probes (not written to disk): each of these
+  // three type-only forms must still be caught, even though
+  // `createClickHouseHttpClient`/`ClickHouseError` are transport names, not
+  // approved pure-language exports.
+  it('flags a whole `import type` clause naming a transport export outside src/net/** (sabotage probe, not written to disk)', () => {
     const found = packageNameShapeViolations(join(repoRoot, 'src'), [
       ['src/core/__boundary_probe_630_importtype__.ts',
         "import type { createClickHouseHttpClient } from '@altinity/clickhouse-http';\n"],
     ]);
-    expect(found.some((line) => line.includes('__boundary_probe_630_importtype__'))).toBe(false);
+    expect(found.some((line) => line.includes('__boundary_probe_630_importtype__'))).toBe(true);
   });
 
-  it('passes an individual `import { type X }` specifier naming a transport export outside src/net/** (type-only, erased before bundling)', () => {
+  it('flags an individual `import { type X }` specifier naming a transport export outside src/net/** (sabotage probe, not written to disk)', () => {
     const found = packageNameShapeViolations(join(repoRoot, 'src'), [
       ['src/core/__boundary_probe_630_typespecifier__.ts',
         "import { type createClickHouseHttpClient } from '@altinity/clickhouse-http';\n"],
     ]);
-    expect(found.some((line) => line.includes('__boundary_probe_630_typespecifier__'))).toBe(false);
+    expect(found.some((line) => line.includes('__boundary_probe_630_typespecifier__'))).toBe(true);
   });
 
-  it('passes an `export type { X } from` re-export naming a transport export outside src/net/** (type-only, erased before bundling)', () => {
+  it('flags an `export type { X } from` re-export naming a transport export outside src/net/** (sabotage probe, not written to disk)', () => {
     const found = packageNameShapeViolations(join(repoRoot, 'src'), [
       ['src/core/__boundary_probe_630_exporttype__.ts',
         "export type { ClickHouseError } from '@altinity/clickhouse-http';\n"],
     ]);
-    expect(found.some((line) => line.includes('__boundary_probe_630_exporttype__'))).toBe(false);
+    expect(found.some((line) => line.includes('__boundary_probe_630_exporttype__'))).toBe(true);
+  });
+
+  // The allowlist filter still applies to type-only named imports: a
+  // type-only reference to an APPROVED pure-language export is not a usage
+  // the caller forbids, exactly like the value form (`Span` has no value
+  // export at all — it can only ever be imported type-only — so this is
+  // also the regression guard for that name ever becoming unimportable).
+  it('passes a type-only named import of an approved pure-language export outside src/net/** (e.g. `import type { Span }`)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_typelanguage__.ts',
+        "import type { Span } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_typelanguage__'))).toBe(false);
+  });
+
+  it('passes an individual type-only `{ type sqlString }` specifier naming an approved pure-language export outside src/net/**', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_typespecifier_language__.ts',
+        "import { type sqlString } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_typespecifier_language__'))).toBe(false);
   });
 
   it('flags a package re-export gateway outside src/net/** (sabotage probe, not written to disk)', () => {

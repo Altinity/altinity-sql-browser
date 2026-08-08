@@ -46,11 +46,12 @@ all bundled — see hard rule 4). Quality is held by tests.
    Browser's own product operations/result modes; the Phase-4 consuming
    query APIs (`queryJson`/`queryText`/`queryProgress`) remain additive and
    not yet consumed by any `src/**` caller (that cutover is Phase 7). The
-   name/shape check is value-import-only: `import type`/`export type` and
-   individual `import { type X }` specifiers of a transport/protocol name
-   are never flagged (erased before bundling, so they carry no runtime
-   package access — the same rationale `build/lib/check-legacy-owners.mjs`
-   documents), matching `docs/ARCHITECTURE.md`. Pure LANGUAGE APIs
+   name/shape check has no type-only carve-out: `import type`/`export type`
+   and individual `import { type X }` specifiers of a transport/protocol
+   name are flagged on exactly the same terms as a value reference —
+   erasure before bundling does not exempt a source-level NAME ownership
+   boundary (`build/lib/check-legacy-owners.mjs`'s `findPackageImportUsages`
+   documents why), matching `docs/ARCHITECTURE.md`. Pure LANGUAGE APIs
    (`sqlString`/`quoteIdent`/`qualifyIdent`,
    `scanSpans`/`Span`/`SpanKind`, and the generic type-grammar exports —
    `parseClickHouseType`, `analyzeTypeModifiers`, `canonicalType`,
@@ -58,8 +59,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    set) may instead be imported directly by their real SQL Browser
    consumers outside `src/net/**` too (mechanically allowlisted by name,
    `build/check-boundaries.mjs`'s revised Rule D) — only as a plain named
-   import; default/namespace/side-effect/dynamic imports and package
-   re-export gateways stay `src/net/**`-only regardless of name.
+   import, value or type-only; default/namespace/side-effect/dynamic
+   imports and package re-export gateways stay `src/net/**`-only regardless
+   of name or type-only-ness.
    `isSupportedOptionScalar` (which scalar families are eligible for an
    option-backed control) is SQL Browser option/control POLICY, not generic
    grammar, and stays owned by `src/core/param-type.ts` — the package never

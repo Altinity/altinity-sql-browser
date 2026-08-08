@@ -28,11 +28,12 @@
 // import them directly outside `src/net/**`, while the transport/protocol
 // surface above (`createClickHouseHttpClient`, `chUrl`, `streamLines`, the
 // response consumers, `ClickHouseError`) remains `src/net/**`-only, exactly
-// as before. The check is value-import-only: a type-only reference to a
-// transport/protocol name (`import type`/`export type`, or an individual
-// `import { type X }` specifier) is never flagged, matching
-// `docs/ARCHITECTURE.md` and `build/lib/check-legacy-owners.mjs`'s own
-// erasure-based rationale.
+// as before — value or type-only. There is no type-only carve-out: a
+// type-only reference to a transport/protocol name (`import type`/`export
+// type`, or an individual `import { type X }` specifier) is flagged on
+// exactly the same terms as a value one, matching `docs/ARCHITECTURE.md` and
+// `build/lib/check-legacy-owners.mjs`'s `findPackageImportUsages` — erasure
+// before bundling does not exempt a source-level NAME ownership boundary.
 
 export { chUrl } from './url.js';
 export { createClickHouseHttpClient } from './client.js';
