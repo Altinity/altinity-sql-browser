@@ -38,9 +38,16 @@
        semantics (one real Fetch, the caller's own AbortSignal driving
        cancellation for the response's whole lifetime, no callbacks after
        rejection). Scenarios 1-8 are otherwise UNCHANGED: they still exercise
-       the still-live SQL Browser production composition
-       (`createHttpTransport().send()` -> package `streamLines`), which
-       remains the production path until Phase 7's cutover.
+       the raw `createHttpTransport().send()` -> package `streamLines`
+       composition directly, which was the ordinary SQL Browser production
+       path through #630 Phase 5. Since Phase 6, the actual production path
+       for `queryJson`/`runQuery`/`exportQuery` is the authenticated-path
+       composition below (`authenticatedRequest()`/`authenticatedProgress()`
+       -> package `request()`/response consumers) — `createHttpTransport`
+       itself now remains live only as the frozen-lease `killQueryWithLease`
+       bypass's compatibility route. Scenarios 1-8 stay as lower-layer
+       package/transport regression coverage; they are not claimed to
+       exercise the current ordinary production path.
 
        #630 Phase 6 — authenticated-path variants of the post-header
        cancellation scenarios (5-9), proving the SAME native

@@ -51,17 +51,17 @@ module mocking.
 ## Query path
 
 1. The editor/controller prepares SQL and typed parameters.
-2. `src/net/ch-client.js` sends the HTTP request with injected auth/fetch context,
-   delegating generic request construction and stream mechanics through a narrow
-   transport contract (`src/net/clickhouse-transport.types.js` +
-   `src/net/clickhouse-http-transport.js`, #585 Phase 1). Since #630 Phase 6,
-   auth/epoch/retry/lifecycle policy itself lives in
-   `src/net/authenticated-clickhouse-request.js` (moved out of `ch-client.js`'s
-   former `authedFetch`/`transportFor(ctx)`, deleted outright), which builds the
-   `@altinity/clickhouse-http` package client directly and composes it with the
-   package's response consumers; `ch-client.js`'s exported `queryJson`/
-   `runQuery`/`exportQuery` reach it as callers, keeping their own product-level
-   result/error handling.
+2. `src/net/ch-client.js`'s exported `queryJson`/`runQuery`/`exportQuery` send the
+   HTTP request through `src/net/authenticated-clickhouse-request.js` (#630
+   Phase 6), which owns auth/epoch/retry/lifecycle policy (moved out of
+   `ch-client.js`'s former `authedFetch`/`transportFor(ctx)`, deleted outright)
+   and builds the `@altinity/clickhouse-http` package client directly, composing
+   it with the package's response consumers; the callers keep their own
+   product-level result/error handling. The narrow transport contract
+   (`src/net/clickhouse-transport.types.js` + `src/net/clickhouse-http-transport.js`,
+   #585 Phase 1) is no longer the ordinary path — it now remains only as the
+   frozen-lease `killQueryWithLease` bypass's compatibility route, through
+   Phase 6; Phase 7 is expected to retire it.
 3. `JSONStringsEachRowWithProgress` is folded line by line by pure stream logic.
 4. Results resolve through the panel registry to table, chart, logs, KPI, filter,
    text, or graph-oriented renderers.
