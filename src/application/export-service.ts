@@ -46,6 +46,23 @@
 // vs. results.ts's re-export of it. `src/application/**` may never import
 // `src/ui/**` (check:arch), so a structural mirror — not an import — is the
 // only option; the two are kept in sync by hand (small, stable shapes).
+//
+// Issue #630 Phase 7 — this service no longer depends on generic
+// `exportQuery`/`runQuery`/mutable-context `killQuery`. It is injected two
+// narrow authenticated primitives instead — `exportResponse` (the raw native
+// `Response` for both the direct-export and script-row-export byte-stream
+// paths, mirroring `authenticatedResponse`) and `runEffectText` (a script's
+// non-row effect statements, mirroring `authenticatedText`) — plus `cancel`,
+// the SAME owner-scoped best-effort KILL QUERY callback QES's own `kill()`
+// delegates to (app.ts's `cancelOwnedQuery`, #630 Phase 7 §9.2/9.5). `ctx()`
+// survives only as the narrow signed-out notifier `exportDirect`/
+// `exportScriptEntry` call on a lost token — no transport call reads it any
+// more. Request shapes below (`ExportRequest`) are this service's OWN
+// narrow type, never a re-export of a `net/**`/package name, so this file
+// carries zero coupling to `@altinity/clickhouse-http`'s exports; a thrown
+// package `ClickHouseError`'s `.message` is already the safe parsed text, so
+// the existing generic `String((e instanceof Error && e.message) || e)`
+// fallbacks below classify it correctly with no name check or import.
 
 import type { Signal } from '@preact/signals-core';
 import { splitStatements, isRowReturning } from '../core/sql-split.js';
@@ -58,18 +75,40 @@ import { formatFileMeta, exportFilename, scriptExportName } from '../core/export
 // caller-side latin1 conversion — see the deleted `latin1()` helper this
 // file used to carry). `src/application/**` cannot import the package
 // directly (Rule D), so this goes through `ch-client.ts`'s zero-logic
-// re-export, the same gateway this file already depends on for `exportQuery`/
-// `runQuery`/`killQuery`.
+// re-export (#630 Phase 7 — the ONLY remaining `net/ch-client.ts` import this
+// file needs; the transport-mechanics re-exports it used to depend on are
+// gone).
 import { findExceptionFrame } from '../net/ch-client.js';
 import type { QueryTab } from '../state.js';
 import { variableDoc } from '../state.js';
 import type { ResultSort } from '../core/sort.js';
-import type { ChCtx, exportQuery, runQuery, killQuery } from '../net/ch-client.js';
 import type { WorkbenchParameterSession } from './workbench-parameter-session.js';
 import type {
   AuthenticatedExecutionRegistration,
   AuthenticatedExecutionScope,
 } from './authenticated-execution-scope.js';
+
+// ── Injected transport request shape ────────────────────────────────────────
+
+/** One authenticated ClickHouse HTTP request, exactly as this service builds
+ *  it — this service's OWN shape (mirrors `query-execution-service.ts`'s own
+ *  `QueryExecutionRequest`; never a re-export of a `net/**`/package type). */
+export interface ExportRequest {
+  sql: string;
+  defaultFormat: string;
+  settings?: Record<string, string | number>;
+  params?: Record<string, string | number>;
+  signal?: AbortSignal;
+}
+
+/** The narrow signed-out-notifier surface `ctx()` still needs — no export
+ *  path performs a transport request through it any more (#630 Phase 7):
+ *  `exportResponse`/`runEffectText` own that now, and cancellation goes
+ *  through `deps.cancel` instead of a mutable-context `killQuery`. A real
+ *  `ChCtx` (`net/ch-client.ts`) satisfies this structurally without a cast. */
+export interface SignedOutCtx {
+  onSignedOut(): void;
+}
 
 // ── File System Access seam (moved from app.ts) ─────────────────────────────
 
@@ -174,22 +213,35 @@ export interface ExportHooks {
 
 /** Every side effect this service needs, injected as a narrow bag — mirrors
  *  `query-execution-service.ts`'s own `QueryExecutionDeps`/`workbench-
- *  session.ts`'s own `WorkbenchSessionDeps` conventions. Transport deps carry
- *  the exact `ch-client.js` functions this service's export paths use
- *  (`exportQuery` for both the single-file and per-statement-rows paths,
- *  `runQuery` for a script's non-row effect statements, `killQuery` for both
- *  cancel paths) plus a live `ctx` PROVIDER (not a snapshot — the caller may
- *  rebuild it after a token refresh, same as `QueryExecutionDeps.ctx`). Kept
- *  as the raw ch-client functions + `ctx()` rather than routed through
- *  `app.exec` — `app.exec`'s `executeRead`/`executeScript` return already-
- *  parsed results, but the export paths need the raw streaming `Response`
- *  itself (for `streamToFile`'s hold-back-buffer inspection), which
- *  `app.exec`'s surface doesn't expose. */
+ *  session.ts`'s own `WorkbenchSessionDeps` conventions. `exportResponse`
+ *  (both the single-file and per-statement-rows byte-stream paths) and
+ *  `runEffectText` (a script's non-row effect statements) are thin closures
+ *  production wires over `authenticatedResponse`/`authenticatedText`
+ *  (`net/authenticated-clickhouse-request.ts`); `cancel` is the SAME
+ *  owner-scoped best-effort KILL QUERY callback (app.ts's
+ *  `cancelOwnedQuery`) `QueryExecutionDeps.cancel` also delegates to (#630
+ *  Phase 7 §9.5). Kept as two narrow request-shaped functions rather than
+ *  routed through `app.exec` — `app.exec`'s `executeRead`/`executeScript`
+ *  return already-parsed results, but the export paths need the raw
+ *  streaming `Response` itself (for `streamToFile`'s hold-back-buffer
+ *  inspection), which `app.exec`'s surface doesn't expose. */
 export interface ExportServiceDeps {
-  exportQuery: typeof exportQuery;
-  runQuery: typeof runQuery;
-  killQuery: typeof killQuery;
-  ctx(): ChCtx;
+  /** Authenticated native-Response request for a raw byte-stream export —
+   *  the exact successful `Response` untouched (never `.text()`/`.json()`),
+   *  package HTTP success classification, no `wait_end_of_query` (mirrors
+   *  `authenticatedResponse`, #630 Phase 7 §12.1-12.3). Used by both
+   *  `exportDirect` and a script's row-returning statements. */
+  exportResponse(request: ExportRequest): Promise<Response>;
+  /** Authenticated whole-body text request for a script's non-row effect
+   *  statements (mirrors `authenticatedText`, #630 Phase 7 §13). */
+  runEffectText(request: ExportRequest): Promise<string>;
+  /** Best-effort owner-scoped `KILL QUERY` (#630 Phase 7 §9.5) — local abort
+   *  always happens first (both `cancelExport`/`cancelExportScript` below
+   *  abort their own signal before calling this); a replacement (non-owner)
+   *  epoch never reaches a live connection's frozen kill. */
+  cancel(ownerEpoch: number | null | undefined, queryId: string | null | undefined): Promise<void>;
+  /** Narrow signed-out notifier — no transport call reads this any more. */
+  ctx(): SignedOutCtx;
   /** The disposable authenticated epoch which owns newly-started export work.
    *  A null scope preserves this application's narrow unit-test seam; normal
    *  UI entry points only call export while a scope is available. */
@@ -202,9 +254,6 @@ export interface ExportServiceDeps {
    *  `onAuthFailed` hook, this service already depends on `ctx()` directly
    *  (see above), so there's no separate hook to keep it ignorant of chCtx. */
   getToken(): Promise<string | null>;
-  /** SQL-string-quoting function `killQuery` needs (matches
-   *  `@altinity/clickhouse-http`'s `sqlString`, issue #630 Phase 5). */
-  sqlString: (s: unknown) => string;
   /** Perf clock — export/script-row elapsed ms, matches app.ts's `now`. */
   now(): number;
   /** The #173 wave wall clock (epoch ms) — matches app.ts's `wallNow`;
@@ -253,12 +302,18 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   // a grid run never clobber each other's cancel state.
   let exportAbort: AbortController | null = null;
   let exportQueryId: string | null = null;
+  // #630 Phase 7 §9.5 — the operation-owner epoch (the authenticated
+  // execution scope's `.epoch`, captured at registration/start), stored
+  // alongside the query id so `cancelExport`'s owner-scoped remote KILL can
+  // never reach a live connection with a replacement (non-owner) epoch.
+  let exportOwnerEpoch: number | null = null;
   // Script-export state (issue #99) — its own abort/query-id, reassigned each
   // iteration so Cancel reaches the in-flight statement, and kept distinct
   // from both the workbench session's own run bookkeeping and the single-
   // export state above.
   let exportScriptAbort: AbortController | null = null;
   let exportScriptQueryId: string | null = null;
+  let exportScriptOwnerEpoch: number | null = null;
   let exportScriptCancelled = false;
   let exportScriptTick: ReturnType<typeof setInterval> | null = null;
   let nextScriptWave = 0;
@@ -275,6 +330,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     if (exportAbort !== controller) return;
     exportAbort = null;
     exportQueryId = null;
+    exportOwnerEpoch = null;
     deps.state.exporting.value = false;
   }
 
@@ -284,6 +340,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     exportScriptTick = null;
     exportScriptAbort = null;
     exportScriptQueryId = null;
+    exportScriptOwnerEpoch = null;
     activeScriptWave = null;
     deps.state.exporting.value = false;
   }
@@ -341,10 +398,15 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     // Register before the native picker.  Auth can be lost while that modal is
     // open, and a picker that eventually resolves must not proceed to config,
     // token, transport, or a late toast in the next authenticated epoch.
+    const scope = deps.executionScope();
     exportAbort = controller;
     exportQueryId = null;
+    // #630 Phase 7 §9.3/9.5 — captured once, at wave start: an explicit
+    // Cancel presses this wave's OWN epoch, permitting a same-epoch
+    // refreshed credential but rejecting a replacement (non-owner) one.
+    exportOwnerEpoch = scope?.epoch ?? null;
     deps.state.exporting.value = true;
-    const registration = deps.executionScope()?.register({
+    const registration = scope?.register({
       name: 'single-file export',
       abort: () => {
         controller.abort();
@@ -388,11 +450,17 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       progress = deps.hooks.showExportProgress(cancelExport);
       if (!isCurrent(registration)) return;
       try {
-        const resp = await deps.exportQuery(deps.ctx(), sql, {
-          queryId: waveQueryId, signal: controller.signal, format,
-          // Native query-parameter substitution (#134/#173), same as run() —
-          // paramArgs is the wave-start snapshot captured above (review F6).
-          params: { ...deps.sessionParamsFor(tab, [sql]), ...paramArgs },
+        const resp = await deps.exportResponse({
+          sql,
+          defaultFormat: format || 'TabSeparatedWithNames',
+          params: {
+            ...(waveQueryId ? { query_id: waveQueryId } : {}),
+            // Native query-parameter substitution (#134/#173), same as run() —
+            // paramArgs is the wave-start snapshot captured above (review F6).
+            ...deps.sessionParamsFor(tab, [sql]),
+            ...paramArgs,
+          },
+          signal: controller.signal,
         });
         if (!isCurrent(registration)) return;
         const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
@@ -497,10 +565,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     }
   }
 
-  // Mirrors cancel() (the grid run) but on the export's own id/abort.
+  // Mirrors cancel() (the grid run) but on the export's own id/abort. #630
+  // Phase 7 §9.5: local abort happens first, then a best-effort owner-scoped
+  // remote KILL (fire-and-forget, same as before).
   function cancelExport(): void {
     if (exportAbort) exportAbort.abort();
-    deps.killQuery(deps.ctx(), exportQueryId, deps.sqlString);
+    deps.cancel(exportOwnerEpoch, exportQueryId);
   }
 
   // Directory picker first (transient-activation rule, same as exportDirect's
@@ -530,7 +600,11 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     activeScriptWave = wave;
     exportScriptCancelled = false;
     deps.state.exporting.value = true;
-    const registration = deps.executionScope()?.register({
+    const scope = deps.executionScope();
+    // #630 Phase 7 §9.3/9.5 — captured once, at wave start (mirrors
+    // exportDirect's `exportOwnerEpoch`).
+    exportScriptOwnerEpoch = scope?.epoch ?? null;
+    const registration = scope?.register({
       name: 'script export',
       abort: () => {
         exportScriptCancelled = true;
@@ -619,10 +693,19 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
         deps.hooks.renderResults();
         try {
           if (e.type !== 'rows') {
-            const out = await deps.runQuery(deps.ctx(), execStmt,
-              { format: 'TSV', signal, queryId: exportScriptQueryId, params });
+            // #630 Phase 7 §13 — effect statement wire shape: whole-body
+            // authenticated text, TabSeparatedWithNamesAndTypes,
+            // wait_end_of_query=1 + CORS. A non-2xx/abort/network failure now
+            // THROWS (package consumers throw, §6.5) straight into the
+            // shared `catch (ex)` below — no local `out.error` check needed.
+            await deps.runEffectText({
+              sql: execStmt,
+              defaultFormat: 'TabSeparatedWithNamesAndTypes',
+              settings: { wait_end_of_query: 1, add_http_cors_header: 1 },
+              params: { ...(exportScriptQueryId ? { query_id: exportScriptQueryId } : {}), ...params },
+              signal,
+            });
             if (!current()) return;
-            if (out.error != null) throw new Error(out.error);
             e.status = 'ok';
           } else {
             const { ext } = formatFileMeta(format);
@@ -631,8 +714,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
             e.file = name;
             const fileHandle = await dir.getFileHandle(name, { create: true });
             if (!current()) return;
-            const resp = await deps.exportQuery(deps.ctx(), sql,
-              { queryId: exportScriptQueryId, signal, format, params });
+            const resp = await deps.exportResponse({
+              sql,
+              defaultFormat: format || 'TabSeparatedWithNames',
+              params: { ...(exportScriptQueryId ? { query_id: exportScriptQueryId } : {}), ...params },
+              signal,
+            });
             if (!current()) return;
             const tag = resp.headers.get('X-ClickHouse-Exception-Tag');
             const midErr = await streamToFile(resp, fileHandle,
@@ -671,11 +758,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     }
   }
 
-  // Mirrors cancelExport but on the script's own active id/abort.
+  // Mirrors cancelExport but on the script's own active id/abort (#630 Phase
+  // 7 §9.5: local abort first, then a best-effort owner-scoped remote KILL).
   function cancelExportScript(): void {
     exportScriptCancelled = true; // stops the loop from starting the next statement
     if (exportScriptAbort) exportScriptAbort.abort();
-    deps.killQuery(deps.ctx(), exportScriptQueryId, deps.sqlString);
+    deps.cancel(exportScriptOwnerEpoch, exportScriptQueryId);
   }
 
   return { exportEntry, exportDirect, cancelExport, cancelExportScript };

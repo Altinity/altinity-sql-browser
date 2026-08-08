@@ -17,7 +17,7 @@ import { createEpochFence } from './guarded-fetch.js';
 import { BASIC_USER_A, BASIC_USER_B, DENIED_USER, BEARER_FIXTURE, JWT_AS_BASIC_FIXTURE } from './auth-fixtures.js';
 import { createQueryExecutionService } from '../../../src/application/query-execution-service.js';
 import { killQueryWithLease } from '../../../src/net/ch-client.js';
-import type { ChCtx, AuthenticatedCancellationLease } from '../../../src/net/ch-client.js';
+import type { ChCtx, AuthenticatedCancellationLease, RunQueryOptions, RunQueryResult } from '../../../src/net/ch-client.js';
 import type { ScriptEntry } from '../../../src/core/script-result.js';
 import type { SpikeCredential, SpikeRequest } from './types.js';
 
@@ -84,6 +84,34 @@ function capturingFetch(realFetch: typeof fetch): { fetch: typeof fetch; lastAut
   return { fetch: wrapped, lastAuth: () => last };
 }
 
+/** #630 Phase 7 compile-compat bridge — NOT the real Checkpoint 2C spike
+ *  retarget (plan §19: that's a dedicated later sub-task's job, covering
+ *  `official-adapter.ts`'s own `makeOfficialRunQueryShim` and this file's QES
+ *  injection together). This wrapper only adapts the pre-Phase-7
+ *  `(ctx, sql, RunQueryOptions) => Promise<RunQueryResult>` shim shape these
+ *  spike helpers already have to the new narrow `QueryExecutionDeps.runText`
+ *  shape, preserving runtime behavior byte-for-byte for the ONLY thing these
+ *  tests route through it — `executeScript`'s whole-body text mode (never
+ *  progress/streaming). A `{error}` outcome now throws (matching the new
+ *  "package consumers throw" contract); the shim's own SESSION_BUSY/
+ *  ambiguous-write classification inside `QueryExecutionService` is
+ *  untouched by this wrapper. */
+function runTextViaShim(
+  shim: (ctx: ChCtx, sql: string, o?: RunQueryOptions) => Promise<RunQueryResult>,
+): (request: { sql: string; defaultFormat: string; params?: Record<string, string | number>; signal?: AbortSignal }) => Promise<string> {
+  return async (request) => {
+    const { query_id, ...rest } = request.params || {};
+    const out = await shim({} as ChCtx, request.sql, {
+      format: request.defaultFormat,
+      queryId: query_id != null ? String(query_id) : undefined,
+      params: rest,
+      signal: request.signal,
+    });
+    if (out.error != null) throw new Error(out.error);
+    return out.raw ?? '';
+  };
+}
+
 /** Same shape as the `service()` helper inside the "retry safety" describe
  * block below, but with an `uid` that IGNORES its `prefix` argument and
  * always mints a fresh id under `fixturePrefix` — `executeScript` always
@@ -94,14 +122,15 @@ function serviceFor(conn: ReturnType<typeof createOfficialConnection>, fixturePr
   let n = 0;
   const runQueryShim = makeOfficialRunQueryShim(conn, () => BASIC_USER_A);
   return createQueryExecutionService({
-    runQuery: runQueryShim as unknown as typeof import('../../../src/net/ch-client.js').runQuery,
-    killQuery: async () => {},
-    ctx: () => ({} as ChCtx),
+    // Never exercised by the `serviceFor()`-routed tests below — they only
+    // ever call `executeScript` (whole-body text mode).
+    runProgress: async () => { throw new Error('runProgress not exercised by this spike helper'); },
+    runText: runTextViaShim(runQueryShim),
+    cancel: async () => {},
     now: () => Date.now(),
     uid: () => { n += 1; return `${fixturePrefix}__${n}`; },
     retryMs: 1,
     sleep: () => Promise.resolve(),
-    sqlString: (s) => `'${String(s)}'`,
   });
 }
 

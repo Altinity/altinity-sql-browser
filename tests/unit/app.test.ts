@@ -2924,6 +2924,28 @@ describe('query run', () => {
     resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
     await pending;
   });
+  // #630 Phase 7 §9.2/9.3 — a replacement (non-owner) epoch must never reach
+  // the frozen kill: `cancelOwnedQuery` checks `captureCancellationLease`'s
+  // null return and skips the remote KILL QUERY entirely (still a silent,
+  // safe no-op — the local abort above already stopped the client side).
+  it('cancel() skips the remote KILL QUERY when captureCancellationLease rejects a stale owner epoch', async () => {
+    let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
+    const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => (init && /SELECT 1/.test(init.body || '')
+      ? new Promise<FakeResponse>((res) => { resolveRunFetch = res; })
+      : Promise.resolve(resp({ json: { data: [] } })))));
+    const { app, e } = appForRun([], { fetch });
+    app.activeTab().sqlDraft = 'SELECT 1';
+    const pending = app.actions.run();
+    await new Promise((r) => setTimeout(r));
+    expect(app.state.running.value).toBe(true);
+    asMock(e.fetch!).mockClear();
+    vi.spyOn(app.conn, 'captureCancellationLease').mockReturnValueOnce(null);
+    app.actions.cancel();
+    await new Promise((r) => setTimeout(r));
+    expect(asMock(e.fetch!).mock.calls.some((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''))).toBe(false);
+    resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await pending;
+  });
   // #276 Phase 5: signOut is the first production wiring of the sessions'
   // teardown surfaces — an in-flight run must be aborted + server-killed and
   // the catalog caches dropped BEFORE the login screen appears, and the
@@ -5866,6 +5888,32 @@ describe('streaming export (issue #87)', () => {
     app.activeTab().sqlDraft = '   ';
     await app.actions.exportEntry();
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to export');
+  });
+
+  // #630 Phase 7 — ExportService's `ctx()` survives only for its
+  // `.onSignedOut()` call (no transport reads it any more); this proves
+  // app.ts's own real `ctx: () => chCtx` wiring (not just export-service.ts's
+  // unit-level fake) is reached. Called directly on `app.exports` (not
+  // `app.actions.exportEntry`, which is gated behind
+  // `withAuthenticatedExecution` — never invoking export-service at all when
+  // signed out): with no token and no execution scope, `getToken()` resolves
+  // null via its plain `!token` branch with NO auth-loss side effect, so the
+  // picker opens (transient-activation ordering) and export-service's own
+  // `isCurrent(null)` fence (a null scope is always "current") lets
+  // `ctx().onSignedOut()` actually fire.
+  it('signed-out direct export (no token, no scope): the picker still opens, but no query runs', async () => {
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const app = createApp(env({
+      window: fakeWin(), showSaveFilePicker, isSecureContext: true, sessionStorage: memSession({}),
+    }));
+    app.activeTab().sqlDraft = 'SELECT 1';
+    const onSignedOut = vi.spyOn(app.conn.chCtx, 'onSignedOut');
+    await app.exports.exportDirect('SELECT 1', 0);
+    expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
+    expect(handle.createWritable).not.toHaveBeenCalled();
+    expect(onSignedOut).toHaveBeenCalledTimes(1);
+    expect(app.state.exporting.value).toBe(false);
   });
 
   it('streams a clean result to disk (default TSV) and reports completion — a real round trip through app.ts\'s own ExportSink/hooks wiring', async () => {

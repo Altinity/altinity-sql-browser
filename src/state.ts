@@ -669,7 +669,8 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     theme: read.loadStr(KEYS.theme, 'light'),
     density: 'comfortable',
     // Global cap on how many rows a normal SELECT fetches (server-side
-    // max_result_rows + a client-side guard; see runQuery / applyStreamLine).
+    // max_result_rows + a client-side guard; see query-execution-service's
+    // ordinary row-cap settings / applyStreamLine).
     // One persisted preference, default 500; a non-option stored value snaps
     // back to the default so the selector always reflects a real choice.
     resultRowLimit: normalizeRowLimit(parseInt(read.loadStr(KEYS.resultRowLimit, '500'), 10)),

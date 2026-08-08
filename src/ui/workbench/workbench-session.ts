@@ -208,6 +208,12 @@ interface ActiveRun {
   cancelled: boolean;
   registration: AuthenticatedExecutionRegistration | null;
   registrationReleased: boolean;
+  /** #630 Phase 7 §9.3/9.4 — the operation's owner epoch (the authenticated
+   *  execution scope's `.epoch`), captured once at `registerWave` time —
+   *  never re-read at cancel time. `deps.exec.kill` fences a cancel against
+   *  this exact epoch, permitting a same-epoch refreshed credential but
+   *  rejecting a replacement (non-owner) one. */
+  ownerEpoch: number | null;
 }
 
 export interface WorkbenchSession {
@@ -257,6 +263,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
       cancelled: false,
       registration: null,
       registrationReleased: false,
+      ownerEpoch: null,
     };
     activeRun = operation;
     try {
@@ -302,6 +309,8 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     operation: ActiveRun,
   ): void {
     const scope = deps.executionScope();
+    // #630 Phase 7 §9.3 — captured once, at registration/start time.
+    operation.ownerEpoch = scope?.epoch ?? null;
     operation.registration = scope?.register({
       name,
       abort: () => {
@@ -444,7 +453,8 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // Cap a normal result query (Table or explicit-FORMAT SELECT) at the global
     // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
     // would truncate a plan oddly). The streaming guard reads it off the result;
-    // runQuery adds the server-side max_result_rows for the Table path.
+    // the query-execution-service adds the server-side max_result_rows for
+    // every positive rowLimit, regardless of format (#630 Phase 7 §2.5).
     const rowLimit = explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : state.resultRowLimit;
     const t0 = deps.now();
     const result: QueryResult = newResult(fmt, rowLimit);
@@ -806,7 +816,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     if (!operation) return;
     operation.cancelled = true;
     operation.controller.abort();
-    deps.exec.kill(operation.queryId); // fire-and-forget, same as before
+    deps.exec.kill(operation.ownerEpoch, operation.queryId); // fire-and-forget, same as before
   }
 
   function attachShell(shellEffects: WorkbenchShellEffects): void {
@@ -842,7 +852,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     if (!operation) return;
     operation.cancelled = true;
     operation.controller.abort();
-    if (operation.queryId != null) deps.exec.kill(operation.queryId);
+    if (operation.queryId != null) deps.exec.kill(operation.ownerEpoch, operation.queryId);
     retireWave(operation);
   }
 

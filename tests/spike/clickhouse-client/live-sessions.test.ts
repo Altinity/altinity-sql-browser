@@ -92,6 +92,30 @@ async function runOfficialCommand(conn: OfficialConnection, credential: SpikeCre
   await conn.client.command({ query: sql, session_id: sessionId, auth: officialAuthFor(credential) });
 }
 
+/** #630 Phase 7 compile-compat bridge — NOT the real Checkpoint 2C spike
+ *  retarget (plan §19: a dedicated later sub-task's job). Adapts the
+ *  pre-Phase-7 `(ctx, sql, RunQueryOptions) => Promise<RunQueryResult>` shim
+ *  shape `makeSessionAwareRunQueryShim` above already has to the new narrow
+ *  `QueryExecutionDeps.runText` shape, preserving runtime behavior for the
+ *  ONLY thing the test below routes through it — `executeScript`'s
+ *  whole-body text mode. A `{error}` outcome now throws (matching the new
+ *  "package consumers throw" contract). */
+function runTextViaShim(
+  shim: (ctx: ChCtx, sql: string, o?: RunQueryOptions) => Promise<RunQueryResult>,
+): (request: { sql: string; defaultFormat: string; params?: Record<string, string | number>; signal?: AbortSignal }) => Promise<string> {
+  return async (request) => {
+    const { query_id, ...rest } = request.params || {};
+    const out = await shim({} as ChCtx, request.sql, {
+      format: request.defaultFormat,
+      queryId: query_id != null ? String(query_id) : undefined,
+      params: rest,
+      signal: request.signal,
+    });
+    if (out.error != null) throw new Error(out.error);
+    return out.raw ?? '';
+  };
+}
+
 describe.skipIf(!CH_URL)('live sessions, temporary tables, and SESSION_IS_LOCKED against a real ClickHouse server (plan §23)', () => {
   it('temporary table: persists only inside its explicit session, absent outside it — current adapter', async () => {
     const table = `asb585_tmp_current_${Date.now()}`;
@@ -177,14 +201,14 @@ describe.skipIf(!CH_URL)('live sessions, temporary tables, and SESSION_IS_LOCKED
 
     const attempts: number[] = [];
     const svc = createQueryExecutionService({
-      runQuery: makeSessionAwareRunQueryShim(conn, BASIC_USER_A, sessionId) as unknown as typeof import('../../../src/net/ch-client.js').runQuery,
-      killQuery: async () => {},
-      ctx: () => ({} as ChCtx),
+      // Never exercised — this test only calls `executeScript`.
+      runProgress: async () => { throw new Error('runProgress not exercised by this spike helper'); },
+      runText: runTextViaShim(makeSessionAwareRunQueryShim(conn, BASIC_USER_A, sessionId)),
+      cancel: async () => {},
       now: () => Date.now(),
       uid: (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       retryMs: 3000, // >= the holder's own ~2s runtime, so the one retry lands after it releases the lock
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      sqlString: (s) => `'${String(s)}'`,
     });
 
     const result = await svc.executeScript({

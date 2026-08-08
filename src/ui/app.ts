@@ -83,6 +83,15 @@ import {
   createAuthenticatedExecutionScope,
   type AuthenticatedExecutionScope,
 } from '../application/authenticated-execution-scope.js';
+import type { AuthenticatedCancellationLease } from '../net/ch-client.js';
+// Issue #630 Phase 7 — the composition root wires QES's/ExportService's
+// injected authenticated progress/text/response primitives directly over
+// these three seam functions (never a package import — Rule D restricts the
+// package's transport/protocol surface to `src/net/**`; this module is
+// `src/net/authenticated-clickhouse-request.ts`, a local file).
+import {
+  authenticatedProgress, authenticatedText, authenticatedResponse,
+} from '../net/authenticated-clickhouse-request.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
 import { createWorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import { createChSessionParams } from '../application/ch-session-params.js';
@@ -439,6 +448,38 @@ export function createApp(env: CreateAppEnv = {}): App {
   const getToken = conn.getToken;
   const ensureConfig = conn.ensureConfig;
 
+  // #630 Phase 7 §9.2 — CRITICAL bridge (verified with `tsc --strict`):
+  // `ch.killQueryWithLease` still REQUIRES a third `sqlString` argument at
+  // this point in the migration (its own rewrite onto the package's
+  // stateless `killQuery` — plan §10 — is a LATER sub-task that will drop
+  // that parameter without touching this file). A plain typed alias without
+  // the cast fails TS2322 (the real function's 3rd parameter isn't
+  // optional). Always pass `sqlString` as the 3rd arg below — required at
+  // runtime pre-cutover, ignored post-cutover.
+  type SqlStringFn = (s: unknown) => string;
+  const killWithLease = ch.killQueryWithLease as (
+    lease: AuthenticatedCancellationLease,
+    queryId: string,
+    sqlStringFn?: SqlStringFn,
+  ) => Promise<void>;
+
+  // #630 Phase 7 §9.2-9.4 — the SINGLE owner-scoped explicit-cancel callback:
+  // QES (`exec.kill`), the workbench session, and both ExportService cancel
+  // paths all delegate here. `ownerEpoch` is the operation's authenticated-
+  // execution-scope epoch, captured by the caller at registration/start time
+  // (never re-read at cancel time) — `conn.captureCancellationLease` fences a
+  // replacement (non-owner) epoch, permitting only a same-epoch refreshed
+  // credential (§9.3).
+  async function cancelOwnedQuery(
+    ownerEpoch: number | null | undefined,
+    queryId: string | null | undefined,
+  ): Promise<void> {
+    if (ownerEpoch == null || !queryId) return;
+    const lease = conn.captureCancellationLease(ownerEpoch);
+    if (!lease) return;
+    await killWithLease(lease, queryId, sqlString);
+  }
+
   // Identity/auth/config all live on `conn` (see app.types.ts's own doc
   // comment) — no flat `App` delegates (#276 Phase 5 deleted them).
   // `showLogin`/`signOut` stay app.ts-owned: they compose rendering, not
@@ -542,10 +583,20 @@ export function createApp(env: CreateAppEnv = {}): App {
   const sleep = (ms: number): Promise<void> => new Promise((r) => win.setTimeout(r, ms));
   // The shared request/stream/normalize + multiquery-script transport service
   // (#276 Phase 1) — `run()`'s single read and `runScript()`'s per-statement
-  // retry/classify loop both delegate to it now; `ctx: () => chCtx` keeps the
-  // live (possibly refreshed) auth context rather than a stale snapshot.
+  // retry/classify loop both delegate to it now. #630 Phase 7 — its three
+  // injected deps are thin closures over the authenticated request seam
+  // (`chCtx` read live, never snapshotted, exactly like the pre-Phase-7
+  // `ctx: () => chCtx` provider did) plus the shared owner-scoped cancel
+  // callback defined above.
   const exec = createQueryExecutionService({
-    runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
+    // `authenticatedProgress` resolves with the settled `Response` (unused
+    // here — the caller only cares that the stream was fully driven through
+    // `callbacks`); the `async` block body discards it so this closure's own
+    // return type is genuinely `Promise<void>`, matching `QueryExecutionDeps`.
+    runProgress: async (request, callbacks) => { await authenticatedProgress(chCtx, request, callbacks); },
+    runText: (request) => authenticatedText(chCtx, request),
+    cancel: cancelOwnedQuery,
+    now, uid, retryMs, sleep,
   });
   // #457 removed `app.runOptionQuery` (#447 phase 2's per-variable option-query
   // transport): it existed only for the variable DRAWER's Test action. A variable
@@ -626,8 +677,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     pickDirectory: (input) => app.showDirectoryPicker!(input) as Promise<DirectoryHandleLike>,
   };
   const exportService = createExportService({
-    exportQuery: ch.exportQuery, runQuery: ch.runQuery, killQuery: ch.killQuery,
-    ctx: () => chCtx, ensureConfig, getToken, sqlString, now, wallNow, uid,
+    // #630 Phase 7 — the same authenticated-request seam `exec` above wires,
+    // plus the shared owner-scoped cancel callback; `ctx` survives only for
+    // its `.onSignedOut()` call (no transport reads it any more).
+    exportResponse: (request) => authenticatedResponse(chCtx, request),
+    runEffectText: (request) => authenticatedText(chCtx, request),
+    cancel: cancelOwnedQuery,
+    ctx: () => chCtx, ensureConfig, getToken, now, wallNow, uid,
     executionScope: () => app.executionScope(),
     canExport: () => app.canExport(), canExportScript: () => app.canExportScript(),
     sink: exportSink,
@@ -2054,7 +2110,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       activeExecutionScope?.close();
       const scope = createAuthenticatedExecutionScope({
         epoch,
-        cancelRemote: (lease, queryId) => ch.killQueryWithLease(lease, queryId, sqlString),
+        cancelRemote: (lease, queryId) => killWithLease(lease, queryId, sqlString),
       });
       activeExecutionScope = scope;
       // Connection-scoped caches/panes are owners even when they have no live
