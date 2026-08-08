@@ -1229,11 +1229,13 @@ describe('connectBasic', () => {
     const probes: { origin: string; header: string; token: string | null; refreshed: boolean }[] = [];
     const { session, storage, location } = setup({
       queryJson: fakeQueryJson(async (ctx) => {
-        // Exercise the probe ctx's own getToken/refresh — the real authedFetch
-        // (net/ch-client.ts) would call these; this fake queryJson stands in
-        // for it, so it drives them itself to prove the throwaway ctx is
-        // fully wired (getToken resolves the probe creds verbatim; refresh is
-        // hardwired false — Basic credentials can't be refreshed).
+        // Exercise the probe ctx's own getToken/refresh — the real
+        // authenticatedRequest (net/authenticated-clickhouse-request.ts,
+        // reached via net/ch-client.ts's queryJson) would call these; this
+        // fake queryJson stands in for it, so it drives them itself to prove
+        // the throwaway ctx is fully wired (getToken resolves the probe
+        // creds verbatim; refresh is hardwired false — Basic credentials
+        // can't be refreshed).
         const t = await ctx.getToken();
         const r = await ctx.refresh();
         probes.push({ origin: ctx.origin, header: ctx.authHeader!(''), token: t, refreshed: r });

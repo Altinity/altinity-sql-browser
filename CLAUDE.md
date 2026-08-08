@@ -43,10 +43,25 @@ all bundled — see hard rule 4). Quality is held by tests.
    consumers, `ClickHouseError`) remain importable only under `src/net/**`,
    exactly as Phase 2 established, alongside OAuth/Basic credential
    acquisition, refresh, epochs, lifecycle callbacks, retries, and SQL
-   Browser's own product operations/result modes; the Phase-4 consuming
-   query APIs (`queryJson`/`queryText`/`queryProgress`) remain additive and
-   not yet consumed by any `src/**` caller (that cutover is Phase 7). The
-   name/shape check has no type-only carve-out: `import type`/`export type`
+   Browser's own product operations/result modes. Since #630 Phase 6, the
+   normal-request auth/epoch/refresh/lifecycle policy this rule already
+   places under `src/net/` is owned by `src/net/authenticated-clickhouse-
+   request.ts` (moved out of `ch-client.ts`'s former `authedFetch`/
+   `transportFor(ctx)`, deleted outright — no forwarding alias): it builds
+   the package client directly (`client.request()`) and composes it with
+   the package's non-consuming success classifier/response consumers
+   (`consumeJsonResponse`/`consumeTextResponse`/`consumeProgressResponse`),
+   never the package's own convenience `queryJson`/`queryText`/
+   `queryProgress` methods — those need an already-resolved Authorization
+   and give this policy no chance to inspect the settled `Response` first.
+   `ch-client.ts`'s exported `queryJson()` is the first real production
+   consumer of that response-consumer layer; `runQuery`/`exportQuery` reach
+   the new module's raw request entrypoint but keep their own result/error/
+   body handling. The Phase-4 convenience consuming query APIs
+   (`queryJson`/`queryText`/`queryProgress`) themselves remain additive and
+   not yet consumed by any `src/**` caller (that full cutover, plus
+   `runQuery`/`exportQuery`'s own result/export ownership migration, is
+   Phase 7). The name/shape check has no type-only carve-out: `import type`/`export type`
    and individual `import { type X }` specifiers of a transport/protocol
    name are flagged on exactly the same terms as a value reference —
    erasure before bundling does not exempt a source-level NAME ownership
@@ -168,8 +183,8 @@ Touch these in one change:
 | Path | What |
 |---|---|
 | `src/core/*` | pure logic, 100% covered |
-| `src/net/*` | OAuth + ClickHouse client, injected fetch |
-| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery`, and (Phase 5) the ONE ClickHouse SQL-quoting implementation (`sqlString`/`quoteIdent`/`qualifyIdent`), the ONE generic type-expression grammar (`parseClickHouseType`/`analyzeTypeModifiers`/`canonicalType`/wrapper/enum helpers), and the shared lexical scanner (`scanSpans`) — behind a public `.` export only; transport/protocol APIs stay `src/net/**`-only, while the pure-language exports above may be imported directly by their real SQL Browser consumers anywhere outside `src/net/**` too (mechanically allowlisted, `build/check-boundaries.mjs` Rule D); no `src/**` caller consumes the Phase-4 consuming query APIs yet |
+| `src/net/*` | OAuth + ClickHouse client, injected fetch; `authenticated-clickhouse-request.ts` (#630 Phase 6) is the sole normal-request auth/epoch/refresh/lifecycle owner, over the package's `request()` and response consumers |
+| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery`, and (Phase 5) the ONE ClickHouse SQL-quoting implementation (`sqlString`/`quoteIdent`/`qualifyIdent`), the ONE generic type-expression grammar (`parseClickHouseType`/`analyzeTypeModifiers`/`canonicalType`/wrapper/enum helpers), and the shared lexical scanner (`scanSpans`) — behind a public `.` export only; transport/protocol APIs stay `src/net/**`-only, while the pure-language exports above may be imported directly by their real SQL Browser consumers anywhere outside `src/net/**` too (mechanically allowlisted, `build/check-boundaries.mjs` Rule D); since Phase 6, `src/net/authenticated-clickhouse-request.ts` is a real production consumer of `request()` plus the non-consuming classifier/JSON/text/progress consumers — the convenience `queryJson`/`queryText`/`queryProgress` methods themselves still have no `src/**` consumer (that cutover is Phase 7) |
 | `src/application/*` | app-level coordination, sessions, and pure projections; no UI/editor imports |
 | `src/workspace/*` | pure stored-workspace aggregate, persistence contracts, and mutations |
 | `src/dashboard/*` | Dashboard model, layouts, and application runtime; dependency direction is mechanically checked |

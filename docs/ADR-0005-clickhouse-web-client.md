@@ -1139,6 +1139,52 @@ a later #630 phase, tracked alongside the SQL quoting/type-grammar
 extraction (#630 Phase 5) and authenticated composition (#630 Phase 6) this
 ADR's Phase 2 addendum already named as deferred.
 
+### #630 Phase 6 authenticated-composition addendum (2026-08-08)
+
+**This addendum, like the Phase 2/4 addenda above, does not reopen or
+otherwise touch the Rejected decision above.** `@clickhouse/client-web`
+remains rejected for production adoption for exactly the reasons the "Phase
+2 cancellation-incompatibility addendum" records; nothing here revisits
+that evidence, and — as with Phase 4 — issue #630's own phase numbering is
+independent of, and unrelated to, this ADR's own Phase 1–4 numbering.
+
+Issue #630 Phase 6 moves SQL Browser's normal-request authentication
+authority itself: `src/net/ch-client.ts`'s former `authedFetch()`/
+module-private `transportFor(ctx)` (credential acquisition, epoch fencing,
+one-refresh retry, connect/offline/sign-out lifecycle classification) are
+deleted outright and replaced by a new module,
+`src/net/authenticated-clickhouse-request.ts`, which places that SAME
+policy directly over the first-party package's `createClickHouseHttpClient(
+...).request()` and its `consumeJsonResponse`/`consumeTextResponse`/
+`consumeProgressResponse` response consumers — never the official
+`@clickhouse/client-web` package this ADR evaluated and rejected. As with
+every prior #630 extraction addendum, no third-party HTTP client is
+introduced and no cancellation semantics change: the new module still
+passes the caller's own `AbortSignal` straight through to the package's
+`request()`, which passes it straight through to the real `fetch()`, for
+the response's whole lifetime — exactly the property whose absence from
+`@clickhouse/client-web@1.23.1` is this ADR's own rejection reason (see the
+"Phase 2 cancellation-incompatibility addendum"). Proven again, directly
+against the new authenticated composition, by real-browser Chromium/WebKit
+scenarios extending the existing native-cancellation harness
+(`tests/e2e/clickhouse-http-transport.{html,spec.js}`, scenarios 5-9's
+authenticated-path variants) — a real, production-shaped
+`AuthenticatedRequestCtx` (synthetic test credentials only) driving the
+identical post-header body-lifetime/no-late-callback/concurrent-isolation
+proofs this ADR's Phase 0/Phase 1 evidence already established for the raw
+transport.
+
+Phase 6's own scope discipline: SQL Browser authentication authority now
+lives in `authenticated-clickhouse-request.ts` over the Fetch-native
+first-party package (`packages/clickhouse-http`, itself #630 Phase 2's
+extraction of this ADR's own already-proven-correct hand-rolled mechanics —
+see the Phase 2 addendum), not in the official client this ADR rejects.
+`runQuery`/`exportQuery`'s own cutover onto the package's convenience
+consuming query APIs, and the remaining transport-adapter compatibility
+seam's eventual deletion, stay deferred to #630 Phase 7 as already recorded
+above. Every historical spike result, gate outcome, and date elsewhere in
+this ADR is unchanged by this addendum.
+
 
 
 ```sh

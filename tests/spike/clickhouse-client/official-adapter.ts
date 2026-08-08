@@ -310,13 +310,16 @@ export async function runOfficial(conn: OfficialConnection, request: SpikeReques
 // Plan §21 "refresh then retry" / "stale during refresh": the vendor client
 // has NO refresh policy of its own (per-request `auth` is the whole
 // auth surface — see `runOfficial` above), so a comparable "one refresh, one
-// replay" policy has to be driven by the CALLER, exactly like `ch-client.ts`'s
-// own `authedFetch` drives it around the injected `fetch` seam. This is
-// SPIKE-ONLY experiment code (plan §21's "If [it] becomes a second general
-// request implementation, fail auth/epoch parity" — this narrow, single-retry
-// driver is not that: it is the Phase 1 candidate shape for this one policy,
-// not a second transport). Never adopted as-is; a future Phase 1 adapter
-// would fold an equivalent policy into its own request path.
+// replay" policy has to be driven by the CALLER, exactly like production's
+// own auth request path drives it around the injected `fetch` seam — at the
+// time this spike was written, `ch-client.ts`'s `authedFetch`; since #630
+// Phase 6, `authenticated-clickhouse-request.ts`'s `authenticatedRequest`,
+// unchanged in shape. This is SPIKE-ONLY experiment code (plan §21's "If
+// [it] becomes a second general request implementation, fail auth/epoch
+// parity" — this narrow, single-retry driver is not that: it is the Phase 1
+// candidate shape for this one policy, not a second transport). Never
+// adopted as-is; a future Phase 1 adapter would fold an equivalent policy
+// into its own request path.
 
 export interface RefreshDrivenResult {
   outcome: SpikeOutcome;
@@ -330,12 +333,14 @@ export interface RefreshDrivenResult {
  * server's `AUTHENTICATION_FAILED`/code 516, matching `401-then-success`'s
  * fixture body), call `refresh()` exactly once and — if it yields a
  * replacement credential — replay the SAME request with that credential,
- * exactly once, mirroring `authedFetch`'s own `attempt === 0` bound. If
- * `isCurrentEpoch()` returns false immediately after `refresh()` resolves
- * (the "stale during refresh" race), the replacement credential is NEVER
- * read or replayed — this proves the same "no replacement credential or
- * lifecycle mutation" invariant `ch-client.ts`'s own `staleEpochAbort` guards,
- * on the official adapter's own retry path. */
+ * exactly once, mirroring production's own `attempt === 0` bound (at the
+ * time this spike was written, `authedFetch`'s; since #630 Phase 6,
+ * `authenticated-clickhouse-request.ts`'s `authenticatedRequest`,
+ * unchanged in shape). If `isCurrentEpoch()` returns false immediately
+ * after `refresh()` resolves (the "stale during refresh" race), the
+ * replacement credential is NEVER read or replayed — this proves the same
+ * "no replacement credential or lifecycle mutation" invariant production's
+ * own `staleEpochAbort` guards, on the official adapter's own retry path. */
 export async function runOfficialRefreshThenRetry(
   conn: OfficialConnection,
   request: SpikeRequest,
@@ -381,7 +386,9 @@ import type { ChCtx, RunQueryOptions, RunQueryResult } from '../../../src/net/ch
  * approximation): a ClickHouse-level query error (non-2xx with a parseable
  * exception, or an in-band `{"exception"}` line) RETURNS `{ error }`; a
  * network-level failure (rejected fetch, mid-stream reset) THROWS, exactly
- * like production's `runQuery` does when `authedFetch`/the streaming read
+ * like production's `runQuery` does when its authenticated request (since
+ * #630 Phase 6, `authenticated-clickhouse-request.ts`'s
+ * `authenticatedRequest`; formerly `authedFetch`)/the streaming read
  * loop rejects — so `QueryExecutionService`'s real `attemptStatement`
  * (`e instanceof TypeError` -> `transient`) classifies it identically
  * regardless of which client produced the exception. */

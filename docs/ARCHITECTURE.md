@@ -82,7 +82,7 @@ module is tested with plain stubs at the per-file coverage gate.
 |---|---|
 | `authenticated-execution-scope` (`app.executionScope`) | one disposable, epoch-fenced registry for authenticated operation owners; closes local work synchronously and performs best-effort remote cancellation from an immutable credential lease |
 | `query-execution-service` (`app.exec`) | the shared request/stream/normalize read core + the script transport loop (retry classification, stop-on-first-failure, per-attempt `query_id`); stateless `kill(queryId)` — cancellation is caller-owned (`AbortController`s live with the owning session) |
-| `connection-session` (`app.conn`) | authoritative auth + connection lifecycle (`starting` / `connected` / `refreshing` / `offline` / `auth-required` / `reauthenticating` / `signed-out`), OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/ch-client`, `origin` by sign-in — never reconstructed) |
+| `connection-session` (`app.conn`) | authoritative auth + connection lifecycle (`starting` / `connected` / `refreshing` / `offline` / `auth-required` / `reauthenticating` / `signed-out`), OAuth PKCE login/refresh, Basic probing, IdP config, identity, token storage, sign-out, and **the single live `chCtx` object** (mutated in place — `authConfirmed` by `net/authenticated-clickhouse-request`, `origin` by sign-in — never reconstructed) |
 | `schema-catalog-service` (`app.catalog`) | server version, schema tree, lazy columns, SQL reference/completions, entity-doc cache; catalog/schema/reference/docs transports share a connection-generation abort signal, and `invalidate()` synchronously aborts them while generation fences reject stale writes |
 | `workbench-parameter-session` (`app.params`) | `{name:Type}` analysis/prepare/gate policy, input-vs-execute hardening, enum inference, recent values; reads the live shared `AppState` slices through accessors |
 | `export-service` (`app.exports`) | direct + script export behind an injectable `ExportSink` (`pickFile`/`pickDirectory`); hold-back exception inspection, `.partial` semantics, its own cancellation state |
@@ -192,8 +192,8 @@ session's credentials. This includes async HTTP error-body classification and
 IdP config discovery: refresh authority snapshots its epoch, then rechecks it
 after discovery and before token-endpoint I/O. A stale discovery therefore
 cannot rewrite the replacement epoch's auth-header policy.
-`net/ch-client` reports only successful 2xx transport settlement as connected
-and rejected, non-aborted `fetch` as offline. HTTP query failures — including a
+`net/authenticated-clickhouse-request` reports only successful 2xx transport
+settlement as connected and rejected, non-aborted `fetch` as offline. HTTP query failures — including a
 post-confirmation 401/403 — remain query outcomes, not connection state. The
 header chip is a pure projection of this lifecycle; `serverVersion` remains
 display metadata and is never connection authority.
@@ -263,21 +263,25 @@ rejects the three former owners (the transport adapter, the transport
 contract, `core/stream.ts`) regaining any of the identifiers moved out of
 them, so the network-layer boundary can't be bypassed just because the
 mechanics moved behind a package name, and no duplicate stream/exception
-implementation can silently reappear. `ch-client.ts` keeps every
-auth/epoch/retry/lifecycle policy (`authedFetch`), product operation, and
-`ChCtx` exactly as before; a module-private `transportFor(ctx)` delegates
+implementation can silently reappear. Through Phase 5, `ch-client.ts` kept
+every auth/epoch/retry/lifecycle policy (`authedFetch`), product operation,
+and `ChCtx` exactly as before; a module-private `transportFor(ctx)` delegated
 unconditionally to `createHttpTransport` for the request/send half — `ChCtx`
-gained no field and there is no runtime transport switch. `runQuery` (itself
-under `src/net/**`) calls the package's `streamLines` directly rather than
-going through the transport seam, since there is exactly one production
-stream implementation and no longer a stream member on the contract.
-`authedFetch` snapshots the caller's `settings`/`params` synchronously at
-entry, before its first await, calling the package's `chUrl` directly as an
-eager pre-credential preflight (a malformed value throws synchronously here,
-before any token read), as one centralized defense against a caller mutating
-those objects while a token/refresh await is pending — the low-level
-`request()`/`send()` API instead resolves this same failure as a REJECTED
-promise, since both remain `async`. A reusable contract-test-suite factory
+gained no field and there was no runtime transport switch. (**#630 Phase 6**,
+documented in its own section below, later moves that auth/epoch/retry/
+lifecycle policy itself out of `ch-client.ts` into a new module.) `runQuery`
+(itself under `src/net/**`) calls the package's `streamLines` directly rather
+than going through the transport seam, since there is exactly one production
+stream implementation and no longer a stream member on the contract. Through
+Phase 5, `authedFetch` snapshotted the caller's `settings`/`params`
+synchronously at entry, before its first await, calling the package's
+`chUrl` directly as an eager pre-credential preflight (a malformed value
+throws synchronously here, before any token read), as one centralized
+defense against a caller mutating those objects while a token/refresh await
+is pending — the low-level `request()`/`send()` API instead resolves this
+same failure as a REJECTED promise, since both remain `async`. (Phase 6
+moves this exact preflight verbatim into the new authenticated module.) A
+reusable contract-test-suite factory
 (`tests/unit/clickhouse-transport-contract.ts`) is now request/send-only and
 registers against both the package's own `request()` and the compatibility
 adapter; the progress-stream loop is tested once, directly against the
@@ -338,11 +342,15 @@ target into the HTTP request's own `params.query_id`. Its own private
 `quoteKillQueryId` reproduces only `src/core/format.ts`'s `sqlString()`
 backslash-then-quote escaping convention as a narrow, unexported Phase-4
 stopgap — **Phase 5** replaces it with the package's own shared public
-string-literal quoting API (below). Root `killQuery`/`killQueryWithLease` and
-`queryJson`/`runQuery`/`exportQuery` are unaffected: they continue to reach
-`authedFetch`'s auth/epoch/retry policy exactly as before, and none of them
-have been migrated onto the new package consuming-query APIs — that cutover
-is Phase 7.
+string-literal quoting API (below). At this point (Phase 4) root
+`killQuery`/`killQueryWithLease` and `queryJson`/`runQuery`/`exportQuery`
+were unaffected: they continued to reach `authedFetch`'s auth/epoch/retry
+policy exactly as before, and none of them had been migrated onto the new
+package consuming-query APIs. **Phase 6** (below) moves that auth/epoch/
+retry/lifecycle policy to a new module and switches `queryJson` onto its
+JSON response consumer; `runQuery`/`exportQuery`'s consuming-query-API
+cutover, and the remaining `killQuery`/`killQueryWithLease` migration,
+stay Phase 7.
 
 ### SQL quoting and the generic type grammar (#630 Phase 5)
 
@@ -389,6 +397,85 @@ This is the phase that requires Rule D (above) to distinguish transport/
 protocol package exports from pure-language ones, since SQL Browser
 language consumers now legitimately import the package from outside
 `src/net/**` — see the boundary rule text above for the mechanics.
+
+### Authenticated request layer (#630 Phase 6)
+
+Phase 6 moves the SQL Browser normal-request auth/epoch/refresh/lifecycle
+policy — `authedFetch()` and the module-private, `ChCtx`-based
+`transportFor(ctx)` — out of `ch-client.ts` into a new module,
+`src/net/authenticated-clickhouse-request.ts`. This is a real move+delete,
+not an additive layer: both are gone from `ch-client.ts`, with no
+forwarding alias, no second retry loop, and no second Authorization
+constructor.
+
+```
+authenticatedRequest(ctx, request)     the moved trust-boundary loop —
+                                        credential acquisition, epoch
+                                        fencing, one-refresh retry,
+                                        connect/offline/sign-out
+                                        classification — over the
+                                        package's client.request()
+authenticatedJson(ctx, request)        authenticatedRequest() + package
+                                        consumeJsonResponse()
+authenticatedText(ctx, request)        authenticatedRequest() + package
+                                        consumeTextResponse()
+authenticatedProgress(ctx, request, cbs) authenticatedRequest() + package
+                                        consumeProgressResponse()
+```
+
+The module builds the package client directly
+(`createClickHouseHttpClient({ fetch: () => ctx.fetch, origin: () => ctx.origin })`)
+once per `authenticatedRequest()` invocation, before the retry loop, and
+calls `client.request()` on every attempt — never `client.queryJson`/
+`queryText`/`queryProgress`: those convenience methods build a request from
+an already-resolved Authorization and give this layer no chance to inspect
+the settled `Response` before deciding whether a refresh/retry is
+authorized, which is exactly the policy this module owns. The eager,
+discarded `chUrl(...)` pre-credential preflight, the per-attempt complete
+Authorization construction, the final epoch fence immediately before
+`client.request()`, and every fence after a credential/body await all move
+verbatim from the old `authedFetch()`.
+
+`AuthenticatedRequestCtx` is a narrow base seam — only the fields this
+module actually needs (`fetch`, `origin`, `getToken`, `refresh`,
+`onSignedOut`, and the optional `authHeader`/`authConfirmed`/
+`currentEpoch`/`onTransportConnected`/`onTransportOffline`). `ch-client.ts`'s
+own `ChCtx` now `extends AuthenticatedRequestCtx` instead of redeclaring its
+fields, adding only `dataLakeCatalogSettingUnsupported` — the one field
+genuinely specific to this product client, kept out of the auth module on
+purpose. `AuthenticatedCancellationLease` stays exported from `ch-client.ts`
+unmoved: relocating it was not required to satisfy this phase and would
+have created unrelated application import churn.
+
+`queryJson()` is the first real production consumer of the package's
+response-consumer layer: it now delegates to `authenticatedJson()`,
+translating the package's `ClickHouseError` back to `queryJson`'s EXISTING
+plain-`Error` compatibility shape — same parsed message (both are derived
+from the same `parseExceptionText`), different error class — so this phase
+adopts the new consumer without changing an existing SQL Browser API.
+`runQuery()`/`exportQuery()` switch only their `authedFetch()` call to the
+new raw `authenticatedRequest()` entrypoint, keeping their own Table/KPI/raw
+format mapping, row-cap settings, non-2xx parsing, and streaming exactly as
+before. `killQuery()` inherits the new path indirectly through `queryJson()`.
+`killQueryWithLease()`'s frozen-lease bypass is untouched: it already built
+its own one-shot transport directly from the frozen lease's exact origin/
+Authorization/Fetch authority, never through `ChCtx`, so it does not — and
+must not — route through the new mutable-context auth loop.
+
+`build/check-boundaries.mjs`'s two existing #585 transport-leaf forbidden
+lists (`clickhouse-http-transport.ts`, `clickhouse-transport.types.ts`, both
+above) and the #512 `connectionAuthorityFiles` lifecycle-authority list now
+name `authenticated-clickhouse-request.ts` as the current auth/lifecycle
+owner they must not reach or regain, alongside `ch-client.ts` (kept through
+Phase 7). This is a data extension of two existing dependency rules plus one
+existing lifecycle-authority list — no new scanner.
+
+Deferred to **Phase 7**: `runQuery`/`exportQuery`'s cutover onto the
+package's consuming query APIs and result/export ownership, the remaining
+`killQuery`/`killQueryWithLease` transport migration, and deletion of the
+now-superseded `clickhouse-http-transport.ts`/`clickhouse-transport.types.ts`
+compatibility seam (still used by `killQueryWithLease` and by the real-
+browser harness's raw/unauthenticated scenarios through Phase 6).
 
 ## Build
 

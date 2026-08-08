@@ -244,11 +244,46 @@ Two roadmap tracks are current:
   underlying generic mechanics changed owner, and the existing parser/
   helper bodies moved rather than being redesigned. This required revising
   the architecture boundary itself (see below) since SQL Browser language
-  consumers now legitimately import the package outside `src/net/**`. Still
-  deferred to later phases: an authentication-composition rewrite (Phase 6),
-  and `runQuery`/`exportQuery`/the remaining request transport seam's own
-  eventual migration/deletion plus the Phase-4 consuming query APIs' actual
-  cutover (Phase 7). See
+  consumers now legitimately import the package outside `src/net/**`.
+
+  **Phase 6** (merged) composes SQL Browser authentication through one
+  new module, `src/net/authenticated-clickhouse-request.ts` — a real
+  move+delete of the normal-request auth/epoch/refresh/lifecycle policy
+  that used to live in `ch-client.ts` as `authedFetch()`/a module-private
+  `transportFor(ctx)`: both are gone, with no forwarding alias, no second
+  retry loop, and no second Authorization constructor. The new module
+  builds the package client directly
+  (`createClickHouseHttpClient(...).request()`) rather than through the
+  compatibility transport adapter, and exposes `authenticatedRequest()`
+  (the moved trust-boundary loop) plus `authenticatedJson()`/
+  `authenticatedText()`/`authenticatedProgress()`, each composing it with
+  exactly one matching package response consumer. `ChCtx` now `extends`
+  the new module's narrower `AuthenticatedRequestCtx` instead of
+  redeclaring its fields, adding only `dataLakeCatalogSettingUnsupported`.
+  `queryJson()` is the first real production consumer of the package's
+  JSON response consumer, translating the package's `ClickHouseError`
+  back to `queryJson`'s existing plain-`Error` compatibility shape (same
+  parsed message); `runQuery()`/`exportQuery()` switch only their
+  `authedFetch()` call to the new raw `authenticatedRequest()` entrypoint,
+  keeping their own result/error/body handling unchanged.
+  `killQueryWithLease()`'s frozen-lease bypass is untouched — it already
+  built its own one-shot transport directly from the frozen lease, never
+  through `ChCtx`, so it does not route through the new mutable-context
+  auth loop. `build/check-boundaries.mjs`'s two existing #585
+  transport-leaf forbidden lists and the #512 `connectionAuthorityFiles`
+  lifecycle-authority list now name the new module too (a data extension
+  of existing rules, not a new scanner); `ch-client.ts` stays in those
+  lists through Phase 7. Real-browser coverage: authenticated-path
+  variants of the existing post-header cancellation scenarios 5-9
+  (`tests/e2e/clickhouse-http-transport.{html,spec.js}`), proving the
+  identical native Fetch/Response/cancellation semantics survive being
+  driven through a real, production-shaped `AuthenticatedRequestCtx`
+  (synthetic test credentials, one deterministic epoch) in both Chromium
+  and WebKit. Still deferred to **Phase 7**: `runQuery`/`exportQuery`'s
+  cutover onto the package's convenience consuming query APIs and their
+  own result/export ownership migration, the remaining
+  `killQuery`/`killQueryWithLease` transport migration, and deletion of
+  the now-superseded transport-adapter compatibility seam. See
   [[Source-Map]] and [[Architecture]] for the file-level detail and
   `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3/5 narrow
   legacy-owner rules for the mechanical boundary enforcement: package↔root-src

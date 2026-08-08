@@ -10,6 +10,67 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#630 Phase 6: compose SQL Browser authentication through one
+  `authenticated-clickhouse-request.ts` layer over the package's
+  `request()` and response consumers.** The normal-request auth/epoch/
+  refresh/lifecycle policy that used to live in `src/net/ch-client.ts` as
+  `authedFetch()`/a module-private `transportFor(ctx)` moves to a new
+  module, `src/net/authenticated-clickhouse-request.ts` — a real move+
+  delete, not an additive layer: both are gone from `ch-client.ts`, with
+  no forwarding alias, no second retry loop, and no second Authorization
+  constructor. The new module builds the `@altinity/clickhouse-http`
+  package client directly (`createClickHouseHttpClient(...).request()`)
+  instead of going through the compatibility transport adapter, and
+  exposes `authenticatedRequest()` (the moved trust-boundary loop) plus
+  `authenticatedJson()`/`authenticatedText()`/`authenticatedProgress()`,
+  each composing it with exactly one matching package response consumer
+  (`consumeJsonResponse`/`consumeTextResponse`/`consumeProgressResponse`).
+  `ChCtx` now `extends` the new module's narrower `AuthenticatedRequestCtx`
+  instead of redeclaring its fields, adding only
+  `dataLakeCatalogSettingUnsupported` — the one field genuinely specific
+  to the product client. `AuthenticatedCancellationLease` stays exported
+  from `ch-client.ts`, and `killQueryWithLease`'s frozen-lease bypass is
+  untouched: it already built its own one-shot transport directly from
+  the frozen lease, never through `ChCtx`, so it does not route through
+  the new mutable-context auth loop (hard invariant 8/13).
+
+  `queryJson()` is the first real production consumer of the package's
+  response-consumer layer: it now delegates to `authenticatedJson()`,
+  translating the package's `ClickHouseError` back to `queryJson`'s
+  EXISTING plain-`Error` compatibility shape (same parsed message) so this
+  phase adopts the new consumer without changing an existing SQL Browser
+  API. `runQuery()`/`exportQuery()` switch only their `authedFetch()` call
+  to the new raw `authenticatedRequest()` entrypoint, keeping their own
+  Table/KPI/raw format mapping, row-cap settings, non-2xx parsing, and
+  streaming exactly as before — their full package-consumer/result/export
+  cutover remains Phase 7, as does `authenticatedText()`/
+  `authenticatedProgress()`'s adoption by any other caller.
+
+  `build/check-boundaries.mjs`'s two existing #585 transport-leaf
+  forbidden lists (`clickhouse-http-transport.ts`,
+  `clickhouse-transport.types.ts`) and the #512 `connectionAuthorityFiles`
+  lifecycle-authority list now name the new module as the current auth/
+  lifecycle owner they must not reach/regain — a data extension of
+  existing rules, not a new scanner. `ch-client.ts` stays in the
+  transport-leaf forbidden lists too through Phase 7.
+
+  Real-browser coverage: `tests/e2e/clickhouse-http-transport.{html,spec.js}`
+  gains authenticated-path variants of the existing post-header
+  cancellation scenarios 5-9, driving `authenticatedRequest()`/
+  `authenticatedProgress()` through a real, production-shaped
+  `AuthenticatedRequestCtx` (synthetic test credentials, one deterministic
+  epoch) against the same real cross-origin fault server — proving the
+  identical native Fetch/Response/cancellation semantics survive SQL
+  Browser's own credential/epoch composition, in both Chromium and WebKit,
+  not just the compatibility transport/package client with an
+  already-resolved Authorization.
+
+  Only A12 (one authenticated request owner over the package) and A13
+  (epoch/refresh/lifecycle/cancellation invariants remain regression-
+  tested and unchanged) are newly claimed; A14-A18 (the remaining
+  `runQuery`/`exportQuery`/transport-seam migration and deletion) stay
+  deferred to Phase 7.
+
 - **#630 Phase 5: move ClickHouse SQL quoting and generic type-expression
   grammar into `@altinity/clickhouse-http`.** `sqlString`, `quoteIdent`, and
   `qualifyIdent` now have one package implementation (`sql-quote.ts`),
@@ -58,8 +119,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `clickhouse-http-sql-spans.test.ts`, `clickhouse-http-sql-quote.test.ts`);
   the moved `isSupportedOptionScalar` describe block now lives in
   `tests/unit/param-type.test.ts` alongside its relocated implementation.
-  Phase 6 auth composition and Phase 7 query/export/transport-seam cutover
-  remain deferred.
+  Phase 6 auth composition landed next (see above); Phase 7's
+  query/export/transport-seam cutover remains deferred.
 
 - **#630 Phase 4: add consuming query APIs, a minimal ClickHouse HTTP error,
   and a stateless `KILL QUERY` to `@altinity/clickhouse-http`.** Purely

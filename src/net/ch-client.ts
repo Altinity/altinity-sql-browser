@@ -7,7 +7,6 @@
 //     onSignedOut() }
 // so the whole module is unit-testable with plain stubs.
 
-import { isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
 // Issue #585 Phase 1 — the transport seam. `chUrl` moved verbatim to
@@ -15,9 +14,10 @@ import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-gra
 // parameter type) so every existing importer — including
 // `tests/spike/clickhouse-client/current-adapter.ts` — keeps resolving. The
 // generic request-construction/fetch mechanics live in `createHttpTransport`;
-// this module keeps every auth/epoch/retry policy, product operation, and
-// `ChCtx` exactly as before, delegating through the transport instead of
-// calling `chUrl`/`ctx.fetch` directly.
+// at the time this module kept every auth/epoch/retry policy, product
+// operation, and `ChCtx` exactly as before, delegating through the transport
+// instead of calling `chUrl`/`ctx.fetch` directly (the auth/epoch/retry
+// policy itself later moved out — see the Phase 6 note below).
 //
 // Issue #630 Phase 2 — `chUrl` now comes from `@altinity/clickhouse-http`
 // (the package is the ONE serializer implementation, contract A5); this
@@ -31,10 +31,8 @@ import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-gra
 // (`streamLines`/`parseExceptionText`/`findExceptionFrame`, plus the
 // canonical `StreamLine`/`StreamCallbacks` wire types). `runQuery` calls
 // package `streamLines` directly (it is itself under `src/net/**`, so no
-// seam violation) instead of going through `transportFor(ctx)` for the
-// stream half — `transportFor(ctx)` remains used by `authedFetch`'s/
-// `killQueryWithLease`'s request/send paths, which Phase 7 eventually
-// retires. `parseExceptionText`/`findExceptionFrame`/`StreamLine`/
+// seam violation) instead of going through a ChCtx-based transport for the
+// stream half. `parseExceptionText`/`findExceptionFrame`/`StreamLine`/
 // `StreamCallbacks` are re-exported below as zero-logic migration plumbing:
 // `src/application/**` cannot import the package directly (Rule D — its
 // language-export allowlist is for the SQL Browser layers that consume
@@ -49,12 +47,30 @@ import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-gra
 // full surface (transport APIs and language exports alike), so it imports
 // `sqlString` directly rather than through `../core/format.js` (which no
 // longer declares it at all).
+//
+// Issue #630 Phase 6 — the normal-request auth/epoch/refresh/lifecycle
+// policy that used to live here as `authedFetch`/`transportFor(ctx)` MOVED
+// to `src/net/authenticated-clickhouse-request.ts` — a real move+delete, not
+// an additive layer: both are gone from this file, with no forwarding
+// alias, no second retry loop, and no second Authorization constructor.
+// `queryJson` below now delegates to that module's `authenticatedJson()`
+// (the first real production consumer of the package's response-consumer
+// layer); `runQuery`/`exportQuery` call its raw `authenticatedRequest()`
+// entrypoint directly, keeping their own result/error/body handling exactly
+// as before (that further cutover is Phase 7). `ChCtx` extends the new
+// module's narrower `AuthenticatedRequestCtx` rather than duplicating its
+// fields — `dataLakeCatalogSettingUnsupported` is the one field genuinely
+// specific to this product client, so it stays declared here, not there.
+// `killQueryWithLease`'s frozen-lease bypass is UNTOUCHED and does not
+// route through the new module — it never read mutable `ChCtx` auth state
+// even before this move (see its own doc comment below).
 import {
-  chUrl, streamLines, parseExceptionText, findExceptionFrame, sqlString,
+  chUrl, streamLines, parseExceptionText, findExceptionFrame, sqlString, ClickHouseError,
 } from '@altinity/clickhouse-http';
 import type { StreamLine } from '@altinity/clickhouse-http';
 import { createHttpTransport } from './clickhouse-http-transport.js';
-import type { TransportRequest } from './clickhouse-transport.types.js';
+import { authenticatedJson, authenticatedRequest } from './authenticated-clickhouse-request.js';
+import type { AuthenticatedRequestCtx } from './authenticated-clickhouse-request.js';
 export { chUrl, parseExceptionText, findExceptionFrame };
 export type { ChUrlOpts, StreamLine, StreamCallbacks } from '@altinity/clickhouse-http';
 export type { ClickHouseTransport, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
@@ -64,28 +80,18 @@ export type { ClickHouseTransport, TransportDeps, TransportRequest } from './cli
 /** The injected side-effect seam every function in this module takes as its
  * first argument. `fetch`/`getToken`/`refresh`/`onSignedOut` are the app's
  * real implementations in production, plain stubs in tests. `authConfirmed`
- * and `dataLakeCatalogSettingUnsupported` are one-shot-then-remember latches
- * `authedFetch`/`querySystemAware` set on `ctx` itself (see their docstrings)
- * — optional here because they start unset. The epoch/lifecycle hooks are
- * optional too, preserving the smaller seam used by existing callers. */
-export interface ChCtx {
-  fetch: typeof fetch;
-  origin: string;
-  getToken(): Promise<string | null>;
-  refresh(): Promise<boolean>;
-  onSignedOut(detail?: string, expectedEpoch?: number): void;
-  /** Picks the Authorization scheme (Bearer vs Basic); defaults to Bearer
-   * inside `authedFetch` when absent. */
-  authHeader?: (token: string) => string;
-  authConfirmed?: boolean;
+ * is a one-shot-then-remember latch `authenticatedRequest`
+ * (`authenticated-clickhouse-request.ts`) sets on `ctx` itself;
+ * `dataLakeCatalogSettingUnsupported` is `querySystemAware`'s own latch (see
+ * their docstrings) — both optional here because they start unset. The
+ * epoch/lifecycle hooks are optional too, preserving the smaller seam used
+ * by existing callers. `ChCtx` extends `AuthenticatedRequestCtx`
+ * (#630 Phase 6) rather than redeclaring its fields: this interface adds
+ * only `dataLakeCatalogSettingUnsupported`, the one field genuinely specific
+ * to this product client — every other field is the narrower auth seam the
+ * new module actually needs. */
+export interface ChCtx extends AuthenticatedRequestCtx {
   dataLakeCatalogSettingUnsupported?: boolean;
-  /** Identifies the active credential/session generation. A request captures
-   * this before its first await so stale work cannot affect its replacement. */
-  currentEpoch?: () => number;
-  /** Receives a current request's successful HTTP 2xx transport settlement. */
-  onTransportConnected?: () => void;
-  /** Receives a current non-abort rejection from the injected fetch seam. */
-  onTransportOffline?: (error?: unknown) => void;
 }
 
 /** Immutable authority retained only long enough to cancel work owned by a
@@ -123,158 +129,11 @@ function errMessage(e: unknown): string {
   return typeof message === 'string' && message ? message : String(e);
 }
 
-// A client that supplied no epoch hook remains backward-compatible: every
-// request is current. When it did supply one, no stale request may alter the
-// replacement credential generation's lifecycle/auth state.
-function isCurrentEpoch(ctx: ChCtx, requestEpoch: number | undefined): boolean {
-  return requestEpoch === undefined || ctx.currentEpoch?.() === requestEpoch;
-}
-
-// A request that was superseded before it can start (or retry) is cancellation,
-// not an authentication failure.  Keep the shape callers already treat as a
-// silent cancellation without coupling this network module to a DOMException
-// implementation.
-function staleEpochAbort(): Error {
-  const error = new Error('request superseded by a newer authentication session');
-  error.name = 'AbortError';
-  return error;
-}
-
 /** Generic ClickHouse `FORMAT JSON` response shape — only `.data` is ever
  * read here; every other field (meta, statistics, rows_before_limit_at_least…)
  * is ignored by this module. */
 export interface ChJsonResult<T = Record<string, unknown>> {
   data?: T[];
-}
-
-/** Delegates unconditionally to the single current transport implementation.
- * `deps.fetch`/`deps.origin` are accessors reading the LIVE mutable `ctx`
- * fields per request (never a snapshot) — `ctx.origin` is mutated in place on
- * sign-in (`connection-session.ts`), so a request issued after that mutation
- * must observe the new value. `ChCtx` itself gains no new field: there is no
- * production runtime switch, only this one unconditional wiring (an
- * injectable composition seam is introduced only when a second
- * implementation actually exists — Phase 2, which requires a new decision). */
-function transportFor(ctx: ChCtx) {
-  return createHttpTransport({ fetch: () => ctx.fetch, origin: () => ctx.origin });
-}
-
-/**
- * POST `request.sql` to ClickHouse with one automatic token-refresh retry.
- * Resolves to the raw Response. Throws Error('signed out') after calling
- * ctx.onSignedOut() when authentication cannot be recovered. `request` omits
- * `authorization` — this function resolves the credential for THIS request
- * (and its retry) itself; every other `TransportRequest` field is the
- * caller's request, unchanged.
- */
-export async function authedFetch(ctx: ChCtx, request: Omit<TransportRequest, 'authorization'>): Promise<Response> {
-  const requestEpoch = ctx.currentEpoch?.();
-  // Centralized aliasing defense (review finding folded in, pass-5 revision):
-  // snapshot the incoming request's settings/params synchronously HERE, at
-  // entry, before the first await (`ctx.getToken()`) — one mechanism for
-  // every present and future caller, rather than per-call-site defensive
-  // spreads. This preserves today's invocation-time capture (today `chUrl`
-  // serializes both records into the URL string synchronously, before this
-  // function's first await), so a caller that retains and mutates either
-  // record while a token/refresh await is pending cannot change the request
-  // this function already committed to sending — on the initial attempt AND
-  // the one-refresh retry alike.
-  const settings = request.settings ? { ...request.settings } : undefined;
-  const params = request.params ? { ...request.params } : undefined;
-  const { sql, defaultFormat, signal } = request;
-  // Request-preparation failures are not transport failures (ChatGPT review
-  // pass 2, P1). Pre-refactor, every caller built `chUrl(...)` as a plain
-  // argument BEFORE invoking authedFetch, so a URIError from malformed
-  // settings/params (e.g. `encodeURIComponent` on a lone UTF-16 surrogate)
-  // propagated as a synchronous throw with no token read, no fetch, and no
-  // `onTransportOffline` call. `transport.send` now builds that same URL
-  // internally, inside the try/catch that classifies fetch rejections as
-  // transport-offline — so without this eager, discarded validation call, the
-  // identical throw would surface only after `ctx.getToken()` and would be
-  // misclassified as a network failure. Calling `chUrl` here, before the first
-  // await, reproduces the exact original failure shape; `transport.send` still
-  // calls it again at actual send time against the (possibly since-mutated)
-  // live `ctx.origin` — origin is only concatenated, never `encodeURIComponent`-
-  // encoded, so it cannot itself throw and re-validating it changes nothing.
-  chUrl(ctx.origin, { format: defaultFormat, extra: settings, params });
-  const token = await ctx.getToken();
-  // getToken may have awaited a sign-in/sign-out replacement. Its credential
-  // belongs to that replacement and this request must not send it.
-  if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
-  if (!token) {
-    ctx.onSignedOut(undefined, requestEpoch);
-    throw new Error('not signed in');
-  }
-  let bearer = token;
-  let attempt = 0;
-  // ctx.authHeader(token) lets the app pick the scheme (Bearer vs Basic);
-  // default to Bearer so the seam stays optional.
-  const authHeader = ctx.authHeader || ((t: string) => 'Bearer ' + t);
-  const transport = transportFor(ctx);
-  for (;;) {
-    let resp: Response;
-    try {
-      // Fence every attempt immediately before the injected side effect. A
-      // retry must never send a replacement session's newly-read credential.
-      // (Precision: `transport.send` internally evaluates the REQUIRED-PURE
-      // `deps.origin()`/`deps.fetch()` accessors and builds the URL AFTER
-      // this fence, immediately before the fetch itself — see
-      // `clickhouse-transport.types.ts`'s `TransportDeps` doc comment.)
-      const authorization = authHeader(bearer);
-      if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
-      resp = await transport.send({ sql, defaultFormat, settings, params, authorization, signal });
-    } catch (e) {
-      // Only a rejected fetch is a transport failure. HTTP failures are normal
-      // responses and caller cancellation is deliberately invisible here.
-      const aborted = signal?.aborted || (e as { name?: unknown } | null)?.name === 'AbortError';
-      if (isCurrentEpoch(ctx, requestEpoch) && !aborted) ctx.onTransportOffline?.(e);
-      throw e;
-    }
-    // The request may have crossed a sign-in/sign-out boundary while fetch was
-    // pending. Its response still belongs to its caller, but cannot change the
-    // new epoch's connection/auth state or start a refresh with its token.
-    if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
-    // A 2xx confirms the credentials are good for the rest of the session.
-    if (resp.ok) {
-      ctx.authConfirmed = true;
-      ctx.onTransportConnected?.();
-    }
-    let authExpired = resp.status === 401 || resp.status === 403;
-    if (!authExpired && !resp.ok) {
-      const peek = await resp.clone().text();
-      // Reading an error body is another async boundary. If this request was
-      // superseded while it was pending, its expiry marker must not start a
-      // refresh against the replacement session's credentials.
-      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
-      if (isAuthExpiredBody(peek)) authExpired = true;
-    }
-    if (authExpired) {
-      // Once this session has authenticated successfully, the same credentials
-      // are still valid — so a later 401/403 is a *query-level* error ClickHouse
-      // maps to that HTTP status (ACCESS_DENIED, or UNKNOWN_USER from e.g.
-      // `SHOW CREATE USER <missing>`), not a sign-in problem. Return it so the
-      // caller shows it as a normal query error instead of force-logging-out.
-      if (ctx.authConfirmed) return resp;
-      if (attempt === 0 && (await ctx.refresh())) {
-        if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
-        // A successful refresh always yields a fresh, usable token — the
-        // refresh() contract this seam relies on.
-        bearer = (await ctx.getToken())!;
-        if (!isCurrentEpoch(ctx, requestEpoch)) throw staleEpochAbort();
-        attempt++;
-        continue;
-      }
-      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
-      // First-contact 401/403 with a non-expired token: CH rejected the login
-      // itself — an authorization/identity problem, not session expiry. Surface
-      // CH's own reason so it's diagnosable.
-      const reason = parseExceptionText(await resp.clone().text());
-      if (!isCurrentEpoch(ctx, requestEpoch)) return resp;
-      ctx.onSignedOut(authDeniedMessage(resp.status, reason), requestEpoch);
-      throw new Error('signed out');
-    }
-    return resp;
-  }
 }
 
 /**
@@ -283,6 +142,17 @@ export async function authedFetch(ctx: ChCtx, request: Omit<TransportRequest, 'a
  * settings (e.g. `{ readonly: 2 }` for a read-only tile). `params` (optional)
  * adds `param_<name>` query-string args for native ClickHouse query parameters
  * (#134) — omitted for every existing call site, so this is backward compatible.
+ *
+ * #630 Phase 6 — delegates to `authenticated-clickhouse-request.ts`'s
+ * `authenticatedJson()`, the first real production consumer of the package's
+ * JSON response consumer. Preserves this function's own EXISTING outward
+ * non-2xx behavior (a plain `Error` carrying CH's parsed exception message)
+ * by translating the package's `ClickHouseError` back to that shape —
+ * `authenticatedJson`'s `ClickHouseError.message` is itself derived from the
+ * same `parseExceptionText`, so the message text is unchanged; only the
+ * thrown error's class/identity is translated. Native JSON/body/network/abort
+ * errors are never `ClickHouseError` and propagate unchanged. (Phase 7 may
+ * later remove this translation as part of its broader consumer cutover.)
  */
 export async function queryJson<T = Record<string, unknown>>(
   ctx: ChCtx,
@@ -291,9 +161,12 @@ export async function queryJson<T = Record<string, unknown>>(
   extra?: Record<string, string | number>,
   params?: Record<string, string | number>,
 ): Promise<ChJsonResult<T>> {
-  const resp = await authedFetch(ctx, { sql, defaultFormat: 'JSON', settings: extra, params, signal });
-  if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
-  return resp.json();
+  try {
+    return await authenticatedJson<ChJsonResult<T>>(ctx, { sql, defaultFormat: 'JSON', settings: extra, params, signal });
+  } catch (e) {
+    if (e instanceof ClickHouseError) throw new Error(e.message);
+    throw e;
+  }
 }
 
 /**
@@ -311,7 +184,8 @@ export async function queryJson<T = Record<string, unknown>>(
  * latches so every later call on this connection (schema loads, table
  * expands, lineage BFS) goes straight to the plain query instead of paying a
  * doomed extra round trip forever — the same one-shot-then-remember shape as
- * `ctx.authConfirmed` in `authedFetch`.
+ * `ctx.authConfirmed` in `authenticated-clickhouse-request.ts`'s
+ * `authenticatedRequest`.
  *
  * Any OTHER error (e.g. a per-table Iceberg/Glue metadata failure inside the
  * catalog itself — ClickHouse's `system.tables` aborts the whole query for a
@@ -325,10 +199,10 @@ export async function queryJson<T = Record<string, unknown>>(
  *
  * Two error classes are rethrown immediately, before that check: a
  * caller-aborted signal (matching `tryQueryData`'s cancellation contract), and
- * 'not signed in' / 'signed out' — `authedFetch` has already exhausted its own
- * retry and called `ctx.onSignedOut()` for those, so retrying here would just
- * repeat the whole token/refresh/sign-out handshake (and its side effects) a
- * second time for no benefit.
+ * 'not signed in' / 'signed out' — `authenticatedRequest` (via `queryJson`)
+ * has already exhausted its own retry and called `ctx.onSignedOut()` for
+ * those, so retrying here would just repeat the whole token/refresh/sign-out
+ * handshake (and its side effects) a second time for no benefit.
  */
 async function querySystemAware<T = Record<string, unknown>>(ctx: ChCtx, sqlBody: string, signal?: AbortSignal): Promise<ChJsonResult<T>> {
   const plain = () => queryJson<T>(ctx, sqlBody + '\nFORMAT JSON', signal);
@@ -388,9 +262,10 @@ export async function killQuery(ctx: ChCtx, queryId: string | null | undefined, 
 }
 
 /** Best-effort server cancellation through a frozen execution-scope lease.
- * Unlike `killQuery`, this deliberately bypasses `authedFetch`: no token read,
- * refresh, retry, lifecycle callback, or mutable auth-scheme lookup is allowed
- * while a dead scope is closing. */
+ * Unlike `killQuery`, this deliberately bypasses `authenticatedRequest`
+ * (`authenticated-clickhouse-request.ts`): no token read, refresh, retry,
+ * lifecycle callback, or mutable auth-scheme lookup is allowed while a dead
+ * scope is closing. */
 export async function killQueryWithLease(
   lease: AuthenticatedCancellationLease,
   queryId: string | null | undefined,
@@ -398,9 +273,9 @@ export async function killQueryWithLease(
 ): Promise<void> {
   if (!queryId) return;
   try {
-    // A one-shot transport built directly from the frozen lease — never
-    // `transportFor(ctx)` / `authedFetch` — so cleanup reads no mutable auth,
-    // token, or refresh state (hard invariant 8).
+    // A one-shot transport built directly from the frozen lease — never the
+    // mutable-`ChCtx` `authenticatedRequest` — so cleanup reads no mutable
+    // auth, token, or refresh state (hard invariant 8/13).
     const transport = createHttpTransport({ fetch: () => lease.fetch, origin: () => lease.origin });
     await transport.send({
       sql: 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC',
@@ -1039,7 +914,10 @@ export interface ExportQueryOptions {
  */
 export async function exportQuery(ctx: ChCtx, sql: string, opts: ExportQueryOptions = {}): Promise<Response> {
   const { queryId, signal, format, params } = opts;
-  const resp = await authedFetch(ctx, {
+  // #630 Phase 6 — routes through the new module's raw `authenticatedRequest`
+  // entrypoint (was `authedFetch`); its own non-2xx parsing and successful
+  // raw-`Response` ownership below are unchanged (Phase 7 concern).
+  const resp = await authenticatedRequest(ctx, {
     sql,
     defaultFormat: format || 'TabSeparatedWithNames',
     params: { ...(queryId ? { query_id: queryId } : {}), ...(params || {}) },
@@ -1113,7 +991,11 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
   const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0
     ? { max_result_rows: o.resultRowLimit!, result_overflow_mode: 'break' }
     : {};
-  const resp = await authedFetch(ctx, {
+  // #630 Phase 6 — routes through the new module's raw `authenticatedRequest`
+  // entrypoint (was `authedFetch`); the Table/KPI/raw format mapping, row-cap
+  // settings, non-2xx parsing, and streaming below are unchanged (Phase 7
+  // concern).
+  const resp = await authenticatedRequest(ctx, {
     sql,
     defaultFormat: fmtParam,
     // wait_end_of_query buffers the whole response server-side so the HTTP
@@ -1136,11 +1018,10 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
     return { raw: await resp.text() };
   }
   // Issue #630 Phase 3 — calls the package's `streamLines` directly rather
-  // than `transportFor(ctx).streamLines(...)`: this module is itself under
-  // `src/net/**` (the one layer allowed to import the package by bare
-  // specifier), and the transport seam no longer has a stream member at all
-  // (there is exactly one production stream implementation now — the
-  // package's).
+  // than through a ChCtx-based transport's own stream member (retired that
+  // phase): this module is itself under `src/net/**` (the one layer allowed
+  // to import the package by bare specifier), and there is exactly one
+  // production stream implementation now — the package's.
   await streamLines(resp.body!, { onLine: o.onLine, onChunk: o.onChunk });
   return { streamed: true };
 }

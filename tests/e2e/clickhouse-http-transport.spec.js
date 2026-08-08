@@ -201,6 +201,93 @@ test.describe('#630 Phase 1 — native Fetch/Response/cancellation characterizat
     expect(result.chunksAfterWait).toBe(result.chunksAtRejection);
   });
 
+  // #630 Phase 6 — authenticated-path variants of the post-header
+  // cancellation family (5-9): the same native Fetch/Response/cancellation
+  // semantics, now driven through SQL Browser's own credential/epoch
+  // composition (`authenticatedRequest`/`authenticatedProgress`,
+  // `/src/net/authenticated-clickhouse-request.js`) rather than the
+  // compatibility transport/package client with an already-resolved
+  // Authorization. Scenarios 1-4 (pre-header timing) stay raw-only per the
+  // plan.
+  test('Scenario 5 auth variant — native post-header body lifetime through authenticatedRequest()', async ({ page }, testInfo) => {
+    const queryId = qid('post-header-abort-hold', testInfo.project.name);
+    const start = await page.evaluate(
+      ({ baseUrl, queryId }) => window.__scenario5AuthStart(baseUrl, queryId),
+      { baseUrl: fault.baseUrl, queryId },
+    );
+    expect(start.identity).toBe(true);
+    expect(start.bodyUsedBeforeRead).toBe(false);
+    expect(start.firstDone).toBe(false);
+    expect(start.firstText).toContain('first');
+    expect(start.count).toBe(1);
+    expect(start.authorization).toBe('Bearer auth-e2e-test-token');
+
+    const after = await page.evaluate(() => window.__scenario5AuthAbortAndReadNext());
+    expect(after.rejectedName).toBe('AbortError');
+    // The already-settled authenticatedRequest() Response is untouched by
+    // the later abort — no already-errored synthetic stream, no status/ok
+    // mutation, and (invariant 10) abort must never report offline.
+    expect(after.sendResponseStatus).toBe(200);
+    expect(after.sendResponseOk).toBe(true);
+  });
+
+  test('Scenario 6 auth variant — package streamLines() through authenticatedRequest() emits no callbacks after observable cancellation', async ({ page }, testInfo) => {
+    test.setTimeout(30_000);
+    const queryId = qid('post-header-abort-hold', testInfo.project.name);
+    const result = await page.evaluate(
+      ({ baseUrl, queryId, holdMs }) => window.__scenario6Auth(baseUrl, queryId, holdMs),
+      { baseUrl: fault.baseUrl, queryId, holdMs: POST_HEADER_ABORT_HOLD_MS },
+    );
+    expect(result.rejectedName).toBe('AbortError');
+    expect(result.chunksAtRejection).toBeGreaterThanOrEqual(1);
+    expect(result.linesAfterWait).toBe(result.linesAtRejection);
+    expect(result.chunksAfterWait).toBe(result.chunksAtRejection);
+    expect(result.offlineCallsAfterAbort).toBe(0);
+  });
+
+  test('Scenario 7 auth variant — cancellation of one concurrent authenticated request cannot affect another sharing the same ctx', async ({ page }, testInfo) => {
+    test.setTimeout(30_000);
+    const queryIdA = qid('post-header-abort-hold', testInfo.project.name);
+    const queryIdB = qid('post-header-abort-hold', testInfo.project.name);
+    const result = await page.evaluate(
+      ({ baseUrl, queryIdA, queryIdB, holdMs }) => window.__scenario7Auth(baseUrl, queryIdA, queryIdB, holdMs),
+      { baseUrl: fault.baseUrl, queryIdA, queryIdB, holdMs: POST_HEADER_ABORT_HOLD_MS },
+    );
+    expect(result.aRejectedName).toBe('AbortError');
+    expect(result.bFirstHeldDone).toBe(false);
+    expect(result.bFirstHeldText).toContain('after-hold');
+    expect(result.bCompletedCleanly).toBe(true);
+  });
+
+  test('Scenario 8 auth variant — abort after full body completion through authenticatedRequest() has no effect', async ({ page }, testInfo) => {
+    const queryId = qid('ordinary-query', testInfo.project.name);
+    const result = await page.evaluate(
+      ({ baseUrl, queryId }) => window.__scenario8Auth(baseUrl, queryId),
+      { baseUrl: fault.baseUrl, queryId },
+    );
+    expect(result.linesBefore).toBeGreaterThan(0);
+    expect(result.abortThrew).toBe(false);
+    expect(result.linesAfter).toBe(result.linesBefore);
+    expect(result.chunksAfter).toBe(result.chunksBefore);
+  });
+
+  test('Scenario 9 auth variant (#630 Phase 6) — authenticatedProgress() emits no callbacks after observable cancellation, one Fetch', async ({ page }, testInfo) => {
+    test.setTimeout(30_000);
+    const queryId = qid('post-header-abort-hold', testInfo.project.name);
+    const result = await page.evaluate(
+      ({ baseUrl, queryId, holdMs }) => window.__scenario9Auth(baseUrl, queryId, holdMs),
+      { baseUrl: fault.baseUrl, queryId, holdMs: POST_HEADER_ABORT_HOLD_MS },
+    );
+    expect(result.rejectedName).toBe('AbortError');
+    expect(result.chunksAtRejection).toBeGreaterThanOrEqual(1);
+    expect(result.countAtRejection).toBe(1);
+    // One real Fetch throughout — no retry, before or after the wait.
+    expect(result.countAfterWait).toBe(1);
+    expect(result.linesAfterWait).toBe(result.linesAtRejection);
+    expect(result.chunksAfterWait).toBe(result.chunksAtRejection);
+    expect(result.authorization).toBe('Bearer auth-e2e-test-token');
+  });
+
   test('Extra — invalid UTF-8 raw bytes remain byte-identical at the native boundary', async ({ page }, testInfo) => {
     const queryId = qid('invalid-utf8-raw', testInfo.project.name);
     const result = await page.evaluate(
