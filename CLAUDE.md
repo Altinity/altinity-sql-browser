@@ -126,9 +126,21 @@ all bundled — see hard rule 4). Quality is held by tests.
    artifact, so the page loads no runtime libraries from third-party CDNs.
    `packages/clickhouse-http` (#630 Phase 2, the repository's first npm
    workspace) is **project source, not an eighth bundled runtime
-   dependency**: it is private, ships no `dependencies`, and esbuild bundles
-   it exactly like hand-written `src/**` — `build/size-report-lib.mjs`
-   attributes it to the `project` ownership bucket, not `external`. Adding
+   dependency**: it is private, ships no `dependencies`, and since #630
+   Phase 8 it has its own independent build/type/test boundary — package-
+   local `esbuild` compiles its `src/**/*.ts` to unbundled, browser-first
+   ESM (`bundle: false`) at `dist/**`, and package-local `tsc` emits
+   matching `.d.ts` declarations; its manifest's `main`/`types`/
+   `exports["."]` all resolve to that built output, never source. Root
+   `esbuild` bundles that BUILT `dist/**` into the single served artifact
+   (via the workspace `node_modules` symlink, exactly like any resolved
+   dependency) — `build/size-report-lib.mjs` still attributes it to the
+   `project` ownership bucket, not `external`, since it is project code
+   either way. Root `npm run build`/`build/bundle.sh`/`deploy/install.sh`
+   all explicitly build the package first (`npm run build:clickhouse-http`)
+   so its `dist/**` exists before root `esbuild` ever runs — this
+   environment's `ignore-scripts=true` means lifecycle hooks never do this
+   implicitly. Adding
    *another* runtime dependency is a deliberate decision (it grows the
    single served file) — don't do it casually. When a feature needs a library,
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in
@@ -184,7 +196,8 @@ Touch these in one change:
 |---|---|
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch; `authenticated-clickhouse-request.ts` (#630 Phase 6) is the sole normal-request auth/epoch/refresh/lifecycle owner, over the package's `request()` and response consumers |
-| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery`, and (Phase 5) the ONE ClickHouse SQL-quoting implementation (`sqlString`/`quoteIdent`/`qualifyIdent`), the ONE generic type-expression grammar (`parseClickHouseType`/`analyzeTypeModifiers`/`canonicalType`/wrapper/enum helpers), and the shared lexical scanner (`scanSpans`) — behind a public `.` export only; transport/protocol APIs stay `src/net/**`-only, while the pure-language exports above may be imported directly by their real SQL Browser consumers anywhere outside `src/net/**` too (mechanically allowlisted, `build/check-boundaries.mjs` Rule D); since Phase 6, `src/net/authenticated-clickhouse-request.ts` is a real production consumer of `request()` plus the non-consuming classifier/JSON/text/progress consumers — the convenience `queryJson`/`queryText`/`queryProgress` methods themselves still have no `src/**` consumer (that cutover is Phase 7) |
+| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery`, and (Phase 5) the ONE ClickHouse SQL-quoting implementation (`sqlString`/`quoteIdent`/`qualifyIdent`), the ONE generic type-expression grammar (`parseClickHouseType`/`analyzeTypeModifiers`/`canonicalType`/wrapper/enum helpers), and the shared lexical scanner (`scanSpans`) — behind a public `.` export only; transport/protocol APIs stay `src/net/**`-only, while the pure-language exports above may be imported directly by their real SQL Browser consumers anywhere outside `src/net/**` too (mechanically allowlisted, `build/check-boundaries.mjs` Rule D); since Phase 6, `src/net/authenticated-clickhouse-request.ts` is a real production consumer of `request()` plus the non-consuming classifier/JSON/text/progress consumers — the convenience `queryJson`/`queryText`/`queryProgress` methods themselves have no `src/**` consumer as of #630's own closure (a genuinely open item, not reopened or claimed by Phase 8) |
+| `packages/clickhouse-http/{test,build.mjs,tsconfig*.json,vitest.config.ts}` | (#630 Phase 8) the package's own independent build/type/test boundary — package-local `esbuild` (unbundled browser-first ESM, `bundle: false`) + `tsc` (declaration-only emit) produce `dist/**`; package-local `vitest.config.ts` (100/95/90/100 per file) exercises the built public barrel via a relative import to `src/index.ts`; `test/isolated-package.mjs` (`npm run test:pack`) proves a real `npm pack` installs, resolves, and typechecks outside this repository with no source fallback; `test/browser/**` is this package's own Chromium+WebKit regression suite over the built `dist/**` (no import map, no vendor client, no Docker/live ClickHouse) |
 | `src/application/*` | app-level coordination, sessions, and pure projections; no UI/editor imports |
 | `src/workspace/*` | pure stored-workspace aggregate, persistence contracts, and mutations |
 | `src/dashboard/*` | Dashboard model, layouts, and application runtime; dependency direction is mechanically checked |

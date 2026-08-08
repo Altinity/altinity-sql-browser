@@ -80,7 +80,20 @@ module mocking.
 
 `build/build.mjs` bundles `src/main.js` with esbuild, minifies it, and inlines JS
 and `src/styles.css` into `build/template.html`. Output is `dist/sql.html`, with
-no third-party runtime requests.
+no third-party runtime requests. `packages/clickhouse-http` (#630 Phase 2's
+first npm workspace) has its own independent build/type/test boundary since
+Phase 8 — package-local esbuild/tsc produce `dist/**` (unbundled ESM +
+declarations), and its manifest resolves there, never to source; root
+`npm run build`/`build/bundle.sh`/`deploy/install.sh` all explicitly build
+the package first so root esbuild's bare `@altinity/clickhouse-http` import
+resolves to that built output through the workspace `node_modules` symlink.
+Phase 8 also closes issue #630: the migration-only `ch-client.js`
+forwarding aliases are gone, `@clickhouse/client-web` and its executable
+vendor-spike wiring (`tests/spike/clickhouse-client/**`) are removed, and
+the package's own Chromium+WebKit regression suite
+(`packages/clickhouse-http/test/browser/**`) proves the built artifact
+directly. See [`docs/clickhouse-http-repository-extraction.md`](../docs/clickhouse-http-repository-extraction.md)
+for the #639 handoff.
 
 Canonical source: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) and
 [`CLAUDE.md`](../CLAUDE.md).
