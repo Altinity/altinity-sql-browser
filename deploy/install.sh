@@ -67,6 +67,9 @@ if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
   fi
 fi
 
+echo "==> Building @altinity/clickhouse-http"
+npm --prefix "$ROOT" run build:clickhouse-http
+
 echo "==> Building dist/sql.html"
 node "$ROOT/build/build.mjs"
 
@@ -131,7 +134,8 @@ fi
 upload() {  # upload <local-file> <user_files-filename>
   local src="$1"
   local fname="$2"
-  local tbl="default._asb_$(echo "$fname" | tr '.-' '__')"
+  local tbl
+  tbl="default._asb_$(echo "$fname" | tr '.-' '__')"
   local on_cluster=""
   [[ -n "$CLUSTER" ]] && on_cluster="ON CLUSTER '${CLUSTER}'"
   "${CH[@]}" --query "CREATE TABLE IF NOT EXISTS ${tbl} ${on_cluster} (content String)

@@ -2,8 +2,35 @@
   "name": "@altinity/clickhouse-http",
   "version": "0.0.0",
   "private": true,
+  "description": "Fetch-native ClickHouse HTTP primitives for browsers",
   "type": "module",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ./build.mjs && tsc -p ./tsconfig.build.json",
+    "check:types": "tsc -p ./tsconfig.json --noEmit",
+    "test": "TZ=America/New_York vitest run --coverage --config ./vitest.config.ts",
+    "test:pack": "npm run build && node ./test/isolated-package.mjs",
+    "test:browser": "npm run build && playwright test --config ./test/browser/playwright.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

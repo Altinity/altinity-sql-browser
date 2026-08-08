@@ -6,44 +6,27 @@
 //   { fetch, origin, getToken(): Promise<string|null>, refresh(): Promise<bool>,
 //     onSignedOut() }
 // so the whole module is unit-testable with plain stubs.
-
-import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
-import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
-// Issue #585 Phase 1 — the transport seam. `chUrl` moved verbatim to
-// `clickhouse-http-transport.ts`; re-exported here (with its `ChUrlOpts`
-// parameter type) so every existing importer — including
-// `tests/spike/clickhouse-client/current-adapter.ts` — keeps resolving. The
-// generic request-construction/fetch mechanics lived in `createHttpTransport`;
-// at the time this module kept every auth/epoch/retry policy, product
-// operation, and `ChCtx` exactly as before, delegating through the transport
-// instead of calling `chUrl`/`ctx.fetch` directly (the auth/epoch/retry
-// policy itself later moved out — see the Phase 6 note below; the transport
-// itself is deleted — see the Phase 7 note below).
 //
-// Issue #630 Phase 2 — `chUrl` now comes from `@altinity/clickhouse-http`
-// (the package is the ONE serializer implementation, contract A5); this
-// module's re-export below keeps every existing importer (including the
-// historical official-client spike, `tests/spike/clickhouse-client/current-
-// adapter.ts`) resolving unchanged.
+// Issue #630 Phase 2/3/5 — `chUrl`/`parseExceptionText`/`findExceptionFrame`
+// (plus `StreamLine`/`StreamCallbacks`) used to be re-exported from here as
+// migration plumbing for spike/legacy consumers that imported them through
+// this gateway rather than the package directly. Issue #630 Phase 8 removes
+// every one of those forwarding aliases now that the spike consumers are
+// gone: `chUrl` and `parseExceptionText` were never used by this module's own
+// production code (only re-exported), so neither is imported here anymore.
+// `findExceptionFrame` had exactly one real consumer,
+// `src/application/export-service.ts`, which now imports it directly from
+// `@altinity/clickhouse-http` under a narrow Rule-D exception (plan §18) —
+// so it is dropped from this module too. `sqlString`/`ClickHouseError`/
+// `createClickHouseHttpClient` remain: this module's own production code
+// actually calls all three.
 //
-// Issue #630 Phase 3 — the progress-stream read loop and the HTTP
-// exception-text/late-exception-frame parser are also package-owned now
-// (`streamLines`/`parseExceptionText`/`findExceptionFrame`, plus the
-// canonical `StreamLine`/`StreamCallbacks` wire types).
-// `parseExceptionText`/`findExceptionFrame`/`StreamLine`/`StreamCallbacks`
-// are re-exported below as zero-logic migration plumbing: `src/application/**`
-// cannot import the package directly (Rule D — its language-export allowlist
-// is for the SQL Browser layers that consume generic ClickHouse
-// quoting/type-grammar directly, not a general escape hatch), so
-// `export-service.ts`'s `findExceptionFrame` use resolves through this one
-// gateway instead.
-//
-// Issue #630 Phase 5 — `sqlString` now comes from the package too (the ONE
-// quoting implementation, `sql-quote.ts`); this module is itself under
-// `src/net/**`, the one layer Rule D always allows to import the package's
-// full surface (transport APIs and language exports alike), so it imports
-// `sqlString` directly rather than through `../core/format.js` (which no
-// longer declares it at all).
+// Issue #630 Phase 5 — `sqlString` comes from the package (the ONE quoting
+// implementation, `sql-quote.ts`); this module is itself under `src/net/**`,
+// the one layer Rule D always allows to import the package's full surface
+// (transport APIs and language exports alike), so it imports `sqlString`
+// directly rather than through `../core/format.js` (which no longer declares
+// it at all).
 //
 // Issue #630 Phase 6 — the normal-request auth/epoch/refresh/lifecycle
 // policy that used to live here as `authedFetch`/`transportFor(ctx)` MOVED
@@ -75,14 +58,14 @@ import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-gra
 // `killQueryWithLease` off it, this module's last caller is gone, and there
 // is exactly one generic ClickHouse HTTP transport implementation left in
 // the repository (the package's).
+
+import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
+import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
 import {
-  chUrl, parseExceptionText, findExceptionFrame, sqlString, ClickHouseError,
-  createClickHouseHttpClient,
+  sqlString, ClickHouseError, createClickHouseHttpClient,
 } from '@altinity/clickhouse-http';
 import { authenticatedJson } from './authenticated-clickhouse-request.js';
 import type { AuthenticatedRequestCtx } from './authenticated-clickhouse-request.js';
-export { chUrl, parseExceptionText, findExceptionFrame };
-export type { ChUrlOpts, StreamLine, StreamCallbacks } from '@altinity/clickhouse-http';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────
 

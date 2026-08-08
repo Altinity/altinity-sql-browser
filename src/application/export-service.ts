@@ -73,12 +73,14 @@ import { formatFileMeta, exportFilename, scriptExportName } from '../core/export
 // Issue #630 Phase 3 — `findExceptionFrame` is package-owned
 // (`@altinity/clickhouse-http`) and now takes raw bytes directly (no more
 // caller-side latin1 conversion — see the deleted `latin1()` helper this
-// file used to carry). `src/application/**` cannot import the package
-// directly (Rule D), so this goes through `ch-client.ts`'s zero-logic
-// re-export (#630 Phase 7 — the ONLY remaining `net/ch-client.ts` import this
-// file needs; the transport-mechanics re-exports it used to depend on are
-// gone).
-import { findExceptionFrame } from '../net/ch-client.js';
+// file used to carry). Issue #630 Phase 8 — `src/application/**` cannot
+// generally import the package directly (Rule D's language-export allowlist
+// is for SQL quoting/type-grammar/scanner consumers, not a general escape
+// hatch), but this file gets a narrow, named Rule-D exception (plan §18):
+// exactly this file, exactly this one name. The former migration gateway
+// (`ch-client.ts`'s zero-logic `findExceptionFrame` re-export) is retired —
+// spike consumers are gone, so there is no reason left to route through it.
+import { findExceptionFrame } from '@altinity/clickhouse-http';
 import type { QueryTab } from '../state.js';
 import { variableDoc } from '../state.js';
 import type { ResultSort } from '../core/sort.js';

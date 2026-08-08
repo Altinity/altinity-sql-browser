@@ -84,13 +84,14 @@ jobs:
               - 'src/**'
               - 'schemas/**'
               - 'tests/e2e/**'
-              # #630 Phase 1: tests/e2e/clickhouse-http-transport.spec.js now
-              # imports this ONE shared spike fixture server directly — a
+              # #630 Phase 1 named the shared fixture server
+              # (tests/spike/clickhouse-client/fault-server.mjs) here
+              # explicitly, since the root e2e suite imports it directly — a
               # real cross-tree dependency the PR path filter didn't know
-              # about before. Deliberately narrow (not `tests/spike/**`):
-              # the rest of that historical spike suite is not a dependency
-              # of the root e2e suite and stays out of ordinary PR CI.
-              - 'tests/spike/clickhouse-client/fault-server.mjs'
+              # about otherwise. #630 Phase 8 moved that fixture to
+              # packages/clickhouse-http/test/browser/fault-server.mjs,
+              # already covered by the blanket 'packages/**' entry below, so
+              # no dedicated entry is needed here anymore.
               - 'playwright.config.js'
               - 'build/**'
               - 'package.json'
@@ -150,6 +151,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Test (vitest + coverage gate)
         run: npm test
+      - name: '@altinity/clickhouse-http isolated-package proof (npm pack, install outside the workspace, ESM + TS resolution)'
+        run: npm run test:clickhouse-http:pack
       - name: Build single-file SPA
         run: npm run build
       - uses: actions/upload-artifact@v7
@@ -253,7 +256,10 @@ jobs:
       - name: Lint the installer (shellcheck)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck install.sh build/bundle.sh
+          # #630 Phase 8 modifies both build wrappers (each now composes the
+          # package build explicitly) — lint both alongside the existing root
+          # installer shell script.
+          shellcheck install.sh build/bundle.sh deploy/install.sh
 
   # Exercise the published runtime shape, including Caddy's static
   # Content-Encoding negotiation. Node decodes each selected sidecar, so the
@@ -363,7 +369,8 @@ jobs:
       (github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true')
     runs-on: ubuntu-latest
     env:
-      # One engine on PRs, all three everywhere else.
+      # Root SQL Browser e2e: one engine on PRs, all three everywhere else
+      # (unchanged cost policy — #630 Phase 8 does not widen this).
       PR_ONLY_CHROMIUM: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
@@ -372,10 +379,15 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
+      # #630 Phase 8: the @altinity/clickhouse-http package's own Chromium/
+      # WebKit regression suite runs on every applicable CI event alongside
+      # the root suite (issue #630's own required acceptance engines for the
+      # package), so WebKit is installed on PRs too now, not just Chromium —
+      # widened from Chromium-only specifically for this package suite.
       - name: Install Playwright browsers
         run: |
           if [ "$PR_ONLY_CHROMIUM" = "true" ]; then
-            npx playwright install --with-deps chromium
+            npx playwright install --with-deps chromium webkit
           else
             npx playwright install --with-deps chromium firefox webkit
           fi
@@ -386,6 +398,8 @@ jobs:
           else
             npm run test:e2e
           fi
+      - name: '@altinity/clickhouse-http Chromium+WebKit regression suite'
+        run: npm run test:clickhouse-http:browser -- --project=chromium --project=webkit
       - uses: actions/upload-artifact@v7
         if: ${{ failure() }}
         with:

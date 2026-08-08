@@ -655,14 +655,98 @@ cancellation in both required browsers), and **A16** (the generic
 run/export/ordinary-kill APIs and both local transport files are gone,
 with architecture guards preventing their return).
 
-Deferred to **Phase 8**: making `packages/clickhouse-http` independently
-buildable/packable/typecheckable in isolation (no root-source fallback),
-removing migration scaffolding no longer needed after this phase
-(compatibility-only package/root aliases, `@clickhouse/client-web` and its
-executable vendor-spike wiring), and the final in-repo ownership
-cleanup/architecture-guard hardening that prepares the package for
-extraction into its own repository (issue #639, which starts only after
-Phase 8 ships) — **A17**/**A18**.
+### Standalone package build and final retirement (#630 Phase 8)
+
+Phase 8 (the final phase of issue #630) claims **A17**/**A18** and closes
+the issue.
+
+**A17 — independently buildable/packable/typecheckable, no root-source
+fallback.** `packages/clickhouse-http` gets its own build/type/test
+boundary, entirely package-local:
+
+```
+package source (src/**/*.ts)
+     |
+     +-- package-local esbuild (bundle: false, platform: browser,
+     |   format: esm, outbase: src, outdir: dist)
+     |         -> packages/clickhouse-http/dist/**/*.js
+     |
+     +-- package-local tsc (declaration-only emit)
+               -> packages/clickhouse-http/dist/**/*.d.ts
+                        |
+                        +--> root tsc resolves dist declarations
+                        |    (root tsconfig.json no longer includes
+                        |    package src/**/*.ts at all)
+                        |
+                        +--> root esbuild resolves dist ESM through the
+                             workspace node_modules symlink (attributed to
+                             the `project` ownership bucket by
+                             build/size-report-lib.mjs, never `external`,
+                             since it is project code either way)
+                                        |
+                                        v
+                                   dist/sql.html
+```
+
+The package manifest's `main`/`types`/`exports["."]` all target `dist/**`,
+never source — the SAME public surface an eventual extraction (#639) or
+external consumer would see. Every production build entrypoint that
+bypasses root npm scripts (`build/bundle.sh` and `deploy/install.sh`, both
+of which call `node build/build.mjs` directly) gets an explicit
+`npm --prefix "$ROOT" run build:clickhouse-http` line before that call, so
+the package's own `dist/**` genuinely exists first, in every real
+invocation path — verified from a clean `packages/clickhouse-http/dist`
+state for both wrappers. `packages/clickhouse-http/test/isolated-package.mjs`
+(`npm run test:pack`) is a real, runnable proof: build the package, run a
+real `npm pack`, install the tarball into a fixture OUTSIDE this
+repository, import it as ESM, and compile a TypeScript consumer against its
+declarations with `--traceResolution` — asserting neither runtime nor type
+resolution ever falls back into this repository's source.
+`packages/clickhouse-http/test/browser/**` is a new first-party
+Chromium+WebKit regression suite serving the package's own generated
+`dist/**` directly (no import map, no vendor client, no Docker/live
+ClickHouse) — see `docs/clickhouse-http-repository-extraction.md` for the
+full extraction handoff (#639).
+
+**A18 — final ownership cleanup and vendor retirement.** The migration-only
+`ch-client.ts` forwarding aliases (`chUrl`/`parseExceptionText`/
+`findExceptionFrame`) are removed now that every spike consumer is gone;
+`export-service.ts` imports `findExceptionFrame` directly from the package
+under one narrow, named Rule-D exception
+(`PHASE8_NARROW_RULE_D_EXCEPTIONS`) rather than through that retired
+gateway — no other application module gets protocol/client access. Five
+architecture guards are added/broadened, all through the same real-parser
+mechanism (`build/lib/check-legacy-owners.mjs`), never a hand-rolled
+regex/text scanner: package containment now also covers the package's own
+`test/**`/`build.mjs`/`vitest.config.ts` (Guard 1); the package
+relative-deep-import ban widens from `src/**` to the whole package
+directory, closing a `dist/**` escape a source-only ban would have missed
+(Guard 2); root-wide declaration/re-export ownership for the historical
+`chUrl`/`createHttpTransport`/`ClickHouseTransport`/`TransportDeps`/
+`TransportRequest` transport surface, exempting the sanctioned package
+import itself (Guard 3); the same root-wide ownership rule for the moved
+progress-stream/exception-parsing primitives (Guard 4); and the
+`@clickhouse/client-web` ban's former "future official transport file"
+allowlist is deleted outright, its scan widened across
+`src/**`/`packages/clickhouse-http/**` (excluding generated `dist/**`)/
+`tests/**`/`build/**`, plus structural manifest/lock/script/directory
+checks (Guard 5). The `@clickhouse/client-web` devDependency, its four npm
+scripts, and the whole executable `tests/spike/clickhouse-client/**`
+directory are removed per an exact file-by-file disposition table (mostly
+outright deletion; `fault-server.mjs` moves to the package's own browser
+suite as generic, dependency-free fixture infrastructure; its former
+first-party consumer splits into that package suite plus a narrower root
+`tests/e2e/authenticated-clickhouse-request.{html,spec.js}` for SQL
+Browser's own authentication-policy variants) — along with the
+candidate-build-only `additionalNotices`/`--notices` plumbing in
+`build/build.mjs`/`build/size-report.mjs`. `docs/evidence/585/**` and
+ADR-0005's Rejected decision/historical content are untouched; only a
+narrow current-state addendum documents the executable retirement.
+
+At this point issue #630 itself is complete; issue #639 (external
+repository creation/release and the SQL Browser consumer cutover) starts
+from the tested handoff in
+`docs/clickhouse-http-repository-extraction.md`.
 
 ## Build
 
@@ -671,11 +755,13 @@ Phase 8 ships) — **A17**/**A18**.
 bundled runtime dependencies (CodeMirror 6, Chart.js +
 chartjs-adapter-date-fns + date-fns, dagre, `@preact/signals-core`, marked);
 none is loaded from a third-party CDN. `packages/clickhouse-http` (#630
-Phase 2, the repository's first npm workspace) is first-party project
-source, not an eighth runtime dependency — esbuild resolves its bare
-`@altinity/clickhouse-http` import through the workspace's `node_modules`
-symlink and bundles it as ordinary source; `build/size-report-lib.mjs`
-attributes every `packages/**` input to the `project` ownership bucket
-accordingly, and the Dockerfile's build stage copies `packages/` alongside
-`src/` before `npm ci && npm run build` so container/release builds resolve
-it identically.
+Phase 2, the repository's first npm workspace; independently built since
+Phase 8 — see above) is first-party project source, not an eighth runtime
+dependency — esbuild resolves its bare `@altinity/clickhouse-http` import
+through the workspace's `node_modules` symlink to its BUILT `dist/**`
+(never source, since Phase 8) and bundles that as ordinary project code;
+`build/size-report-lib.mjs` attributes every `packages/**` input to the
+`project` ownership bucket accordingly, and the Dockerfile's build stage
+copies `packages/` alongside `src/` before `npm ci && npm run build` (which
+itself composes `build:clickhouse-http` first) so container/release builds
+resolve it identically.

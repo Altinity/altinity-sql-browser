@@ -23,10 +23,6 @@
 //                             (default: <root>/src/main.ts)
 //   --artifact-out <dir>      where the assembled dist/sql.html + sidecars are
 //                             (re)written (default: <root>/dist)
-//   --notices <file>          an additional notice fragment appended after
-//                             the normal THIRD-PARTY-NOTICES.md — the Phase 0
-//                             candidate artifact's devDependency notice, never
-//                             passed for the normal production artifact
 //   --include-unminified-js  also measure an unminified JS build (same
 //                             esbuild options, jsMinify:false only) — no
 //                             unminified HTML is produced or shipped
@@ -38,7 +34,9 @@
 //
 // Reporting only — it never alters production loading semantics. metafile:true is
 // pure metadata; the emitted bytes are identical to `npm run build` (when --root,
-// --entry, --notices, and --build-stamp are all omitted).
+// --entry, and --build-stamp are all omitted). Issue #630 Phase 8 removes the
+// former `--notices` option along with the rest of the #585 Phase 0 vendor
+// candidate artifact's plumbing — see build/build.mjs's own note.
 
 import { build } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -69,7 +67,6 @@ function parseArgs(argv) {
     root: null,
     entry: null,
     artifactOut: null,
-    notices: null,
     includeUnminifiedJs: false,
     buildStamp: null,
   };
@@ -80,7 +77,6 @@ function parseArgs(argv) {
     else if (a === '--root') args.root = argv[++i];
     else if (a === '--entry') args.entry = argv[++i];
     else if (a === '--artifact-out') args.artifactOut = argv[++i];
-    else if (a === '--notices') args.notices = argv[++i];
     else if (a === '--include-unminified-js') args.includeUnminifiedJs = true;
     else if (a === '--build-stamp') args.buildStamp = argv[++i];
   }
@@ -114,16 +110,12 @@ async function main() {
   const outDir = resolve(repoRoot, args.out);
   const artifactOutDir = args.artifactOut ? resolve(process.cwd(), args.artifactOut) : resolve(repoRoot, 'dist');
 
-  const additionalNotices = args.notices
-    ? await readFile(resolve(process.cwd(), args.notices), 'utf8')
-    : undefined;
   const buildStampOverride = args.buildStamp === null ? undefined : args.buildStamp;
 
   const { html, script, styles, metafile } = await buildArtifact({
     repoRoot,
     entryPoint: args.entry ?? undefined,
     metafile: true,
-    additionalNotices,
     buildStampOverride,
   });
 

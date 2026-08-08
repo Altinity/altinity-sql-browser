@@ -1,7 +1,7 @@
 // Issue #630 Phase 5 — sqlString/quoteIdent/qualifyIdent moved out of this
 // file's import list and describe blocks; they now have their one
 // implementation in `@altinity/clickhouse-http` (`sql-quote.ts`), tested in
-// tests/unit/clickhouse-http-sql-quote.test.ts. Every other formatting/
+// packages/clickhouse-http/test/unit/sql-quote.test.ts. Every other formatting/
 // FORMAT-detection test here is unaffected.
 import { describe, it, expect } from 'vitest';
 import {

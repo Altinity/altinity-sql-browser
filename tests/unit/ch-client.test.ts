@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, killQueryWithLease, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, killQueryWithLease, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
 import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
 // Issue #630 Phase 5 — sqlString now has one implementation, owned by the
@@ -95,7 +95,7 @@ function deferred<T>() {
 }
 
 // Issue #630 Phase 2 — the small legacy `chUrl` output-shape tests that used
-// to live here moved to tests/unit/clickhouse-http-package.test.ts along
+// to live here moved to packages/clickhouse-http/test/unit/client.test.ts along
 // with `chUrl` itself. Issue #630 Phase 6 — every low-level `authedFetch`
 // test (including its malformed-URL preflight-ordering proof) MOVED to
 // `tests/unit/authenticated-clickhouse-request.test.ts`, retargeted onto

@@ -21,6 +21,9 @@ VERSION="${1:-$(node -p "require('$ROOT/package.json').version")}"
 OUT="$ROOT/dist"
 STAGE="$OUT/bundle/altinity-sql-browser"
 
+echo "==> Building @altinity/clickhouse-http"
+npm --prefix "$ROOT" run build:clickhouse-http
+
 echo "==> Building SPA"
 # Pass the resolved version through so the in-HTML build stamp matches the
 # VERSION file written below (build.mjs honors $ASB_VERSION over package.json).

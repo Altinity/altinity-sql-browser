@@ -43,7 +43,7 @@
 // `findNamedIdentifierViolations` walker the Phase 3 rule now shares.
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
@@ -65,6 +65,12 @@ import {
   PHASE7_RETIRED_TOP_LEVEL_NAMES,
   PHASE7_DELETED_TRANSPORT_FILES,
   mightReferenceRetiredTopLevelApi,
+  PHASE8_NARROW_RULE_D_EXCEPTIONS,
+  findModuleSpecifiers,
+  mightReferenceForbiddenRelativeDir,
+  findTransportSurfaceOwnershipViolations,
+  PHASE8_TRANSPORT_SURFACE_NAMES,
+  PHASE8_PARSER_SURFACE_NAMES,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -110,6 +116,16 @@ function extractSpecifiers(source) {
   return specs;
 }
 
+// Mirrors production's `resolveRelative` (`build/check-boundaries.mjs`),
+// including the review-pass-2 symlink-canonicalization fix: `fs.realpathSync`
+// on any candidate that exists resolves the real, already-installed
+// `node_modules/@altinity/clickhouse-http` workspace-link symlink
+// (package-lock.json's `"link": true` entry) to its real target
+// (`packages/clickhouse-http`) before the caller compares the resolved path
+// against a forbidden prefix — without this, a relative import spelled
+// through that symlink resolves lexically to a `node_modules/...` path that
+// never starts with `packages/clickhouse-http`, letting Guard 2 miss a deep
+// import into the package's own internals.
 function resolveRelative(fromFile, spec) {
   const resolved = resolve(dirname(fromFile), spec);
   const noExt = resolved.replace(/\.(ts|tsx|js|mjs)$/, '');
@@ -117,7 +133,12 @@ function resolveRelative(fromFile, spec) {
     resolved, `${noExt}.ts`, `${noExt}.tsx`, `${noExt}.js`, `${noExt}.mjs`,
     join(resolved, 'index.ts'), join(resolved, 'index.js'),
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? resolved;
+  const found = candidates.find((candidate) => existsSync(candidate)) ?? resolved;
+  try {
+    return realpathSync(found);
+  } catch {
+    return found;
+  }
 }
 
 /** `virtualFiles` are `[repoRelativePath, source]` pairs checked alongside
@@ -130,7 +151,12 @@ function collectEntries(dir, virtualFiles = []) {
   ];
 }
 
-// Rule A/C mirror: relative specifiers resolving into a forbidden directory.
+// Rule A mirror: relative specifiers resolving into a forbidden directory.
+// Review pass 1: this regex-based mirror now covers ONLY Rule A (production
+// still legitimately scans that one with `extractSpecifiers`, same as the
+// other internal src-layering rules) — Rule C/Guard 2 moved to its own
+// dedicated real-parser block in production and has its own parser-backed
+// mirror, `relativeViolationsParserBacked`, below.
 function relativeViolations(dir, forbidden, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
@@ -141,6 +167,70 @@ function relativeViolations(dir, forbidden, virtualFiles = []) {
       const relResolved = relative(repoRoot, resolved).split(sep).join('/');
       const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
       if (hit) found.push(`${relative(repoRoot, file).split(sep).join('/')} → ${spec} (resolved: ${relResolved})`);
+    }
+  }
+  return found;
+}
+
+// Rule C mirror (Guard 2, review pass 1): parser-backed (`findModuleSpecifiers`),
+// matching production's dedicated Guard 2 block in `build/check-boundaries.mjs`
+// — NOT `relativeViolations`'s `extractSpecifiers` regex above, which stayed
+// vulnerable to a comment sitting between `import`/`export` and the
+// specifier, or an escaped string-literal segment spelling out a
+// `packages/clickhouse-http` path without ever containing that raw
+// substring: `extractSpecifiers` captures the raw, still-escaped/comment-
+// adjacent source text, which then fails to resolve into the forbidden
+// directory, so the escape silently slipped this guard entirely before this
+// fix. Memoized the on-disk component the same way `deepImportViolations`
+// above is: the real `src/` tree never changes within one test-file run, but
+// every Rule C test below re-passes `join(repoRoot, 'src')` with a DIFFERENT
+// single virtual sabotage probe appended, and re-spawning the real
+// TypeScript-parser child process over every real file for each of those
+// test cases is exactly what already forced `deepImportViolations`/
+// `packageNameShapeViolations`/`retiredApiViolations` above to memoize.
+//
+// Review pass 2 (second CI-only `beforeAll` timeout occurrence — see the
+// comment above `beforeAll` below): this originally shipped with NO
+// pre-filter, unlike every sibling real-parser check in this file
+// (`deepImportViolations` gates on `mightReferencePackage`); it had to parse
+// every real file under `src/**` unconditionally, which made it the single
+// most expensive of the four cache-warming calls. `mightReferenceForbiddenRelativeDir`
+// (imported from the shared helper, same drift-avoidance convention as every
+// other pre-filter here) closes that gap: measured locally, it cuts the
+// files that reach the real parser from all 225 under `src/**` to the ~70
+// that contain either the forbidden directory's own leaf segment
+// (`clickhouse-http`) or a backslash, a ~68% reduction in `beforeAll` wall
+// time for this one call (~7.1s → ~2.3s).
+const realTreeRuleCParserCache = new Map();
+function relativeViolationsParserBacked(dir, forbidden, virtualFiles = []) {
+  let cached = realTreeRuleCParserCache.get(dir);
+  if (!cached) {
+    cached = [];
+    for (const file of collectFiles(dir)) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      const text = readFileSync(file, 'utf8');
+      if (!mightReferenceForbiddenRelativeDir(text, forbidden)) continue;
+      for (const { spec } of findModuleSpecifiers(text, relFile)) {
+        if (!spec.startsWith('.')) continue;
+        const resolved = resolveRelative(file, spec);
+        const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+        const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+        if (hit) cached.push(`${relFile} → ${spec} (resolved: ${relResolved})`);
+      }
+    }
+    realTreeRuleCParserCache.set(dir, cached);
+  }
+  const found = [...cached];
+  for (const [rel, source] of virtualFiles) {
+    const file = join(repoRoot, rel);
+    const relFile = relative(repoRoot, file).split(sep).join('/');
+    if (!mightReferenceForbiddenRelativeDir(source, forbidden)) continue;
+    for (const { spec } of findModuleSpecifiers(source, relFile)) {
+      if (!spec.startsWith('.')) continue;
+      const resolved = resolveRelative(file, spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+      if (hit) found.push(`${relFile} → ${spec} (resolved: ${relResolved})`);
     }
   }
   return found;
@@ -244,8 +334,10 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
       if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
       const text = readFileSync(file, 'utf8');
       if (!mightReferencePackage(text, CLICKHOUSE_HTTP_SPECIFIER)) continue;
+      const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
       for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
         if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+        if (usage.kind === 'named' && narrowExceptionNames.includes(usage.name)) continue;
         cached.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
       }
     }
@@ -256,8 +348,10 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
     const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
     if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
     if (!mightReferencePackage(source, CLICKHOUSE_HTTP_SPECIFIER)) continue;
+    const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
     for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+      if (usage.kind === 'named' && narrowExceptionNames.includes(usage.name)) continue;
       found.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
     }
   }
@@ -382,34 +476,153 @@ describe('Rule B — package source has zero bare specifiers (empty allowlist)',
   });
 });
 
-describe('Rule C — SQL Browser source does not deep-import the package\'s own src/** (relative)', () => {
+// Issue #630 Phase 8 (plan §21, Guard 2) broadens Rule C's forbidden target
+// from just `packages/clickhouse-http/src` to the WHOLE package directory
+// (`packages/clickhouse-http`) — generated `dist/**` is a second possible
+// relative deep-import escape a source-only ban would miss.
+describe('Rule C — SQL Browser source does not deep-import the package (relative, whole package directory)', () => {
   it('the real src/** tree is clean', () => {
-    expect(relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http/src'])).toEqual([]);
+    expect(relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'])).toEqual([]);
   });
 
-  it('flags a relative deep import into the package implementation (sabotage probe, not written to disk)', () => {
-    const found = relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http/src'], [
+  it('flags a relative deep import into the package src/** implementation (sabotage probe, not written to disk)', () => {
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
       ['src/net/__boundary_probe_630_deep__.ts',
         "import { chUrl } from '../../packages/clickhouse-http/src/client.js';\n"],
     ]);
-    expect(found.some((line) => line.includes('__boundary_probe_630_deep__') && line.includes('packages/clickhouse-http/src'))).toBe(true);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deep__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // Issue #630 Phase 8 (plan §21) — the NEW escape a source-only ban would
+  // have missed: a relative deep import into generated dist/**.
+  it('flags a relative deep import into the package dist/** build output (sabotage probe, not written to disk)', () => {
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_deepdist__.ts',
+        "import { chUrl } from '../../packages/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // The bare deep-import subpath form needs no parallel Guard-2 change: Rule
+  // D's `findDeepImportSpecifiers` (exercised in the Rule D describe block
+  // below) already bans any subpath of the package specifier regardless of
+  // what follows the slash — dist included.
+  it('flags a bare deep-import subpath into the package dist/** build output (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p8_deepdistbare__.ts',
+        "import { chUrl } from '@altinity/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdistbare__'))).toBe(true);
+  });
+
+  // Review pass 1 finding — before this fix, production's Guard 2 ran the
+  // regex-based `extractSpecifiers` (mirrored by the OLD `relativeViolations`
+  // above), which a comment sitting between `import` and its clause defeats:
+  // the character class between `import` and `from` never accepts `/`, so a
+  // block comment there breaks the match entirely and the whole import
+  // statement goes unseen. Proves the NEW parser-backed mirror still catches
+  // this exact case (a real parse resolves comments as trivia, never as
+  // characters that can break a match).
+  it('flags a relative deep import into the package dist/** with a comment between `import` and its clause (sabotage probe, not written to disk)', () => {
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_deepdist_comment__.ts',
+        "import /*c*/ { chUrl } from '../../packages/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist_comment__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // Review pass 1 finding — an escaped string-literal segment inside the
+  // module specifier: the raw source text never contains the literal
+  // substring "packages" (only "packages"), so a regex-based mirror
+  // that resolves the RAW captured text (as `relativeViolations`/production's
+  // old RULES-array entry did) resolves a path with a literal `k`
+  // sequence in it — which never starts with the forbidden
+  // `packages/clickhouse-http` prefix, so the violation goes completely
+  // undetected. The real parser decodes the escape via `node.text` before
+  // this mirror ever resolves the path, exactly like production's new Guard
+  // 2 block.
+  it('flags a relative deep import whose specifier escapes part of the forbidden directory name (sabotage probe, not written to disk)', () => {
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_deepdist_escaped__.ts',
+        "import { chUrl } from '../../pac\\u006bages/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist_escaped__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // Review pass 2 finding — `resolveRelative` used to return the LEXICAL path
+  // only, with no symlink canonicalization. The real, already-installed
+  // `node_modules/@altinity/clickhouse-http` workspace-link symlink
+  // (package-lock.json's `"resolved": "packages/clickhouse-http", "link":
+  // true` entry — a real symlink on disk from `npm ci`, not a virtual
+  // fixture) resolves a relative import spelled through it into the
+  // package's own `src/**`, but the OLD `resolveRelative` reported the
+  // lexical `node_modules/@altinity/clickhouse-http/...` path, which never
+  // equals or starts with the forbidden `packages/clickhouse-http` prefix —
+  // Guard 2 missed this escape entirely even though it is the exact same
+  // file on disk `../../packages/clickhouse-http/src/client.ts` names
+  // directly (already covered by the first Rule C test above). No
+  // `@altinity/clickhouse-http` bare-specifier form is involved here — Rule D
+  // governs that route separately — this specifier is purely relative
+  // (`.`-prefixed), so only Guard 2's relative-deep-import ban is in scope.
+  it('flags a relative import that reaches the package through the real node_modules workspace-link symlink (sabotage probe, not written to disk)', () => {
+    expect(existsSync(join(repoRoot, 'node_modules/@altinity/clickhouse-http/src/client.ts')), 'the workspace-link symlink must actually be installed for this probe to be meaningful').toBe(true);
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_symlink__.ts',
+        "import { createClickHouseHttpClient } from '../../node_modules/@altinity/clickhouse-http/src/client.ts';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_symlink__') && line.includes('packages/clickhouse-http'))).toBe(true);
   });
 });
 
-// Pre-warm all three real-tree caches once, in `beforeAll`, rather than
-// letting whichever test happens to run first inside the Rule D / Phase 7
-// describe blocks below pay for it under the DEFAULT per-test timeout: the
-// cache-filling pass spawns the real TypeScript-parser child process once per
-// real file that matches each check's own pre-filter, and that one-time
-// cost — comfortably under a few seconds on a normal dev machine — has
-// exceeded vitest's 5000ms per-test default under CI's more constrained
-// scheduling. Explicit longer timeout here, attributed to setup rather than
-// to an arbitrary specific test (also robust to test reordering).
+// Pre-warm all four real-tree caches once, in `beforeAll`, rather than
+// letting whichever test happens to run first inside the Rule C / Rule D /
+// Phase 7 describe blocks below pay for it under the DEFAULT per-test
+// timeout: the cache-filling pass spawns the real TypeScript-parser child
+// process once per real file that matches each check's own pre-filter, and
+// that one-time cost — comfortably under a few seconds on a normal dev
+// machine — exceeded vitest's 5000ms per-test default under CI's more
+// constrained scheduling (issue #630 Phase 5's original fix, this comment's
+// first version). Explicit longer timeout here, attributed to setup rather
+// than to an arbitrary specific test (also robust to test reordering; a
+// top-level `beforeAll` runs before every test in this file regardless of
+// where in the file it or the describe blocks it warms are declared).
+//
+// Second occurrence (issue #630 Phase 8, review pass 2): Rule C's new
+// parser-backed mirror (`relativeViolationsParserBacked`) shipped with NO
+// pre-filter at all — it parsed every file under `src/**` unconditionally —
+// which made it the single most expensive of the four calls below and, on
+// top of the other three, pushed this `beforeAll` past even this already
+// -generous 30000ms ceiling under CI's scheduling (it did not reproduce on a
+// normal dev machine, same "comfortably under a human's patience locally"
+// gap Phase 5's fix above already called out). Fixed at the root, not by
+// raising the timeout again: `mightReferenceForbiddenRelativeDir` gives that
+// function the same kind of pre-filter its three siblings already had,
+// cutting the files it hands to the real parser by roughly two-thirds (see
+// that function's own doc comment in `build/lib/check-legacy-owners.mjs` and
+// the measurement noted above `relativeViolationsParserBacked`'s
+// definition). 30000ms stays as comfortable headroom rather than the tight
+// constraint it would otherwise be.
+//
+// Third occurrence (same PR, CI run at the review-pass-2 fix commit): CI
+// reported "Hook timed out in 30000ms" at 31783ms — the four cache-warming
+// calls' combined cost, unchanged by that commit's diff (it touched a
+// different file's prefilter and this function's own symlink handling, not
+// the number or shape of real-tree scans here), simply tipped past the
+// ceiling under that run's CI scheduling; the immediately prior CI run of
+// this exact beforeAll body passed. With each call already prefiltered
+// (`mightReferencePackage` / `mightReferenceForbiddenRelativeDir`) and
+// memoized per real tree, there is no further unbounded or accidentally
+// re-triggered work left to cut — this is inherent child-process-spawn
+// scheduling variance under a shared CI runner, not a regression. Widened
+// the ceiling rather than chasing a third micro-optimization of already-
+// minimized, bounded work — the same class of fix as this comment's first
+// occurrence above.
 beforeAll(() => {
+  relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http']);
   deepImportViolations(join(repoRoot, 'src'));
   packageNameShapeViolations(join(repoRoot, 'src'));
   retiredApiViolations(join(repoRoot, 'src'));
-}, 30000);
+}, 60000);
 
 describe('Rule D, deep-import half — the deep-import subpath form is forbidden everywhere under src/**', () => {
   it('the real src/** tree has no deep-import subpath', () => {
@@ -718,15 +931,18 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
     expect(offenders).toEqual([]);
   });
 
-  it('src/net/ch-client.ts re-exports the package chUrl rather than redeclaring it', () => {
+  // Issue #630 Phase 8 (plan §17) — the migration-only re-export gateway is
+  // retired now that every spike consumer is gone: `ch-client.ts` no longer
+  // imports or re-exports `chUrl` at all (it never used the value in its own
+  // production code, only forwarded it). This replaces the pre-Phase-8
+  // "re-exports rather than redeclaring" assertion, which is no longer true.
+  it('src/net/ch-client.ts no longer imports or re-exports chUrl (the migration gateway is retired)', () => {
     const text = readFileSync(join(repoRoot, 'src/net/ch-client.ts'), 'utf8');
-    // #630 Phase 3 widened this single import/export declaration to also
-    // carry streamLines/parseExceptionText/findExceptionFrame — so `chUrl`
-    // is one of several named imports/exports rather than the sole name
-    // inside the braces; match it as a member of a comma-separated list
-    // rather than requiring it alone.
-    expect(/import\s*\{[^}]*\bchUrl\b[^}]*\}\s*from\s*['"]@altinity\/clickhouse-http['"]/.test(text)).toBe(true);
-    expect(/export\s*\{[^}]*\bchUrl\b[^}]*\}/.test(text)).toBe(true);
+    // Historical prose narrating the retirement legitimately still mentions
+    // the name (see this file's own header comment) — only an actual
+    // import/export declaration binding it is a violation.
+    expect(/import\s*\{[^}]*\bchUrl\b[^}]*\}\s*from/.test(text)).toBe(false);
+    expect(/export\s*\{[^}]*\bchUrl\b[^}]*\}/.test(text)).toBe(false);
   });
 });
 
@@ -934,19 +1150,31 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
   });
 });
 
-describe('production build includes the workspace package source (issue #630 Phase 2)', () => {
-  it('the real esbuild metafile contains packages/clickhouse-http/src/** and the workspace is not externalized', async () => {
+// Issue #630 Phase 2 established that root esbuild bundles the workspace
+// package's SOURCE and the workspace is not externalized. Issue #630 Phase 8
+// (plan §12) flips this: the package's public manifest now points at BUILT
+// output (`dist/**`, resolved through the workspace `node_modules` symlink),
+// so root esbuild must consume that — never package source directly — while
+// STILL not externalizing the workspace (it is project code, attributed to
+// the `project` ownership bucket by `build/size-report-lib.mjs`, never
+// `external`). This is a direct A17 proof, not a build convenience.
+describe('production build consumes the built package dist/**, never package source (issue #630 Phase 8, A17)', () => {
+  it('the real esbuild metafile contains packages/clickhouse-http/dist/** input(s), no packages/clickhouse-http/src/** input, and no @clickhouse/client-web input', async () => {
     const { metafile } = await buildArtifact({ metafile: true });
     const inputPaths = Object.keys(metafile.inputs);
-    const packageInputs = inputPaths.filter((p) => p.startsWith('packages/clickhouse-http/src/'));
-    expect(packageInputs.length).toBeGreaterThan(0);
+    expect(inputPaths).toContain('src/main.ts');
+    const distInputs = inputPaths.filter((p) => p.startsWith('packages/clickhouse-http/dist/'));
+    expect(distInputs.length).toBeGreaterThan(0);
+    const srcInputs = inputPaths.filter((p) => p.startsWith('packages/clickhouse-http/src/'));
+    expect(srcInputs).toEqual([]);
+    const clientWebInputs = inputPaths.filter((p) => p.includes('@clickhouse/client-web'));
+    expect(clientWebInputs).toEqual([]);
     // Repository-relative, matching every other build-graph invariant test
-    // in this repository (size-report.test.js, client-web-spike-policy.test.js).
+    // in this repository (size-report.test.js, client-web-retirement-policy.test.js).
     for (const p of inputPaths) {
       expect(p.startsWith('/')).toBe(false);
       expect(p.startsWith('../')).toBe(false);
     }
-    expect(inputPaths).toContain('src/main.ts');
   }, 60_000);
 });
 
@@ -972,10 +1200,51 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/clickhouse-http has zero bare package imports/);
   });
 
-  it('declares Rule C (src forbidden: packages/clickhouse-http/src)', () => {
-    const entry = checkerSource.match(/\{\s*dir:\s*'src',\s*forbidden:\s*\[([^\]]*)\]/);
-    expect(entry, 'Rule C entry missing from build/check-boundaries.mjs RULES').not.toBeNull();
-    expect([...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual(['packages/clickhouse-http/src']);
+  // Issue #630 Phase 8 (plan §21, Guard 2) broadened Rule C's forbidden
+  // target from just `packages/clickhouse-http/src` to the whole package
+  // directory (`packages/clickhouse-http`) — dist escape coverage. Review
+  // pass 1: Rule C is NO LONGER a RULES-array entry processed by the generic
+  // regex-based loop (that left it vulnerable to a comment-trivia'd import
+  // clause or an escaped specifier segment) — it is now its own dedicated
+  // real-parser block, so this drift-bind test checks for THAT block's
+  // shape instead of a RULES entry.
+  it('declares Rule C as a dedicated real-parser (Guard 2) block, not a regex-based RULES entry', () => {
+    expect(checkerSource).not.toMatch(/\{\s*dir:\s*'src',\s*forbidden:\s*\[\s*'packages\/clickhouse-http'\s*\]/);
+    expect(checkerSource).toMatch(/Guard 2/);
+    expect(checkerSource).toMatch(/findModuleSpecifiers\(source,\s*relFile\)/);
+    expect(checkerSource).toMatch(/relResolved === 'packages\/clickhouse-http' \|\| relResolved\.startsWith\('packages\/clickhouse-http\/'\)/);
+  });
+
+  // Review pass 2 finding (second CI-only `beforeAll` timeout occurrence,
+  // this suite's own `beforeAll` comment above): Rule C/Guard 2 shipped with
+  // NO pre-filter at all, unlike Guard 5 and Rule D beside it, making it the
+  // single most expensive real-parser call in this file. Same drift-avoidance
+  // convention as the `mightReferencePackage` bind directly below — the fix
+  // is one shared helper (`mightReferenceForbiddenRelativeDir`), imported and
+  // called by both the checker and this suite's own
+  // `relativeViolationsParserBacked`, not two independently hand-copied
+  // pre-filters that could silently diverge.
+  it('Guard 2 gates its real-parser call behind the shared mightReferenceForbiddenRelativeDir pre-filter', () => {
+    const importBlock = checkerSource.match(/import \{([^}]*)\} from '\.\/lib\/check-legacy-owners\.mjs';/);
+    expect(importBlock, 'check-legacy-owners import block missing from build/check-boundaries.mjs').not.toBeNull();
+    expect(importBlock[1]).toMatch(/\bmightReferenceForbiddenRelativeDir\b/);
+    // Must actually CALL the shared helper, not merely import and shadow it.
+    expect(checkerSource).toMatch(/mightReferenceForbiddenRelativeDir\(source,\s*\[?'packages\/clickhouse-http'/);
+  });
+
+  // Review pass 2 finding — `resolveRelative` used to return the LEXICAL
+  // path only, with no symlink canonicalization, so a relative import
+  // reaching the package through the real `node_modules/@altinity/
+  // clickhouse-http` workspace-link symlink (package-lock.json's
+  // `"link": true` entry) never matched Guard 2's `packages/clickhouse-http`
+  // prefix comparison. Pins that production's shared `resolveRelative` still
+  // canonicalizes an existing candidate via `fs.realpathSync` before Guard 2
+  // (and the generic RULES loop, and Guard 1) ever compares the resolved
+  // path against a forbidden prefix.
+  it('resolveRelative canonicalizes symlinks so a workspace-link relative import cannot bypass Guard 2', () => {
+    const fnMatch = checkerSource.match(/function resolveRelative\([^)]*\)\s*\{[\s\S]*?\n\}\n/);
+    expect(fnMatch, 'resolveRelative function missing from build/check-boundaries.mjs').not.toBeNull();
+    expect(fnMatch[0]).toMatch(/fs\.realpathSync\(/);
   });
 
   it('declares Rule D (deep imports banned everywhere; revised bare-specifier policy since issue #630 Phase 5)', () => {
@@ -1294,5 +1563,317 @@ describe('Phase 7 retired-top-level-API rule — runQuery/exportQuery/ordinary k
       }
     `;
     expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual([]);
+  });
+});
+
+// Issue #630 Phase 8 (plan §18) — the narrow, named Rule-D exception: exactly
+// `src/application/export-service.ts` may named-import exactly
+// `findExceptionFrame`. No other application module gets protocol/client
+// access — sabotaged below with an unrelated application module.
+describe('Phase 8 narrow Rule-D exception — only export-service.ts may import findExceptionFrame outside src/net/**', () => {
+  it('the real export-service.ts import is clean under the revised policy (no violation reported for its own findExceptionFrame import)', () => {
+    const text = readFileSync(join(repoRoot, 'src/application/export-service.ts'), 'utf8');
+    expect(findPackageImportUsages(text, 'src/application/export-service.ts', CLICKHOUSE_HTTP_SPECIFIER).length).toBeGreaterThan(0);
+    expect(packageNameShapeViolations(join(repoRoot, 'src')).some((l) => l.startsWith('src/application/export-service.ts'))).toBe(false);
+  });
+
+  it('the real export-service.ts imports findExceptionFrame directly from the package (not through a ch-client.ts gateway)', () => {
+    const text = readFileSync(join(repoRoot, 'src/application/export-service.ts'), 'utf8');
+    expect(/import\s*\{[^}]*\bfindExceptionFrame\b[^}]*\}\s*from\s*['"]@altinity\/clickhouse-http['"]/.test(text)).toBe(true);
+  });
+
+  it('flags an unrelated application module importing findExceptionFrame outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/application/__boundary_probe_630p8_unrelated_findexceptionframe__.ts',
+        "import { findExceptionFrame } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_unrelated_findexceptionframe__'))).toBe(true);
+  });
+
+  it('the exception is scoped by exact name too — export-service.ts may not import an unrelated transport export under the same exception (sabotage probe, not written to disk)', () => {
+    // A virtual probe under the exact exception filename, but naming a
+    // DIFFERENT transport export — the allowlist is per-name, not per-file.
+    const relFile = 'src/application/export-service.ts';
+    const source = "import { createClickHouseHttpClient } from '@altinity/clickhouse-http';\n";
+    const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
+    const usages = findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER);
+    const stillViolates = usages.some((usage) => usage.kind === 'named'
+      && !PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)
+      && !narrowExceptionNames.includes(usage.name));
+    expect(stillViolates).toBe(true);
+  });
+});
+
+// Issue #630 Phase 8 (plan §20, Guard 1) — package containment, broadened to
+// the package's own tooling/test surface (test/**, build.mjs,
+// vitest.config.ts), exercised through the SAME real-parser helper
+// (`findModuleSpecifiers`) the production `check:arch` gate calls.
+describe('Guard 1 — package tooling/tests cannot escape the package root or silently consume an undeclared root-hoisted dependency', () => {
+  const packageManifest = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'));
+  const declaredDevDeps = new Set(Object.keys(packageManifest.devDependencies ?? {}));
+
+  it('the real package test/**, build.mjs, and vitest.config.ts are clean', () => {
+    const offenders = [];
+    for (const target of ['test', 'build.mjs', 'vitest.config.ts']) {
+      const full = join(PACKAGE_DIR, target);
+      const files = statSync(full).isDirectory() ? collectFiles(full) : [full];
+      for (const file of files) {
+        const relFile = relative(repoRoot, file).split(sep).join('/');
+        const text = readFileSync(file, 'utf8');
+        for (const { spec } of findModuleSpecifiers(text, relFile)) {
+          if (spec.startsWith('.')) {
+            const resolved = resolveRelative(file, spec);
+            const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+            if (relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/')) {
+              offenders.push(`${relFile} → ${spec}`);
+            }
+            continue;
+          }
+          if (spec === packageManifest.name) continue;
+          if (spec === 'node' || spec.startsWith('node:') || declaredDevDeps.has(spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0])) continue;
+          offenders.push(`${relFile} → ${spec}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('flags a package test escaping the package root with a deep relative import (sabotage probe, not written to disk)', () => {
+    const relFile = 'packages/clickhouse-http/test/unit/__boundary_probe_630p8_guard1_test__.ts';
+    const source = "import { something } from '../../../../src/application/does-not-exist.js';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const escapes = specs.some(({ spec }) => {
+      if (!spec.startsWith('.')) return false;
+      const resolved = resolveRelative(join(repoRoot, relFile), spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      return relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/');
+    });
+    expect(escapes).toBe(true);
+  });
+
+  it('flags a package build.mjs escaping the package root into root build/** (sabotage probe, not written to disk)', () => {
+    const relFile = 'packages/clickhouse-http/build.mjs';
+    const source = "import { buildArtifact } from '../../build/build.mjs';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const escapes = specs.some(({ spec }) => {
+      if (!spec.startsWith('.')) return false;
+      const resolved = resolveRelative(join(repoRoot, relFile), spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      return relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/');
+    });
+    expect(escapes).toBe(true);
+  });
+
+  it('flags a package test bare-importing an undeclared root-hoisted dependency (sabotage probe, not written to disk)', () => {
+    const relFile = 'packages/clickhouse-http/test/unit/__boundary_probe_630p8_guard1_hoisted__.ts';
+    const source = "import { signal } from '@preact/signals-core';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const undeclared = specs.some(({ spec }) => {
+      if (spec.startsWith('.')) return false;
+      if (spec === packageManifest.name) return false;
+      if (spec === 'node' || spec.startsWith('node:')) return false;
+      const bareRoot = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      return !declaredDevDeps.has(bareRoot);
+    });
+    expect(undeclared).toBe(true);
+  });
+
+  it('does not flag a package test bare-importing its own declared devDependency (e.g. vitest)', () => {
+    const relFile = 'packages/clickhouse-http/test/unit/__boundary_probe_630p8_guard1_declared__.ts';
+    const source = "import { describe } from 'vitest';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const undeclared = specs.some(({ spec }) => {
+      if (spec.startsWith('.')) return false;
+      if (spec === packageManifest.name) return false;
+      if (spec === 'node' || spec.startsWith('node:')) return false;
+      const bareRoot = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      return !declaredDevDeps.has(bareRoot);
+    });
+    expect(undeclared).toBe(false);
+  });
+});
+
+// Issue #630 Phase 8 (plan §22/§23, Guards 3/4) — root-wide top-level
+// declaration/re-export ownership for the historical generic transport/URL
+// surface and the moved progress-stream/exception-parsing primitives,
+// exercised through `findTransportSurfaceOwnershipViolations` — the SAME
+// helper the production `check:arch` gate calls.
+describe('Guards 3/4 — the historical generic transport/URL surface and the moved parser primitives cannot be redeclared or forwarded locally', () => {
+  const guard34Names = [...PHASE8_TRANSPORT_SURFACE_NAMES, ...PHASE8_PARSER_SURFACE_NAMES];
+
+  it('the real src/** tree declares none of the guarded names locally', () => {
+    const offenders = [];
+    for (const file of collectFiles(join(repoRoot, 'src'))) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      const text = readFileSync(file, 'utf8');
+      if (!mightReferenceRetiredTopLevelApi(text, guard34Names)) continue;
+      for (const name of findTransportSurfaceOwnershipViolations(text, relFile, guard34Names, CLICKHOUSE_HTTP_SPECIFIER)) {
+        offenders.push(`${relFile} → ${name}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the real src/net/authenticated-clickhouse-request.ts legitimately imports chUrl/streamLines/parseExceptionText from the package without tripping the guard', () => {
+    const text = readFileSync(join(repoRoot, 'src/net/authenticated-clickhouse-request.ts'), 'utf8');
+    expect(findTransportSurfaceOwnershipViolations(text, 'src/net/authenticated-clickhouse-request.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER)).toEqual([]);
+  });
+
+  it('flags a root local chUrl() function declaration (sabotage probe, not written to disk)', () => {
+    const probe = 'export function chUrl(origin, opts) { return origin; }\n';
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_localchurl__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['chUrl']);
+  });
+
+  it('flags a root local createHttpTransport() function declaration (sabotage probe, not written to disk)', () => {
+    const probe = 'export function createHttpTransport(deps) { return { send() {} }; }\n';
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_createhttptransport__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['createHttpTransport']);
+  });
+
+  it('flags a chUrl import whose specifier is NOT the package (a forwarding-alias vector) (sabotage probe, not written to disk)', () => {
+    const probe = "import { foo as chUrl } from './somewhere.js';\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_churlalias__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['chUrl']);
+  });
+
+  it('does NOT flag a chUrl named import whose specifier IS the package (the sanctioned Rule-D route)', () => {
+    const probe = "import { chUrl } from '@altinity/clickhouse-http';\nchUrl('https://x');\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_churlsanctioned__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual([]);
+  });
+
+  it('flags a root duplicate streamLines forwarding-alias vector (sabotage probe, not written to disk)', () => {
+    const probe = "import { foo as streamLines } from './somewhere.js';\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/core/__boundary_probe_630p8_streamlinesalias__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['streamLines']);
+  });
+
+  it('flags a root duplicate findExceptionFrame() function declaration (sabotage probe, not written to disk)', () => {
+    const probe = 'export function findExceptionFrame(tailBytes, tag) { return null; }\n';
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/core/__boundary_probe_630p8_findexceptionframedup__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['findExceptionFrame']);
+  });
+
+  it('flags a re-export gateway forwarding streamLines, regardless of specifier (sabotage probe, not written to disk)', () => {
+    const probe = "export { streamLines } from '@altinity/clickhouse-http';\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_streamlinesreexport__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['streamLines']);
+  });
+
+  it('restoring the retired ch-client.ts forwarding gateway (export { chUrl, parseExceptionText, findExceptionFrame }) trips the guard (sabotage probe, not written to disk)', () => {
+    const probe = "export { chUrl, parseExceptionText, findExceptionFrame };\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_restoredgateway__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['chUrl', 'parseExceptionText', 'findExceptionFrame']);
+  });
+
+  it('does not flag a nested local function/variable inside a function body (declaration-scoped, not a blanket identifier walk)', () => {
+    const probe = `
+      export function outer() {
+        function chUrl() { return null; }
+        return chUrl();
+      }
+    `;
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_nested__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual([]);
+  });
+});
+
+// The Guard 1/3/4 describe blocks above only prove today's tree is clean and
+// that the shared real-parser helpers this file calls behave correctly —
+// exactly the same gap the Rules A-D drift-bind block above (this file,
+// around line 1011) exists to close for the older rules. Neither proves
+// `build/check-boundaries.mjs` (the actual `check:arch` gate) still wires
+// those helpers into its own Guard 1/3/4 rule blocks: a refactor could delete
+// those blocks from the checker entirely while every test above kept passing,
+// since they call the helpers directly rather than the checker. Same
+// `checkerSource`-text-read convention as the Rules A-D block and
+// `client-web-retirement-policy.test.js`'s Guard 5 equivalent.
+describe('build/check-boundaries.mjs still declares the Guard 1/2/3/4 rule blocks this spec mirrors (issue #630 Phase 8)', () => {
+  const checkerSource = readFileSync(join(repoRoot, 'build/check-boundaries.mjs'), 'utf8');
+
+  it('declares the Guard 1 package-containment/tooling-dependency rule block', () => {
+    // build/check-boundaries.mjs:549 — the exact four-target list Guard 1
+    // scans (packages/clickhouse-http/{src,test,build.mjs,vitest.config.ts}).
+    expect(checkerSource).toMatch(/guard1Targets\s*=\s*\['src',\s*'test',\s*'build\.mjs',\s*'vitest\.config\.ts'\]/);
+    // build/check-boundaries.mjs:563 — the package-root-escape violation
+    // message, only emitted by the Guard 1 relative-import check.
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guard 1: a relative import cannot escape the package root/);
+    // build/check-boundaries.mjs:576 — the undeclared-root-hoisted-dependency
+    // violation message, only emitted by the Guard 1 bare-specifier check.
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guard 1: package tooling\/tests may bare-import only node:\* or a dependency declared in the package's own devDependencies/);
+  });
+
+  // Review pass 1 — commit d81a672 bound Guards 1/3/4 to production text but
+  // conspicuously omitted Guard 2 despite it governing the identical
+  // relative-deep-import-escape concern; this closes that gap. Unlike Guards
+  // 1/3/4 (which were always their own dedicated blocks), Guard 2/Rule C
+  // moved OUT of the generic RULES array in this same fix — the companion
+  // "declares Rule C as a dedicated real-parser (Guard 2) block" test above
+  // pins the RULES-array-removal half; this test pins the dedicated block's
+  // own real-parser wiring and violation message, matching the Guard 1/3/4
+  // convention below.
+  it('declares the Guard 2 dedicated real-parser (relative deep-import) rule block', () => {
+    expect(checkerSource).toMatch(/findModuleSpecifiers\(source, relFile\)/);
+    expect(checkerSource).toMatch(/issue #630 Phase 2\/8 Guard 2: SQL Browser must use the package public export, never a relative deep import into src\/\*\* or generated dist\/\*\*/);
+  });
+
+  it('declares the Guards 3/4 root-wide transport/parser-surface ownership rule block', () => {
+    // build/check-boundaries.mjs:600 — the combined name list Guards 3/4
+    // scan for, and the two real-parser helper calls it feeds (:605-:606).
+    expect(checkerSource).toMatch(/guard34Names\s*=\s*\[\.\.\.PHASE8_TRANSPORT_SURFACE_NAMES,\s*\.\.\.PHASE8_PARSER_SURFACE_NAMES\]/);
+    expect(checkerSource).toMatch(/mightReferenceRetiredTopLevelApi\(source,\s*guard34Names\)/);
+    expect(checkerSource).toMatch(/findTransportSurfaceOwnershipViolations\(source,\s*relFile,\s*guard34Names,\s*CLICKHOUSE_HTTP_SPECIFIER\)/);
+    // build/check-boundaries.mjs:607 — the violation message, only emitted
+    // by this exact block.
+    expect(checkerSource).toMatch(/issue #630 Phase 8 Guards 3\/4: the historical generic transport\/URL surface and the moved progress-stream\/exception-parsing primitives cannot be re-declared or forwarded locally/);
+  });
+});
+
+// Issue #630 Phase 8 (plan §10, §25's "production wrapper build-order
+// invariants") — every clean production build wrapper must build the
+// package's own dist/** before invoking the root application builder.
+// Exercised as a virtual/text composition check (not a real shell
+// invocation — the real clean-state proof was run manually per the plan's
+// §10.3/§38 acceptance sequence) so the sabotage case is a plain string, not
+// a mutation of the real file.
+function buildsPackageBeforeAppBuild(scriptText) {
+  const prereqIndex = scriptText.indexOf('build:clickhouse-http');
+  const appBuildIndex = scriptText.indexOf('build/build.mjs');
+  return prereqIndex !== -1 && appBuildIndex !== -1 && prereqIndex < appBuildIndex;
+}
+
+describe('production wrapper build-order invariant — build:clickhouse-http must precede build/build.mjs', () => {
+  it('the real build/bundle.sh builds the package before the app build', () => {
+    const text = readFileSync(join(repoRoot, 'build/bundle.sh'), 'utf8');
+    expect(buildsPackageBeforeAppBuild(text)).toBe(true);
+  });
+
+  it('the real deploy/install.sh builds the package before the app build', () => {
+    const text = readFileSync(join(repoRoot, 'deploy/install.sh'), 'utf8');
+    expect(buildsPackageBeforeAppBuild(text)).toBe(true);
+  });
+
+  it('flags a virtual bundle.sh composition with the package-build line removed (sabotage probe, not written to disk)', () => {
+    const sabotaged = 'echo "==> Building SPA"\nASB_VERSION="$VERSION" node "$ROOT/build/build.mjs"\n';
+    expect(buildsPackageBeforeAppBuild(sabotaged)).toBe(false);
+  });
+
+  it('flags a virtual install.sh composition with the package-build line removed (sabotage probe, not written to disk)', () => {
+    const sabotaged = 'echo "==> Building dist/sql.html"\nnode "$ROOT/build/build.mjs"\n';
+    expect(buildsPackageBeforeAppBuild(sabotaged)).toBe(false);
+  });
+
+  it('flags a virtual composition where the package build line comes AFTER the app build (wrong order, sabotage probe, not written to disk)', () => {
+    const sabotaged = 'node "$ROOT/build/build.mjs"\nnpm --prefix "$ROOT" run build:clickhouse-http\n';
+    expect(buildsPackageBeforeAppBuild(sabotaged)).toBe(false);
+  });
+
+  it('root package.json composes build:clickhouse-http as a prerequisite of build/size-report/dev/local/test', () => {
+    const rootPkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+    for (const script of ['build', 'size-report', 'dev', 'local', 'test', 'test:watch']) {
+      expect(rootPkg.scripts[script], `scripts.${script} missing`).toMatch(/npm run build:clickhouse-http/);
+    }
+    expect(rootPkg.scripts['check:types']).toMatch(/npm run check:types --workspace @altinity\/clickhouse-http/);
   });
 });

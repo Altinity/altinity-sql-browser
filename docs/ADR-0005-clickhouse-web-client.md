@@ -1185,10 +1185,61 @@ seam's eventual deletion, stay deferred to #630 Phase 7 as already recorded
 above. Every historical spike result, gate outcome, and date elsewhere in
 this ADR is unchanged by this addendum.
 
+### #630 Phase 8 current-state addendum (2026-08-08)
 
+**Status remains Rejected.** This addendum, like every #630 extraction
+addendum before it, does not reopen or rewrite the Rejected decision above,
+its evidence, or its dates — it records only what Phase 8 (the final phase of
+issue #630) did to the SPIKE's own executable machinery, which by this point
+had fully served its purpose: every hand-rolled mechanic it validated is now
+`packages/clickhouse-http`'s own production implementation (#630 Phases 2-5),
+and its comparison target (`@clickhouse/client-web`) was never adopted.
+
+The `@clickhouse/client-web@1.23.1` devDependency and its exact-pinned
+vendor-comparison harness were historical EVALUATION machinery — a real,
+executable spike (`tests/spike/clickhouse-client/**`) that ran the official
+client side-by-side with SQL Browser's own hand-rolled mechanics against a
+deterministic fixture server and, for the live-only rows, a real ClickHouse
+container matrix. Phase 8 removes that executable machinery outright:
+
+- the `@clickhouse/client-web` dependency (root manifest and lockfile);
+- the retired npm scripts (`test:client-spike`, `test:client-spike:matrix`,
+  `test:client-spike:browser`, `check:client-spike:evidence`);
+- the whole `tests/spike/clickhouse-client/` directory — comparison
+  adapters, the vendor-candidate build entry/notices, the Docker-backed
+  live-matrix runner, and the evidence validator itself;
+- the candidate-build-only plumbing in `build/build.mjs`/`build/size-report.mjs`
+  (`additionalNotices`/`--notices`) that existed solely to attach the
+  candidate artifact's vendor notice fragment.
+
+One piece of the spike's own infrastructure survives, moved rather than
+deleted: `fault-server.mjs`, the deterministic Node HTTP fixture server, was
+generic and dependency-free from day one — it now lives at
+`packages/clickhouse-http/test/browser/fault-server.mjs` as this package's own
+first-party Chromium/WebKit regression fixture (its former first-party
+consumer, `tests/e2e/clickhouse-http-transport.{html,spec.js}`, was itself
+split this phase into the package's own regression suite plus a narrower root
+`tests/e2e/authenticated-clickhouse-request.{html,spec.js}` for SQL Browser's
+authentication-policy variants — see `.wiki/Architecture.md`).
+
+**`docs/evidence/585/**` is retained, byte-for-byte, and is not reopened by
+this addendum.** The historical commands block that used to follow this
+paragraph (spike test suite, matrix runner, browser harness, evidence
+validator) is retired below into a HISTORICAL description — none of those
+commands exist anymore; they describe what was run to produce the evidence
+already committed under `docs/evidence/585/**`, not anything a developer can
+run today. Future adoption of any officially-supported ClickHouse client
+still requires a new, explicit decision — this ADR's Rejected status is not
+superseded by Phase 8's cleanup.
+
+Historical reproduction commands (Phase 0–Phase 7 only — **none of these
+commands exist in this repository anymore** after Phase 8's retirement; kept
+here strictly as a historical record of how the committed
+`docs/evidence/585/**` evidence was originally produced):
 
 ```sh
-# spike-only test suite (does not run under normal `npm test`)
+# HISTORICAL — retired by issue #630 Phase 8. Do not attempt to run these.
+# spike-only test suite (did not run under normal `npm test`)
 npm run test:client-spike
 # full evidence-generation matrix (Docker + live ClickHouse rows + browsers)
 npm run test:client-spike:matrix
@@ -1202,7 +1253,11 @@ node tests/spike/clickhouse-client/recompute-decision.mjs
 # evidence self-consistency validator (this ADR's Status vs. results.json,
 # wiki status/link, decision-table.md byte match, completeness, credentials)
 npm run check:client-spike:evidence
-# normal repository gate — unaffected by this spike
+```
+
+The normal repository gate remains, unaffected by this spike's retirement:
+
+```sh
 npm run check:types && npm run check:arch && npm run check:schemas \
   && npm run check:examples && npm test && npm run build
 npm run size-report

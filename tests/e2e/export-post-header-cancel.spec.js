@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { startFaultServer } from '../spike/clickhouse-client/fault-server.mjs';
+import { startFaultServer } from '../../packages/clickhouse-http/test/browser/fault-server.mjs';
 
 // #630 Phase 7 (pre-PR review Finding 1) — Plan §18/Checkpoint 3 and A15's
 // Definition of Done require a dedicated EXPORT-shaped real-browser fixture

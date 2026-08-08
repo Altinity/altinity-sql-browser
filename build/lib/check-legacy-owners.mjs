@@ -131,6 +131,17 @@ export const PHASE5_PACKAGE_LANGUAGE_EXPORTS = Object.freeze([
   'canonicalType',
 ]);
 
+/** Issue #630 Phase 8 (plan §18) — the ONE narrow, named Rule-D exception:
+ *  `src/application/export-service.ts` may named-import exactly
+ *  `findExceptionFrame` from `@altinity/clickhouse-http`, even though it sits
+ *  outside `src/net/**` and `findExceptionFrame` is a transport/protocol
+ *  export (not on `PHASE5_PACKAGE_LANGUAGE_EXPORTS`). This is a per-file,
+ *  per-name allowlist, not a broadened category: no other application module
+ *  gets protocol/client access, and this file gets no other package name. */
+export const PHASE8_NARROW_RULE_D_EXCEPTIONS = Object.freeze({
+  'src/application/export-service.ts': Object.freeze(['findExceptionFrame']),
+});
+
 // ── Shared real-parser plumbing ─────────────────────────────────────────────
 
 // Parse `source` (claiming to be the repo-relative `filename`) with the real
@@ -367,6 +378,184 @@ export function findRetiredTopLevelApiViolations(source, filename, names = PHASE
   });
 }
 
+// ── Phase 8 — general-purpose AST helpers (plan §19.1) ──────────────────────
+//
+// Issue #630 Phase 8 broadens architecture-guard coverage across five areas
+// (plan §19-24) that are all "genuinely new source analysis" per this
+// module's own adopted convention: real TypeScript parsing, never a new
+// hand-rolled text/regex scanner (the repeated lexical-bypass lesson from
+// Phases 3/5/6/7 this module's header comment already documents). Two
+// reusable helpers below cover every new Phase-8 guard; no guard gets its own
+// bespoke parser walk.
+
+/** Issue #630 Phase 8 (plan §19.1) — every module-specifier-bearing form in
+ *  `source`, generically (not filtered to any one package): a static
+ *  `import ... from` (with or without a clause, including a bare
+ *  side-effect `import 'pkg'`), a static `export ... from` (a re-export
+ *  gateway), a dynamic `import(...)` call, and TypeScript's inline
+ *  import-type expression (`type T = import('pkg').Foo`, `typeof
+ *  import('pkg')`) — the same four forms `findDeepImportSpecifiers`/
+ *  `findPackageImportUsages` already recognize above, generalized to report
+ *  every specifier found rather than filtering for one target package. The
+ *  module specifier itself may be a plain string literal or a
+ *  no-substitution template literal, matching every sibling helper in this
+ *  module. Used by Phase-8 Guards 1 (package containment) and 5
+ *  (`@clickhouse/client-web` reintroduction) so neither needs its own
+ *  specifier-extraction regex.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated (used only
+ *   for the virtual-file basename/grammar selection)
+ * @returns {{spec: string, kind: 'import'|'side-effect'|'re-export'|'dynamic'|'import-type'}[]}
+ */
+export function findModuleSpecifiers(source, filename) {
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = [];
+    const specText = (node) => {
+      if (
+        !node
+        || (node.kind !== SyntaxKind.StringLiteral && node.kind !== SyntaxKind.NoSubstitutionTemplateLiteral)
+      ) return null;
+      return node.text;
+    };
+    const walk = (node) => {
+      if (is.isImportDeclaration(node)) {
+        const spec = specText(node.moduleSpecifier);
+        if (spec !== null) found.push({ spec, kind: node.importClause ? 'import' : 'side-effect' });
+      }
+      if (is.isExportDeclaration(node)) {
+        const spec = specText(node.moduleSpecifier);
+        if (spec !== null) found.push({ spec, kind: 're-export' });
+      }
+      if (
+        is.isCallExpression(node)
+        && node.expression
+        && node.expression.kind === SyntaxKind.ImportKeyword
+      ) {
+        const spec = specText(node.arguments[0]);
+        if (spec !== null) found.push({ spec, kind: 'dynamic' });
+      }
+      if (is.isImportTypeNode(node)) {
+        const spec = specText(node.argument && node.argument.literal);
+        if (spec !== null) found.push({ spec, kind: 'import-type' });
+      }
+      node.forEachChild(walk);
+    };
+    walk(sourceFile);
+    return found;
+  });
+}
+
+/** Issue #630 Phase 8 (plan §19.1) — the plan's own generic vocabulary for
+ *  `findRetiredTopLevelApiViolations` above, which already generalizes over
+ *  an explicit `names` argument (it is not hardcoded to the Phase 7 retired
+ *  API set — see its own doc comment/default parameter). A thin re-export
+ *  under that name, not a second implementation: every new Phase-8 guard
+ *  that needs "which of these names does this file declare/bind at module
+ *  top level" calls this one function.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @param {readonly string[]} names
+ * @returns {string[]} the forbidden names found, in `names` order, deduplicated
+ */
+export function findTopLevelOwnedDeclarations(source, filename, names) {
+  return findRetiredTopLevelApiViolations(source, filename, names);
+}
+
+/** Issue #630 Phase 8 (plan §22/§23, Guards 3/4) — root-wide declaration/
+ *  re-export ownership for a historical generic-transport/parser name list,
+ *  WITH one exemption `findTopLevelOwnedDeclarations` doesn't need: some of
+ *  these names (`chUrl`, `streamLines`, `parseExceptionText`,
+ *  `findExceptionFrame`, and their canonical wire/frame types) are REAL
+ *  package exports that legitimate production code imports directly under
+ *  Rule D (`src/net/**`'s unrestricted access, and `export-service.ts`'s one
+ *  narrow `findExceptionFrame` exception) — `import { chUrl } from
+ *  '@altinity/clickhouse-http'` followed by calling it is the SANCTIONED
+ *  shape, not a violation. So a top-level IMPORT whose local binding is one
+ *  of `names` is flagged only when its module specifier is something OTHER
+ *  than `packageSpecifier` (a forwarding-alias vector smuggling in a
+ *  same-named local binding from anywhere else, e.g. `import { foo as chUrl}
+ *  from './somewhere.js'`); a top-level DECLARATION or EXPORT (re-export
+ *  gateway, `export { chUrl }` / `export { chUrl } from 'anywhere'`) named
+ *  one of `names` is ALWAYS flagged, regardless of specifier — a second
+ *  implementation and a forwarding wrapper both fail either way.
+ *  Declaration-scoped (`sourceFile.statements` only, never descending into
+ *  function/class/block bodies), same reasoning as
+ *  `findRetiredTopLevelApiViolations` — a nested `client.killQuery(...)`-style
+ *  member call or local variable is never inspected.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @param {readonly string[]} names
+ * @param {string} packageSpecifier the exact bare specifier whose import is exempted
+ * @returns {string[]} the forbidden names found, in `names` order, deduplicated
+ */
+export function findTransportSurfaceOwnershipViolations(source, filename, names, packageSpecifier) {
+  const watched = new Set(names);
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = new Set();
+    const note = (name) => { if (name && watched.has(name)) found.add(name); };
+    for (const stmt of sourceFile.statements) {
+      if (
+        is.isFunctionDeclaration(stmt) || is.isClassDeclaration(stmt)
+        || is.isInterfaceDeclaration(stmt) || is.isTypeAliasDeclaration(stmt)
+      ) {
+        note(stmt.name && stmt.name.text);
+      } else if (is.isVariableStatement(stmt)) {
+        for (const decl of stmt.declarationList.declarations) {
+          if (decl.name && decl.name.kind === SyntaxKind.Identifier) note(decl.name.text);
+        }
+      } else if (is.isImportDeclaration(stmt)) {
+        const specNode = stmt.moduleSpecifier;
+        const specText = (specNode.kind === SyntaxKind.StringLiteral
+          || specNode.kind === SyntaxKind.NoSubstitutionTemplateLiteral) ? specNode.text : null;
+        const bindings = stmt.importClause && stmt.importClause.namedBindings;
+        if (bindings && is.isNamedImports(bindings)) {
+          for (const el of bindings.elements) {
+            if (specText === packageSpecifier) continue; // the sanctioned route
+            note(el.name.text);
+          }
+        }
+      } else if (is.isExportDeclaration(stmt)) {
+        const clause = stmt.exportClause;
+        if (clause && is.isNamedExports(clause)) {
+          for (const el of clause.elements) note(el.name.text);
+        }
+      }
+    }
+    return names.filter((name) => found.has(name));
+  });
+}
+
+/** Issue #630 Phase 8 (plan §22) — the historical generic transport/URL
+ *  surface Guard 3 protects: `chUrl` is a real package export (exempted via
+ *  `findTransportSurfaceOwnershipViolations`'s specifier check above); the
+ *  other four never had a legitimate top-level import binding anywhere in
+ *  this repository at all, so the exemption is harmless for them too. */
+export const PHASE8_TRANSPORT_SURFACE_NAMES = Object.freeze([
+  'chUrl',
+  'createHttpTransport',
+  'ClickHouseTransport',
+  'TransportDeps',
+  'TransportRequest',
+]);
+
+/** Issue #630 Phase 8 (plan §23) — the moved progress-stream/exception-parsing
+ *  primitives Guard 4 protects, root-wide (broader than Phase 3's
+ *  `PHASE3_LEGACY_OWNER_FILES` former-owner scope above — this list runs
+ *  across ALL of `src/**`, not just the three historical owners). */
+export const PHASE8_PARSER_SURFACE_NAMES = Object.freeze([
+  'streamLines',
+  'splitBuffer',
+  'parseExceptionText',
+  'findExceptionFrame',
+  'StreamLine',
+  'StreamCallbacks',
+  'ProgressMetaColumn',
+  'ExceptionFrame',
+]);
+
 // ── Shared cheap pre-filter (review pass 2 hardening) ───────────────────────
 
 /**
@@ -407,6 +596,53 @@ export function findRetiredTopLevelApiViolations(source, filename, names = PHASE
  */
 export function mightReferencePackage(source, packageSpecifier) {
   return source.includes(packageSpecifier) || source.includes('\\');
+}
+
+/**
+ * Cheap textual pre-filter for Rule C / Guard 2's parser-backed relative-
+ * import check — the whole-package-directory deep-import ban
+ * (`relativeViolationsParserBacked` in the test mirror; the dedicated Guard 2
+ * block in `build/check-boundaries.mjs`) — added after that check shipped
+ * with NO pre-filter at all (issue #630 Phase 8, review pass 1): it had to
+ * parse every file under the scanned tree unconditionally, which was the
+ * single most expensive of the cache-warming calls this suite's `beforeAll`
+ * makes and, stacked with the other three, pushed CI's more constrained
+ * scheduling past even the already-generous 30000ms setup timeout (a second
+ * occurrence of the exact CI-only class of failure `mightReferencePackage`
+ * above was introduced to fix for Rule D).
+ *
+ * Same accepted-risk shape as `mightReferencePackage`: a relative specifier
+ * can only resolve INTO a directory named `clickhouse-http` (or whatever a
+ * future `forbiddenDirs` entry's own leaf segment is) by literally spelling
+ * that segment somewhere in its own text, once any escape sequence is
+ * decoded — path resolution here is pure textual segment concatenation (via
+ * `node:path`, no symlinks), so there is no way to reach that directory
+ * without a path component that names it. Matching only each forbidden
+ * directory's LAST path segment (rather than its full path, e.g. just
+ * `clickhouse-http`, not `packages/clickhouse-http`) is deliberately looser
+ * than an exact-path match: the segment need not sit textually adjacent to
+ * the rest of the forbidden path in the specifier (e.g.
+ * `../other/../clickhouse-http/src` still resolves under
+ * `packages/clickhouse-http` without ever spelling the two segments
+ * together), so anchoring on the leaf alone keeps this sound for that case
+ * too. As with `mightReferencePackage`, a bare substring test alone is
+ * unsound against an escaped spelling (a hex/Unicode escape, or a
+ * per-character identity escape) — every such form requires at least one
+ * literal backslash in the source, so "no forbidden leaf substring AND no
+ * backslash anywhere in the file" is the only combination that can safely
+ * skip the real-parser check.
+ *
+ * @param {string} source
+ * @param {readonly string[]} forbiddenDirs repo-relative forbidden
+ *   directories (e.g. `['packages/clickhouse-http']`)
+ * @returns {boolean} true if `source` might contain a relative import
+ *   resolving into one of `forbiddenDirs` (via a plain leaf substring OR an
+ *   escape sequence) and must go through the real-parser check; false only
+ *   when it provably cannot
+ */
+export function mightReferenceForbiddenRelativeDir(source, forbiddenDirs) {
+  if (source.includes('\\')) return true;
+  return forbiddenDirs.some((dir) => source.includes(dir.split('/').pop()));
 }
 
 // ── Revised Rule D: deep-import subpath detection ────────────────────────────
@@ -616,4 +852,43 @@ export function findPackageImportUsages(source, filename, packageSpecifier) {
     walk(sourceFile);
     return found;
   });
+}
+
+// Issue #630 Phase 8 (plan §24, Guard 5) — the three plain-object structural
+// predicates behind the manifest/lockfile/script half of the Guard 5 check
+// (`build/check-boundaries.mjs`'s CLIENT_WEB_SPECIFIER block). Unlike every
+// AST-backed check above, these need no parser — they inspect already-parsed
+// JSON shapes — but they still belong here, not duplicated inline in both
+// `build/check-boundaries.mjs` and its mirror
+// `tests/unit/client-web-retirement-policy.test.js`: that file used to
+// reimplement the exact same three booleans as its own "sabotage" test
+// fixtures, which could only ever prove its OWN copy was self-consistent,
+// never that the real production check still matched. Exporting the real
+// predicates and having both call sites use them removes that drift risk
+// outright, the same "one implementation" convention the AST checks above
+// already follow.
+
+/** Returns the dependency field names in `manifest` (a parsed package.json-
+ *  shaped object) that declare `specifier`, out of the four fields npm
+ *  recognizes — empty when none do. The production caller pushes one
+ *  violation per returned field (preserving its existing per-field message);
+ *  a caller that only needs the aggregate yes/no (e.g. a sabotage probe)
+ *  checks `.length > 0`. */
+export function manifestDependencyFields(manifest, specifier) {
+  return ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+    .filter((field) => Object.prototype.hasOwnProperty.call(manifest[field] ?? {}, specifier));
+}
+
+/** True when `lock` (a parsed package-lock.json-shaped object) still
+ *  installs `specifier` anywhere under `lock.packages`. */
+export function lockHasPackage(lock, specifier) {
+  return Object.keys(lock.packages ?? {}).some((k) => k.endsWith(`node_modules/${specifier}`));
+}
+
+/** Returns the script names in `scripts` (a package.json `scripts` map)
+ *  that are one of the retired issue #585 vendor-spike comparison-harness
+ *  npm scripts issue #630 Phase 8 deleted (`check:client-spike:evidence`, or
+ *  any `test:client-spike*` variant) — empty when none remain. */
+export function retiredClientSpikeScriptNames(scripts) {
+  return Object.keys(scripts ?? {}).filter((s) => s === 'check:client-spike:evidence' || s.startsWith('test:client-spike'));
 }

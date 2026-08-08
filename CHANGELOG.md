@@ -10,6 +10,64 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#630 Phase 8 (final phase — closes #630): make `@altinity/clickhouse-http`
+  independently buildable/packable/typecheckable in isolation, and retire the
+  `@clickhouse/client-web` vendor-comparison spike.** Claims A17/A18.
+  `packages/clickhouse-http` gets its own build/type/test boundary:
+  package-local `esbuild` (`bundle: false`, browser-first ESM) + `tsc`
+  (declaration-only) produce `dist/**`; the manifest's `main`/`types`/
+  `exports["."]` all target that built output, never source. Root
+  `npm run build`/`build/bundle.sh`/`deploy/install.sh` (the latter two call
+  `node build/build.mjs` directly, bypassing root npm scripts) all explicitly
+  build the package first (`npm run build:clickhouse-http`), verified from a
+  clean package `dist/` state — root `esbuild` then resolves the bare
+  `@altinity/clickhouse-http` specifier through the workspace `node_modules`
+  symlink to that built output, never package source (root `tsconfig.json`/
+  Vitest coverage drop package source from their own trees entirely;
+  package-local `tsconfig.json`/`vitest.config.ts` own it at the same
+  100/95/90/100-per-file floor). A new `test/isolated-package.mjs`
+  (`npm run test:pack`) runs a real `npm pack`, installs the tarball into a
+  fixture OUTSIDE this repository, imports it as ESM, and compiles a
+  TypeScript consumer against its declarations with `--traceResolution` —
+  proving neither runtime nor type resolution ever falls back into this
+  repository. A new `packages/clickhouse-http/test/browser/**` Chromium+WebKit
+  regression suite serves the package's own generated `dist/**` directly (no
+  import map, no vendor client, no Docker/live ClickHouse); its former root
+  e2e home (`tests/e2e/clickhouse-http-transport.{html,spec.js}`) splits into
+  that package suite plus a narrower root
+  `tests/e2e/authenticated-clickhouse-request.{html,spec.js}` for SQL
+  Browser's own authentication-policy variants, and `fault-server.mjs` moves
+  from the retired spike to the package's own `test/browser/` as first-party
+  fixture infrastructure. The migration-only `ch-client.ts` forwarding
+  aliases (`chUrl`/`parseExceptionText`/`findExceptionFrame`) are removed;
+  `export-service.ts` imports `findExceptionFrame` directly from the package
+  under one narrow, named Rule-D exception. Five architecture guards, all
+  real-parser-backed (`build/lib/check-legacy-owners.mjs`'s new
+  `findModuleSpecifiers`/`findTransportSurfaceOwnershipViolations`, never a
+  hand-rolled regex scanner): package containment broadens to the package's
+  own `test/**`/`build.mjs`/`vitest.config.ts`; the package relative-deep-
+  import ban widens from `src/**` to the whole package directory (closing a
+  `dist/**` escape); root-wide declaration/re-export ownership for the
+  historical `chUrl`/`createHttpTransport`/`ClickHouseTransport`/
+  `TransportDeps`/`TransportRequest` transport surface and the moved
+  progress-stream/exception-parsing primitives; and the
+  `@clickhouse/client-web` ban's former allowlist is deleted, its scan
+  widened across `src/**`/`packages/clickhouse-http/**`/`tests/**`/`build/**`
+  plus structural manifest/lock/script/directory checks. The
+  `@clickhouse/client-web` devDependency, its four npm scripts, and the whole
+  executable `tests/spike/clickhouse-client/**` directory (33 files, per an
+  exact file-by-file disposition table) are removed, along with the
+  candidate-build-only `additionalNotices`/`--notices` plumbing in
+  `build/build.mjs`/`build/size-report.mjs`; `package-lock.json` is
+  regenerated. `docs/evidence/585/**` and ADR-0005's Rejected
+  decision/historical content are untouched — only a narrow current-state
+  addendum documents the executable retirement.
+  `tests/unit/client-web-spike-policy.test.js` (which enforced the opposite,
+  spike-executable state) is rewritten as
+  `tests/unit/client-web-retirement-policy.test.js`. Adds
+  `docs/clickhouse-http-repository-extraction.md`, the tested mechanical
+  extraction handoff for issue #639 (external repository creation/release and
+  the SQL Browser consumer cutover), which starts only after this phase.
 - **#630 Phase 7: migrate query execution and export off generic
   `runQuery`/`exportQuery`/mutable-context `killQuery`, then delete those
   APIs and the local transport seam.** `query-execution-service.ts` no
