@@ -38,17 +38,7 @@
        NEW Phase-4 API preserves the identical native post-header cancellation
        semantics (one real Fetch, the caller's own AbortSignal driving
        cancellation for the response's whole lifetime, no callbacks after
-       rejection). Scenarios 1-8 are otherwise UNCHANGED: they still exercise
-       the raw `createHttpTransport().send()` -> package `streamLines`
-       composition directly, which was the ordinary SQL Browser production
-       path through #630 Phase 5. Since Phase 6, the actual production path
-       for `queryJson`/`runQuery`/`exportQuery` is the authenticated-path
-       composition below (`authenticatedRequest()`/`authenticatedProgress()`
-       -> package `request()`/response consumers) — `createHttpTransport`
-       itself now remains live only as the frozen-lease `killQueryWithLease`
-       bypass's compatibility route. Scenarios 1-8 stay as lower-layer
-       package/transport regression coverage; they are not claimed to
-       exercise the current ordinary production path.
+       rejection).
 
        #630 Phase 6 — authenticated-path variants of the post-header
        cancellation scenarios (5-9), proving the SAME native
@@ -66,14 +56,30 @@
        original `AbortController.signal` straight through, exactly like the
        raw scenarios above. Scenarios 1-4 stay raw/unauthenticated
        (pre-header timing — optional to duplicate through auth per the plan);
-       only the post-header family (5-9) gets an authenticated variant. -->
+       only the post-header family (5-9) gets an authenticated variant.
+
+       #630 Phase 7 — the local SQL Browser compatibility transport adapter
+       (`src/net/clickhouse-http-transport.ts`, `createHttpTransport`) is
+       retired: `killQueryWithLease` (its last production caller) moved to
+       the package's own stateless `client.killQuery(...)`, so this harness
+       no longer imports that file at all. Scenarios 1-4 and the raw
+       post-header family (5-8) plus the invalid-UTF-8 scenario, which used
+       to build a `createHttpTransport(...)` and call its `.send()`, now
+       build the package's OWN `createClickHouseHttpClient(...)` directly
+       (via `makeClient`, the same helper Scenario 9 already used) and call
+       its public `.request()` method — the exact production path
+       `authenticated-clickhouse-request.ts`'s `authenticatedRequest()`
+       itself calls one layer up. This is a pure retarget: every original
+       behavioral assertion (identity, call count, exact SQL/Authorization,
+       cancellation semantics, byte fidelity) is unchanged — only the
+       compatibility indirection is gone. Scenario 9 remains
+       `queryProgress()` coverage; it does not become export coverage. -->
   <script type="importmap">
     { "imports": {
       "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
     } }
   </script>
   <script type="module">
-    import { createHttpTransport } from '/src/net/clickhouse-http-transport.js';
     import { streamLines, createClickHouseHttpClient } from '@altinity/clickhouse-http';
     import { authenticatedRequest, authenticatedProgress } from '/src/net/authenticated-clickhouse-request.js';
 
@@ -105,17 +111,12 @@
       };
     }
 
-    function makeTransport(baseUrl) {
-      const wrapper = makeWrapper();
-      const transport = createHttpTransport({ fetch: () => wrapper.fn, origin: () => baseUrl });
-      return { transport, wrapper };
-    }
-
-    // #630 Phase 4 — same real, native `window.fetch` counting wrapper as
-    // `makeTransport` above, but constructing the package's OWN
-    // `createClickHouseHttpClient(...)` directly (not the SQL Browser
-    // compatibility adapter) — Scenario 9 below exercises the new
-    // `queryProgress()` convenience method through it.
+    // #630 Phase 7 — the package's OWN `createClickHouseHttpClient(...)`
+    // (never the retired SQL Browser compatibility adapter), driven by the
+    // same real, native `window.fetch` counting wrapper as every other
+    // helper here. Used both by the raw/generic scenarios below (1-8, plus
+    // invalid-UTF-8) via `client.request(...)` directly, and by Scenario 9
+    // via `client.queryProgress(...)`.
     function makeClient(baseUrl) {
       const wrapper = makeWrapper();
       const client = createClickHouseHttpClient({ fetch: () => wrapper.fn, origin: () => baseUrl });
@@ -130,8 +131,7 @@
     // `onSignedOut`/`onTransportConnected`/`onTransportOffline` captured as
     // plain call counters so a scenario can assert none fired after a
     // cancellation. Uses the SAME real, native `window.fetch` counting
-    // wrapper as `makeTransport`/`makeClient` above — the only thing under
-    // `ctx.fetch`.
+    // wrapper as `makeClient` above — the only thing under `ctx.fetch`.
     function makeAuthCtx(baseUrl, overrides = {}) {
       const wrapper = makeWrapper();
       const onSignedOutCalls = [];
@@ -168,8 +168,8 @@
     const SCENARIO1_SQL = '  -- leading comment\n\tSELECT \'héllo\', 1 -- trailing comment\nFORMAT CSV;  \n';
     const SCENARIO1_AUTHORIZATION = 'Bearer test-token-abc123';
     window.__scenario1 = async function (baseUrl, queryId) {
-      const { transport, wrapper } = makeTransport(baseUrl);
-      const resp = await transport.send({
+      const { client, wrapper } = makeClient(baseUrl);
+      const resp = await client.request({
         sql: SCENARIO1_SQL,
         defaultFormat: 'JSONCompact',
         settings: { wait_end_of_query: 0, empty_setting: '' }, // numeric zero + empty-string setting
@@ -197,8 +197,8 @@
 
     // ── Scenario 2 — non-2xx untouched (bullet 3) ───────────────────────────
     window.__scenario2 = async function (baseUrl, queryId) {
-      const { transport, wrapper } = makeTransport(baseUrl);
-      const resp = await transport.send({
+      const { client, wrapper } = makeClient(baseUrl);
+      const resp = await client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
@@ -212,10 +212,10 @@
 
     // ── Scenario 3 — pre-aborted request (bullet 9) ─────────────────────────
     window.__scenario3 = async function (baseUrl, queryId) {
-      const { transport, wrapper } = makeTransport(baseUrl);
+      const { client, wrapper } = makeClient(baseUrl);
       const controller = new AbortController();
       controller.abort();
-      const rejectedName = await nameOf(transport.send({
+      const rejectedName = await nameOf(client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
@@ -234,9 +234,9 @@
     // to abort — otherwise this couldn't distinguish "cancelled before
     // dispatch" from "cancelled while genuinely awaiting headers".
     window.__scenario4Start = function (baseUrl, queryId) {
-      const { transport, wrapper } = makeTransport(baseUrl);
+      const { client, wrapper } = makeClient(baseUrl);
       const controller = new AbortController();
-      const promise = transport.send({
+      const promise = client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
@@ -254,14 +254,14 @@
     };
 
     // ── Scenario 5 — native post-header body lifetime (bullet 11) ──────────
-    // Two-phase: phase 1 settles send() and reads the immediate first chunk;
-    // phase 2 starts a second, genuinely pending native reader.read() (the
-    // fixture holds the next chunk for POST_HEADER_ABORT_HOLD_MS) and THEN
-    // aborts the original signal.
+    // Two-phase: phase 1 settles request() and reads the immediate first
+    // chunk; phase 2 starts a second, genuinely pending native reader.read()
+    // (the fixture holds the next chunk for POST_HEADER_ABORT_HOLD_MS) and
+    // THEN aborts the original signal.
     window.__scenario5Start = async function (baseUrl, queryId) {
-      const { transport, wrapper } = makeTransport(baseUrl);
+      const { client, wrapper } = makeClient(baseUrl);
       const controller = new AbortController();
-      const resp = await transport.send({
+      const resp = await client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
@@ -292,17 +292,18 @@
     //    cancellation (bullet 12) — single call: the abort is scheduled from
     //    inside the first onChunk callback, then the scenario itself waits
     //    out the fixture's hold before returning, so the Node side never
-    //    needs its own timing loop. Requests through the
-    //    `createHttpTransport().send()` adapter, then streams the resulting
-    //    native `resp.body` through the package's own `streamLines` — this
-    //    is lower-layer package/transport regression coverage, NOT a claim
-    //    about `runQuery()`'s current production path (see the file-level
-    //    comment above; that path has been `authenticatedRequest()` /
-    //    `authenticatedProgress()` since Phase 6). ─────────────────────────
+    //    needs its own timing loop. Requests through the package's own
+    //    `createClickHouseHttpClient(...).request()`, then streams the
+    //    resulting native `resp.body` through the package's own
+    //    `streamLines` — this is lower-layer package regression coverage,
+    //    NOT a claim about `QueryExecutionService`'s current production path
+    //    (see the file-level comment above; that path has been
+    //    `authenticatedRequest()` / `authenticatedProgress()` since
+    //    Phase 6). ─────────────────────────────────────────────────────────
     window.__scenario6 = async function (baseUrl, queryId, holdMs) {
-      const { transport } = makeTransport(baseUrl);
+      const { client } = makeClient(baseUrl);
       const controller = new AbortController();
-      const resp = await transport.send({
+      const resp = await client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
@@ -336,15 +337,15 @@
     };
 
     // ── Scenario 7 — concurrent-request isolation (bullet 13) ──────────────
-    // ONE shared transport instance for both A and B — a transport-global
+    // ONE shared package client instance for both A and B — a client-global
     // cancellation-state bug would only be observable this way.
     window.__scenario7 = async function (baseUrl, queryIdA, queryIdB, holdMs) {
-      const { transport } = makeTransport(baseUrl);
+      const { client } = makeClient(baseUrl);
       const controllerA = new AbortController();
       const controllerB = new AbortController();
       const [respA, respB] = await Promise.all([
-        transport.send({ sql: 'SELECT 1', defaultFormat: 'JSON', params: { query_id: queryIdA }, authorization: 'Bearer tok', signal: controllerA.signal }),
-        transport.send({ sql: 'SELECT 1', defaultFormat: 'JSON', params: { query_id: queryIdB }, authorization: 'Bearer tok', signal: controllerB.signal }),
+        client.request({ sql: 'SELECT 1', defaultFormat: 'JSON', params: { query_id: queryIdA }, authorization: 'Bearer tok', signal: controllerA.signal }),
+        client.request({ sql: 'SELECT 1', defaultFormat: 'JSON', params: { query_id: queryIdB }, authorization: 'Bearer tok', signal: controllerB.signal }),
       ]);
       const readerA = respA.body.getReader();
       const readerB = respB.body.getReader();
@@ -362,13 +363,13 @@
 
     // ── Scenario 8 — abort after full completion has no effect (bullet 14) ─
     //    Also uses the package's own `streamLines` (#630 Phase 3) — same
-    //    lower-layer package/transport regression coverage as Scenario 6
-    //    above, not a claim about the current production path (see the
-    //    file-level comment above).
+    //    lower-layer package regression coverage as Scenario 6 above, not a
+    //    claim about the current production path (see the file-level
+    //    comment above). ──────────────────────────────────────────────────
     window.__scenario8 = async function (baseUrl, queryId) {
-      const { transport } = makeTransport(baseUrl);
+      const { client } = makeClient(baseUrl);
       const controller = new AbortController();
-      const resp = await transport.send({
+      const resp = await client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
@@ -392,14 +393,16 @@
 
     // ── Scenario 9 (#630 Phase 4, new/additive) — the package's own
     //    `queryProgress()` proves the SAME native post-header cancellation
-    //    semantics Scenario 6 already proves for the lower-layer
-    //    compatibility/package path, but through the NEW Phase-4 convenience API directly: one
+    //    semantics Scenario 6 already proves for the lower-layer package
+    //    path, but through the Phase-4 convenience API directly: one
     //    package client, one `queryProgress()` call, the original
     //    `AbortController.signal` passed straight through, abort scheduled
     //    from inside the first `onChunk` callback (proving headers have
     //    already resolved and a real body chunk has already been read), then
     //    a wait comfortably past the fixture's held second write to confirm
-    //    the abort truly stopped the loop rather than merely delaying it. ──
+    //    the abort truly stopped the loop rather than merely delaying it.
+    //    (#630 Phase 7 — this remains query-progress coverage, not export
+    //    coverage.) ─────────────────────────────────────────────────────────
     window.__scenario9 = async function (baseUrl, queryId, holdMs) {
       const { client, wrapper } = makeClient(baseUrl);
       const controller = new AbortController();
@@ -620,8 +623,8 @@
     // ── Extra — invalid UTF-8 raw bytes stay byte-identical at the native
     //    browser boundary (bullet 6), read via arrayBuffer(), never .text().
     window.__scenarioInvalidUtf8 = async function (baseUrl, queryId) {
-      const { transport, wrapper } = makeTransport(baseUrl);
-      const resp = await transport.send({
+      const { client, wrapper } = makeClient(baseUrl);
+      const resp = await client.request({
         sql: 'SELECT 1',
         defaultFormat: 'JSON',
         params: { query_id: queryId },
