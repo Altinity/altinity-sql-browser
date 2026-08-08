@@ -359,26 +359,32 @@ describe('size-report.mjs CLI attribution is independent of process cwd', () => 
   }, 180_000);
 });
 
-// Issue #630 Phase 2 — the real production esbuild metafile, not a
-// synthetic fixture, must show the workspace package's source physically
-// bundled and attributed as first-party project code. This is the
-// "production esbuild artifact" proof the plan requires (§17/§30): the
-// workspace is not externalized, and every packages/clickhouse-http/src/**
-// input classifies as { owner: 'project', group: 'packages' }.
-describe('production metafile attributes the clickhouse-http workspace package (issue #630 Phase 2)', () => {
-  it('bundles packages/clickhouse-http/src/** into the real artifact, classified as first-party project code', async () => {
+// Issue #630 Phase 2 established that the real production esbuild metafile
+// shows the workspace package's SOURCE physically bundled and attributed as
+// first-party project code. Issue #630 Phase 8 (plan §12) flips this: the
+// package's public manifest now points at BUILT output, so root esbuild must
+// consume packages/clickhouse-http/dist/** — never src/** — while the
+// workspace remains attributed as project/packages either way (this
+// package's dist is project code, not an external dependency, even though
+// esbuild resolves it through node_modules — build/size-report-lib.mjs's
+// `classifyInput` matches on the `packages/` prefix generically, so this
+// assertion needs no code change, only a retargeted path prefix).
+describe('production metafile attributes the clickhouse-http workspace package (issue #630 Phase 8, A17)', () => {
+  it('bundles packages/clickhouse-http/dist/** into the real artifact, classified as first-party project code, with no src/** input', async () => {
     const { metafile } = await buildArtifact({ metafile: true });
     const output = Object.values(metafile.outputs)[0];
     const modules = attributeModules(output);
-    const packageModules = modules.filter((m) => m.path.startsWith('packages/clickhouse-http/src/'));
+    const distModules = modules.filter((m) => m.path.startsWith('packages/clickhouse-http/dist/'));
     // At least the package's client/url/index modules are physically present
     // in the bundle — proving the public package import resolved into the
-    // workspace source and was bundled as ordinary first-party source, not
-    // externalized.
-    expect(packageModules.length).toBeGreaterThan(0);
-    for (const m of packageModules) {
+    // workspace's BUILT output and was bundled as ordinary first-party
+    // project code, not externalized.
+    expect(distModules.length).toBeGreaterThan(0);
+    for (const m of distModules) {
       expect(m.owner).toBe('project');
       expect(m.group).toBe('packages');
     }
+    const srcModules = modules.filter((m) => m.path.startsWith('packages/clickhouse-http/src/'));
+    expect(srcModules).toEqual([]);
   }, 60_000);
 });

@@ -67,6 +67,9 @@ if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
   fi
 fi
 
+echo "==> Building @altinity/clickhouse-http"
+npm --prefix "$ROOT" run build:clickhouse-http
+
 echo "==> Building dist/sql.html"
 node "$ROOT/build/build.mjs"
 

@@ -127,18 +127,20 @@ export function esbuildOptions({ repoRoot = root, entryPoint, metafile = false, 
 // it's the report tool's own template, not repository source under test.
 //
 // `noticesPath` overrides the default `<repoRoot>/THIRD-PARTY-NOTICES.md`.
-// `additionalNotices`, when given, is appended after it — the Phase 0 spike
-// uses this to attach a candidate-only notice fragment for a devDependency
-// that is bundled ONLY in the isolated candidate artifact, never in the
-// normal production build. `buildStampOverride` passes through to
-// buildStamp() (see there); omitted, normal stamp derivation is unchanged.
+// `buildStampOverride` passes through to buildStamp() (see there); omitted,
+// normal stamp derivation is unchanged.
+//
+// Issue #630 Phase 8 removes `additionalNotices` (the #585 Phase 0 vendor
+// candidate artifact's own notice-fragment plumbing): that candidate build
+// path is retired along with the rest of the executable vendor-comparison
+// scaffolding, so this builder no longer needs a second, additive notices
+// input.
 export async function buildArtifact({
   repoRoot = root,
   entryPoint,
   metafile = false,
   jsMinify = true,
   noticesPath,
-  additionalNotices,
   buildStampOverride,
 } = {}) {
   const result = await build(esbuildOptions({ repoRoot, entryPoint, metafile, jsMinify }));
@@ -173,8 +175,7 @@ export async function buildArtifact({
   // (legalComments: 'none'), so embed THIRD-PARTY-NOTICES.md as a leading HTML
   // comment — sanitized so its text can't close the comment early.
   const baseNotices = await readFile(noticesPath ?? resolve(repoRoot, 'THIRD-PARTY-NOTICES.md'), 'utf8');
-  const noticesText = additionalNotices ? `${baseNotices.trim()}\n\n${additionalNotices.trim()}` : baseNotices;
-  const thirdParty = '<!--\n' + noticesText.replace(/--+>?/g, '-').trim() + '\n-->';
+  const thirdParty = '<!--\n' + baseNotices.replace(/--+>?/g, '-').trim() + '\n-->';
 
   const html = template
     .replace('<!--__THIRDPARTY__-->', () => thirdParty)
@@ -197,12 +198,11 @@ export async function writeArtifact({
   entryPoint,
   jsMinify = true,
   noticesPath,
-  additionalNotices,
   buildStampOverride,
   outDir = resolve(repoRoot, 'dist'),
 } = {}) {
   const { html, fonts } = await buildArtifact({
-    repoRoot, entryPoint, jsMinify, noticesPath, additionalNotices, buildStampOverride,
+    repoRoot, entryPoint, jsMinify, noticesPath, buildStampOverride,
   });
   const source = Buffer.from(html);
   await mkdir(outDir, { recursive: true });

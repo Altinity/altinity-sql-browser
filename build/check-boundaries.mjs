@@ -48,6 +48,11 @@ import {
   PHASE7_RETIRED_TOP_LEVEL_NAMES,
   PHASE7_DELETED_TRANSPORT_FILES,
   mightReferenceRetiredTopLevelApi,
+  PHASE8_NARROW_RULE_D_EXCEPTIONS,
+  findModuleSpecifiers,
+  findTransportSurfaceOwnershipViolations,
+  PHASE8_TRANSPORT_SURFACE_NAMES,
+  PHASE8_PARSER_SURFACE_NAMES,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -177,11 +182,20 @@ const RULES = [
   },
   // Issue #630 Phase 2 — Rule C: SQL Browser source must consume the package
   // through its public export, never a relative deep import into the
-  // package's own src/** implementation files.
+  // package's own implementation files. Issue #630 Phase 8 (plan §21, Guard
+  // 2) broadens the forbidden target from just `packages/clickhouse-http/src`
+  // to the WHOLE package directory (`packages/clickhouse-http`, no `/src`
+  // suffix) — generated `dist/**` is a second possible relative deep-import
+  // escape a source-only ban would miss (e.g.
+  // `../../packages/clickhouse-http/dist/client.js`). The bare deep-import
+  // subpath form (`@altinity/clickhouse-http/dist/client.js`) needs no
+  // parallel change: Rule D's `findDeepImportSpecifiers` below already bans
+  // any subpath of the package specifier regardless of what follows the
+  // slash, dist included.
   {
     dir: 'src',
-    forbidden: ['packages/clickhouse-http/src'],
-    why: 'issue #630 Phase 2: SQL Browser must use the package public export',
+    forbidden: ['packages/clickhouse-http'],
+    why: 'issue #630 Phase 2/8: SQL Browser must use the package public export, never a relative deep import into src/** or generated dist/**',
   },
 ];
 
@@ -317,25 +331,77 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   }
 }
 
-// Issue #585 Phase 1: no file under src/** may import the official
-// `@clickhouse/client-web` package (a bare specifier — the `RULES` loop above
-// skips those, `if (!spec.startsWith('.')) continue;`, hence this separate
-// block). ADR-0005 (docs/ADR-0005-clickhouse-web-client.md) is Rejected, so
-// Phases 2-4 (the official-client cutover) do not proceed without a new
-// decision — today this bans the import everywhere in `src/`. The single
-// allowlist entry names the FUTURE official transport file (does not exist
-// yet); the rule is written so it activates correctly the moment that file is
-// born, rather than needing a second edit here.
+// Issue #585 Phase 1 / #630 Phase 8 (plan §24, Guard 5): no executable/config
+// source anywhere in the repository may import the official
+// `@clickhouse/client-web` package, or a subpath of it. ADR-0005
+// (docs/ADR-0005-clickhouse-web-client.md) is and remains Rejected — there is
+// no future-transport allowlist anymore (Phase 8 deletes it outright; #639
+// covers only the workspace-extraction side of this issue, never a reversal
+// of this ADR). A real-parser scan (`findModuleSpecifiers`), not a
+// specifier-text regex, for the same comment-trivia-bypass reason as Rule D
+// above — this is exactly the "genuinely new source analysis" case this
+// module's header comment requires the real parser for, now covering four
+// trees instead of one: `src/**`, `packages/clickhouse-http/**` (excluding
+// generated `dist/**`, which is build output, not source), `tests/**`, and
+// `build/**`. A plain substring pre-filter gates the expensive real-parser
+// call per file (matching `mightReferenceRetiredTopLevelApi`'s established,
+// accepted-risk convention above, not Rule D's heavier escape-sequence-aware
+// `mightReferencePackage`) — an exotic escaped spelling of this well-known,
+// no-longer-evolving vendor package name is outside this guard's threat
+// model, same acceptance as this module's own stated scope.
 const CLIENT_WEB_SPECIFIER = '@clickhouse/client-web';
-const CLIENT_WEB_ALLOWLIST = new Set(['src/net/clickhouse-web-transport.ts']);
-for (const file of collectFiles(path.join(repoRoot, 'src'))) {
-  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+const CLIENT_WEB_BAN_ROOTS = ['src', 'packages/clickhouse-http', 'tests', 'build'];
+for (const rootDir of CLIENT_WEB_BAN_ROOTS) {
+  const fullRootDir = path.join(repoRoot, rootDir);
+  if (!fs.existsSync(fullRootDir)) continue;
+  for (const file of collectFiles(fullRootDir)) {
+    const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+    if (relFile.startsWith('packages/clickhouse-http/dist/')) continue; // generated, not source
+    checkedFiles += 1;
+    const source = fs.readFileSync(file, 'utf8');
+    if (!source.includes(CLIENT_WEB_SPECIFIER)) continue;
+    for (const { spec } of findModuleSpecifiers(source, relFile)) {
+      if (spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) {
+        violations.push(`${relFile} → ${spec} (issue #630 Phase 8 Guard 5: @clickhouse/client-web must never be reintroduced — ADR-0005 remains Rejected)`);
+      }
+    }
+  }
+}
+
+// Structural manifest/lockfile checks (plan §24) — plain object inspection,
+// no parser needed: the vendor dependency, its retired npm scripts, and the
+// executable spike directory must all stay absent.
+for (const manifestPath of ['package.json', 'packages/clickhouse-http/package.json']) {
+  const fullManifestPath = path.join(repoRoot, manifestPath);
+  if (!fs.existsSync(fullManifestPath)) continue;
   checkedFiles += 1;
-  const source = fs.readFileSync(file, 'utf8');
-  for (const spec of extractSpecifiers(source)) {
-    if (spec !== CLIENT_WEB_SPECIFIER && !spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) continue;
-    if (CLIENT_WEB_ALLOWLIST.has(relFile)) continue;
-    violations.push(`${relFile} → ${spec} (issue #585 Phase 1: only the future official transport file may import @clickhouse/client-web — ADR-0005 is Rejected, Phases 2-4 do not proceed without a new decision)`);
+  const manifest = JSON.parse(fs.readFileSync(fullManifestPath, 'utf8'));
+  for (const depField of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    if (Object.prototype.hasOwnProperty.call(manifest[depField] ?? {}, CLIENT_WEB_SPECIFIER)) {
+      violations.push(`${manifestPath} → ${depField}.${CLIENT_WEB_SPECIFIER} (issue #630 Phase 8 Guard 5: the vendor dependency must not return to any manifest)`);
+    }
+  }
+  if (manifestPath === 'package.json') {
+    for (const scriptName of Object.keys(manifest.scripts ?? {})) {
+      if (scriptName === 'check:client-spike:evidence' || scriptName.startsWith('test:client-spike')) {
+        violations.push(`${manifestPath} → scripts.${scriptName} (issue #630 Phase 8 Guard 5: the retired vendor-spike npm scripts must not return)`);
+      }
+    }
+  }
+}
+const lockPath = path.join(repoRoot, 'package-lock.json');
+if (fs.existsSync(lockPath)) {
+  checkedFiles += 1;
+  const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  if (Object.keys(lock.packages ?? {}).some((k) => k.endsWith(`node_modules/${CLIENT_WEB_SPECIFIER}`))) {
+    violations.push(`package-lock.json → ${CLIENT_WEB_SPECIFIER} (issue #630 Phase 8 Guard 5: the vendor package must not remain installed in the lockfile)`);
+  }
+}
+{
+  const spikeDir = path.join(repoRoot, 'tests/spike/clickhouse-client');
+  checkedFiles += 1;
+  if (fs.existsSync(spikeDir)) {
+    violations.push('tests/spike/clickhouse-client → directory exists (issue #630 Phase 8 Guard 5: the executable vendor-spike directory must not be recreated)');
   }
 }
 
@@ -422,10 +488,24 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   // `findPackageImportUsages`'s own doc comment for why). Inside
   // `src/net/**` every access form/name remains unrestricted, matching
   // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
+  // Issue #630 Phase 8 adds exactly ONE additional, narrower exception on top
+  // of this net-only/language-export split (plan §18) — see
+  // `PHASE8_NARROW_RULE_D_EXCEPTIONS` below and its own doc comment in
+  // `check-legacy-owners.mjs`: `src/application/export-service.ts` alone may
+  // named-import exactly `findExceptionFrame`, a transport/protocol export,
+  // now that the `ch-client.ts` forwarding gateway it used to resolve through
+  // is retired. This is a per-file allowlist entry, not a widened category —
+  // no other application module gains protocol/client access.
   if (relFile.startsWith('src/net/')) continue;
   if (!fileMightReferencePackage) continue;
+  // Issue #630 Phase 8 (plan §18) — a narrow, PER-FILE, PER-NAME exception:
+  // exactly `src/application/export-service.ts` may named-import exactly
+  // `findExceptionFrame`, a transport/protocol export that is not on the
+  // pure-language allowlist. No other file/name pair is granted this.
+  const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
   for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
     if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+    if (usage.kind === 'named' && narrowExceptionNames.includes(usage.name)) continue;
     const label = usage.kind === 'named' ? `named import of '${usage.name}' (transport/protocol API)`
       : usage.kind === 'default' ? 'default import'
         : usage.kind === 'namespace' ? 'namespace import'
@@ -434,6 +514,98 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
               : usage.kind === 'import-type' ? 'inline import-type expression'
                 : 'package re-export gateway';
     violations.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${label}) (issue #630 Phase 5: outside src/net/**, only a named import of an approved pure-language export is allowed — the transport/client surface and every other access form stay src/net/**-only)`);
+  }
+}
+
+// Issue #630 Phase 8 (plan §20, Guard 1) — package containment, broadened
+// past Rule A/B's original scope (package `src/**` only) to the package's
+// own tooling/test surface too: `test/**`, `build.mjs`, `vitest.config.ts`.
+// A real-parser scan (`findModuleSpecifiers`), not a hand-rolled regex, for
+// the same comment-trivia-bypass reason as Rule D above — "genuinely new
+// source analysis" per this file's own header comment and
+// `check-legacy-owners.mjs`'s adopted convention.
+//
+// Three rules, matching the plan exactly:
+//   1. a relative import anywhere in these four targets cannot escape the
+//      package root (`packages/clickhouse-http/**`) — broader than Rule A,
+//      which only bans escaping into SQL Browser's `src/**` specifically;
+//   2. runtime `src/**` retains zero bare specifiers — already Rule B,
+//      untouched here (this block explicitly skips bare specifiers under
+//      `packages/clickhouse-http/src/**` to avoid double-reporting the same
+//      violation under two different messages);
+//   3. package tooling/tests (`test/**`, `build.mjs`, `vitest.config.ts`)
+//      may bare-import only `node:*` or a dependency the package's OWN
+//      manifest declares in `devDependencies` — no tool/test may silently
+//      consume a root-only hoisted dev package (npm hoists many root dev
+//      dependencies into the same `node_modules` tree the package resolves
+//      against, so an undeclared import can still resolve locally even
+//      though the package's own manifest never asked for it).
+{
+  const packageRoot = path.join(repoRoot, 'packages/clickhouse-http');
+  const packageManifestPath = path.join(packageRoot, 'package.json');
+  if (fs.existsSync(packageManifestPath)) {
+    const packageManifest = JSON.parse(fs.readFileSync(packageManifestPath, 'utf8'));
+    const declaredDevDeps = new Set(Object.keys(packageManifest.devDependencies ?? {}));
+    const guard1Targets = ['src', 'test', 'build.mjs', 'vitest.config.ts'].map((p) => path.join(packageRoot, p));
+    for (const target of guard1Targets) {
+      if (!fs.existsSync(target)) continue;
+      const files = fs.statSync(target).isFile() ? [target] : collectFiles(target);
+      for (const file of files) {
+        const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+        const isRuntimeSrc = relFile.startsWith('packages/clickhouse-http/src/');
+        checkedFiles += 1;
+        const source = fs.readFileSync(file, 'utf8');
+        for (const { spec } of findModuleSpecifiers(source, relFile)) {
+          if (spec.startsWith('.')) {
+            const resolved = resolveRelative(file, spec);
+            const relResolved = path.relative(repoRoot, resolved).split(path.sep).join('/');
+            if (relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/')) {
+              violations.push(`${relFile} → ${spec} (resolved: ${relResolved}; issue #630 Phase 8 Guard 1: a relative import cannot escape the package root)`);
+            }
+            continue;
+          }
+          if (isRuntimeSrc) continue; // Rule B (above) already owns this exact case
+          // Package tests legitimately import the package's OWN public name
+          // (`@altinity/clickhouse-http`) to exercise the barrel like a real
+          // external consumer would (plan §8's "exercise the source public
+          // barrel rather than deep-importing private modules") — this is
+          // not a root-hoisted dependency escape, it is the package testing
+          // itself through its own declared identity.
+          if (spec === packageManifest.name) continue;
+          if (spec === 'node' || spec.startsWith('node:') || declaredDevDeps.has(spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0])) continue;
+          violations.push(`${relFile} → ${spec} (issue #630 Phase 8 Guard 1: package tooling/tests may bare-import only node:* or a dependency declared in the package's own devDependencies)`);
+        }
+      }
+    }
+  }
+}
+
+// Issue #630 Phase 8 (plan §22/§23, Guards 3/4) — root-wide top-level
+// declaration/re-export ownership for the historical generic
+// transport/URL surface (`chUrl`/`createHttpTransport`/`ClickHouseTransport`/
+// `TransportDeps`/`TransportRequest`) and the moved progress-stream/
+// exception-parsing primitives (`streamLines`/`splitBuffer`/
+// `parseExceptionText`/`findExceptionFrame` and their canonical wire/frame
+// types), across ALL of SQL Browser `src/**` — broader than Phase 3's
+// `PHASE3_LEGACY_OWNER_FILES` former-owner scope (three specific files) and
+// broader than Rule D's net-only/language-export split (which governs WHERE
+// the package may be imported, not whether a same-named LOCAL declaration or
+// forwarding gateway may exist elsewhere). Real production imports of these
+// names directly from the package (`chUrl`/`streamLines`/`parseExceptionText`
+// in `src/net/**`, `findExceptionFrame` in the one narrow
+// `export-service.ts` exception) are exempted by
+// `findTransportSurfaceOwnershipViolations`'s own specifier check — see its
+// doc comment in `check-legacy-owners.mjs`.
+{
+  const guard34Names = [...PHASE8_TRANSPORT_SURFACE_NAMES, ...PHASE8_PARSER_SURFACE_NAMES];
+  for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+    const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+    checkedFiles += 1;
+    const source = fs.readFileSync(file, 'utf8');
+    if (!mightReferenceRetiredTopLevelApi(source, guard34Names)) continue;
+    for (const name of findTransportSurfaceOwnershipViolations(source, relFile, guard34Names, CLICKHOUSE_HTTP_SPECIFIER)) {
+      violations.push(`${relFile} → top-level ${name} (issue #630 Phase 8 Guards 3/4: the historical generic transport/URL surface and the moved progress-stream/exception-parsing primitives cannot be re-declared or forwarded locally)`);
+    }
   }
 }
 

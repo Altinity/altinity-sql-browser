@@ -1,0 +1,8 @@
+/dist/
+/coverage/
+/test-results/
+/playwright-report/
+# Vitest's own cache when this package is run as vitest's root (root:
+# `here` in vitest.config.ts) — not a real dependency install; every real
+# dependency is hoisted to the workspace root's node_modules.
+/node_modules/

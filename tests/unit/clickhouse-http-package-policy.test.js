@@ -65,6 +65,11 @@ import {
   PHASE7_RETIRED_TOP_LEVEL_NAMES,
   PHASE7_DELETED_TRANSPORT_FILES,
   mightReferenceRetiredTopLevelApi,
+  PHASE8_NARROW_RULE_D_EXCEPTIONS,
+  findModuleSpecifiers,
+  findTransportSurfaceOwnershipViolations,
+  PHASE8_TRANSPORT_SURFACE_NAMES,
+  PHASE8_PARSER_SURFACE_NAMES,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -244,8 +249,10 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
       if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
       const text = readFileSync(file, 'utf8');
       if (!mightReferencePackage(text, CLICKHOUSE_HTTP_SPECIFIER)) continue;
+      const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
       for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
         if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+        if (usage.kind === 'named' && narrowExceptionNames.includes(usage.name)) continue;
         cached.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
       }
     }
@@ -256,8 +263,10 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
     const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
     if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
     if (!mightReferencePackage(source, CLICKHOUSE_HTTP_SPECIFIER)) continue;
+    const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
     for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+      if (usage.kind === 'named' && narrowExceptionNames.includes(usage.name)) continue;
       found.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
     }
   }
@@ -382,17 +391,43 @@ describe('Rule B — package source has zero bare specifiers (empty allowlist)',
   });
 });
 
-describe('Rule C — SQL Browser source does not deep-import the package\'s own src/** (relative)', () => {
+// Issue #630 Phase 8 (plan §21, Guard 2) broadens Rule C's forbidden target
+// from just `packages/clickhouse-http/src` to the WHOLE package directory
+// (`packages/clickhouse-http`) — generated `dist/**` is a second possible
+// relative deep-import escape a source-only ban would miss.
+describe('Rule C — SQL Browser source does not deep-import the package (relative, whole package directory)', () => {
   it('the real src/** tree is clean', () => {
-    expect(relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http/src'])).toEqual([]);
+    expect(relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http'])).toEqual([]);
   });
 
-  it('flags a relative deep import into the package implementation (sabotage probe, not written to disk)', () => {
-    const found = relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http/src'], [
+  it('flags a relative deep import into the package src/** implementation (sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
       ['src/net/__boundary_probe_630_deep__.ts',
         "import { chUrl } from '../../packages/clickhouse-http/src/client.js';\n"],
     ]);
-    expect(found.some((line) => line.includes('__boundary_probe_630_deep__') && line.includes('packages/clickhouse-http/src'))).toBe(true);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deep__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // Issue #630 Phase 8 (plan §21) — the NEW escape a source-only ban would
+  // have missed: a relative deep import into generated dist/**.
+  it('flags a relative deep import into the package dist/** build output (sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_deepdist__.ts',
+        "import { chUrl } from '../../packages/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // The bare deep-import subpath form needs no parallel Guard-2 change: Rule
+  // D's `findDeepImportSpecifiers` (exercised in the Rule D describe block
+  // below) already bans any subpath of the package specifier regardless of
+  // what follows the slash — dist included.
+  it('flags a bare deep-import subpath into the package dist/** build output (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p8_deepdistbare__.ts',
+        "import { chUrl } from '@altinity/clickhouse-http/dist/client.js';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdistbare__'))).toBe(true);
   });
 });
 
@@ -718,15 +753,18 @@ describe('A5 — chUrl() has exactly one implementation, owned by the package', 
     expect(offenders).toEqual([]);
   });
 
-  it('src/net/ch-client.ts re-exports the package chUrl rather than redeclaring it', () => {
+  // Issue #630 Phase 8 (plan §17) — the migration-only re-export gateway is
+  // retired now that every spike consumer is gone: `ch-client.ts` no longer
+  // imports or re-exports `chUrl` at all (it never used the value in its own
+  // production code, only forwarded it). This replaces the pre-Phase-8
+  // "re-exports rather than redeclaring" assertion, which is no longer true.
+  it('src/net/ch-client.ts no longer imports or re-exports chUrl (the migration gateway is retired)', () => {
     const text = readFileSync(join(repoRoot, 'src/net/ch-client.ts'), 'utf8');
-    // #630 Phase 3 widened this single import/export declaration to also
-    // carry streamLines/parseExceptionText/findExceptionFrame — so `chUrl`
-    // is one of several named imports/exports rather than the sole name
-    // inside the braces; match it as a member of a comma-separated list
-    // rather than requiring it alone.
-    expect(/import\s*\{[^}]*\bchUrl\b[^}]*\}\s*from\s*['"]@altinity\/clickhouse-http['"]/.test(text)).toBe(true);
-    expect(/export\s*\{[^}]*\bchUrl\b[^}]*\}/.test(text)).toBe(true);
+    // Historical prose narrating the retirement legitimately still mentions
+    // the name (see this file's own header comment) — only an actual
+    // import/export declaration binding it is a violation.
+    expect(/import\s*\{[^}]*\bchUrl\b[^}]*\}\s*from/.test(text)).toBe(false);
+    expect(/export\s*\{[^}]*\bchUrl\b[^}]*\}/.test(text)).toBe(false);
   });
 });
 
@@ -934,19 +972,31 @@ describe('Phase 3 legacy-owner rule — the moved stream/exception primitives ca
   });
 });
 
-describe('production build includes the workspace package source (issue #630 Phase 2)', () => {
-  it('the real esbuild metafile contains packages/clickhouse-http/src/** and the workspace is not externalized', async () => {
+// Issue #630 Phase 2 established that root esbuild bundles the workspace
+// package's SOURCE and the workspace is not externalized. Issue #630 Phase 8
+// (plan §12) flips this: the package's public manifest now points at BUILT
+// output (`dist/**`, resolved through the workspace `node_modules` symlink),
+// so root esbuild must consume that — never package source directly — while
+// STILL not externalizing the workspace (it is project code, attributed to
+// the `project` ownership bucket by `build/size-report-lib.mjs`, never
+// `external`). This is a direct A17 proof, not a build convenience.
+describe('production build consumes the built package dist/**, never package source (issue #630 Phase 8, A17)', () => {
+  it('the real esbuild metafile contains packages/clickhouse-http/dist/** input(s), no packages/clickhouse-http/src/** input, and no @clickhouse/client-web input', async () => {
     const { metafile } = await buildArtifact({ metafile: true });
     const inputPaths = Object.keys(metafile.inputs);
-    const packageInputs = inputPaths.filter((p) => p.startsWith('packages/clickhouse-http/src/'));
-    expect(packageInputs.length).toBeGreaterThan(0);
+    expect(inputPaths).toContain('src/main.ts');
+    const distInputs = inputPaths.filter((p) => p.startsWith('packages/clickhouse-http/dist/'));
+    expect(distInputs.length).toBeGreaterThan(0);
+    const srcInputs = inputPaths.filter((p) => p.startsWith('packages/clickhouse-http/src/'));
+    expect(srcInputs).toEqual([]);
+    const clientWebInputs = inputPaths.filter((p) => p.includes('@clickhouse/client-web'));
+    expect(clientWebInputs).toEqual([]);
     // Repository-relative, matching every other build-graph invariant test
-    // in this repository (size-report.test.js, client-web-spike-policy.test.js).
+    // in this repository (size-report.test.js, client-web-retirement-policy.test.js).
     for (const p of inputPaths) {
       expect(p.startsWith('/')).toBe(false);
       expect(p.startsWith('../')).toBe(false);
     }
-    expect(inputPaths).toContain('src/main.ts');
   }, 60_000);
 });
 
@@ -972,10 +1022,13 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/clickhouse-http has zero bare package imports/);
   });
 
-  it('declares Rule C (src forbidden: packages/clickhouse-http/src)', () => {
+  // Issue #630 Phase 8 (plan §21, Guard 2) broadened Rule C's forbidden
+  // target from just `packages/clickhouse-http/src` to the whole package
+  // directory (`packages/clickhouse-http`) — dist escape coverage.
+  it('declares Rule C (src forbidden: packages/clickhouse-http, whole package directory)', () => {
     const entry = checkerSource.match(/\{\s*dir:\s*'src',\s*forbidden:\s*\[([^\]]*)\]/);
     expect(entry, 'Rule C entry missing from build/check-boundaries.mjs RULES').not.toBeNull();
-    expect([...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual(['packages/clickhouse-http/src']);
+    expect([...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual(['packages/clickhouse-http']);
   });
 
   it('declares Rule D (deep imports banned everywhere; revised bare-specifier policy since issue #630 Phase 5)', () => {
@@ -1294,5 +1347,266 @@ describe('Phase 7 retired-top-level-API rule — runQuery/exportQuery/ordinary k
       }
     `;
     expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual([]);
+  });
+});
+
+// Issue #630 Phase 8 (plan §18) — the narrow, named Rule-D exception: exactly
+// `src/application/export-service.ts` may named-import exactly
+// `findExceptionFrame`. No other application module gets protocol/client
+// access — sabotaged below with an unrelated application module.
+describe('Phase 8 narrow Rule-D exception — only export-service.ts may import findExceptionFrame outside src/net/**', () => {
+  it('the real export-service.ts import is clean under the revised policy (no violation reported for its own findExceptionFrame import)', () => {
+    const text = readFileSync(join(repoRoot, 'src/application/export-service.ts'), 'utf8');
+    expect(findPackageImportUsages(text, 'src/application/export-service.ts', CLICKHOUSE_HTTP_SPECIFIER).length).toBeGreaterThan(0);
+    expect(packageNameShapeViolations(join(repoRoot, 'src')).some((l) => l.startsWith('src/application/export-service.ts'))).toBe(false);
+  });
+
+  it('the real export-service.ts imports findExceptionFrame directly from the package (not through a ch-client.ts gateway)', () => {
+    const text = readFileSync(join(repoRoot, 'src/application/export-service.ts'), 'utf8');
+    expect(/import\s*\{[^}]*\bfindExceptionFrame\b[^}]*\}\s*from\s*['"]@altinity\/clickhouse-http['"]/.test(text)).toBe(true);
+  });
+
+  it('flags an unrelated application module importing findExceptionFrame outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/application/__boundary_probe_630p8_unrelated_findexceptionframe__.ts',
+        "import { findExceptionFrame } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_unrelated_findexceptionframe__'))).toBe(true);
+  });
+
+  it('the exception is scoped by exact name too — export-service.ts may not import an unrelated transport export under the same exception (sabotage probe, not written to disk)', () => {
+    // A virtual probe under the exact exception filename, but naming a
+    // DIFFERENT transport export — the allowlist is per-name, not per-file.
+    const relFile = 'src/application/export-service.ts';
+    const source = "import { createClickHouseHttpClient } from '@altinity/clickhouse-http';\n";
+    const narrowExceptionNames = PHASE8_NARROW_RULE_D_EXCEPTIONS[relFile] ?? [];
+    const usages = findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER);
+    const stillViolates = usages.some((usage) => usage.kind === 'named'
+      && !PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)
+      && !narrowExceptionNames.includes(usage.name));
+    expect(stillViolates).toBe(true);
+  });
+});
+
+// Issue #630 Phase 8 (plan §20, Guard 1) — package containment, broadened to
+// the package's own tooling/test surface (test/**, build.mjs,
+// vitest.config.ts), exercised through the SAME real-parser helper
+// (`findModuleSpecifiers`) the production `check:arch` gate calls.
+describe('Guard 1 — package tooling/tests cannot escape the package root or silently consume an undeclared root-hoisted dependency', () => {
+  const packageManifest = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'));
+  const declaredDevDeps = new Set(Object.keys(packageManifest.devDependencies ?? {}));
+
+  it('the real package test/**, build.mjs, and vitest.config.ts are clean', () => {
+    const offenders = [];
+    for (const target of ['test', 'build.mjs', 'vitest.config.ts']) {
+      const full = join(PACKAGE_DIR, target);
+      const files = statSync(full).isDirectory() ? collectFiles(full) : [full];
+      for (const file of files) {
+        const relFile = relative(repoRoot, file).split(sep).join('/');
+        const text = readFileSync(file, 'utf8');
+        for (const { spec } of findModuleSpecifiers(text, relFile)) {
+          if (spec.startsWith('.')) {
+            const resolved = resolveRelative(file, spec);
+            const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+            if (relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/')) {
+              offenders.push(`${relFile} → ${spec}`);
+            }
+            continue;
+          }
+          if (spec === packageManifest.name) continue;
+          if (spec === 'node' || spec.startsWith('node:') || declaredDevDeps.has(spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0])) continue;
+          offenders.push(`${relFile} → ${spec}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('flags a package test escaping the package root with a deep relative import (sabotage probe, not written to disk)', () => {
+    const relFile = 'packages/clickhouse-http/test/unit/__boundary_probe_630p8_guard1_test__.ts';
+    const source = "import { something } from '../../../../src/application/does-not-exist.js';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const escapes = specs.some(({ spec }) => {
+      if (!spec.startsWith('.')) return false;
+      const resolved = resolveRelative(join(repoRoot, relFile), spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      return relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/');
+    });
+    expect(escapes).toBe(true);
+  });
+
+  it('flags a package build.mjs escaping the package root into root build/** (sabotage probe, not written to disk)', () => {
+    const relFile = 'packages/clickhouse-http/build.mjs';
+    const source = "import { buildArtifact } from '../../build/build.mjs';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const escapes = specs.some(({ spec }) => {
+      if (!spec.startsWith('.')) return false;
+      const resolved = resolveRelative(join(repoRoot, relFile), spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      return relResolved !== 'packages/clickhouse-http' && !relResolved.startsWith('packages/clickhouse-http/');
+    });
+    expect(escapes).toBe(true);
+  });
+
+  it('flags a package test bare-importing an undeclared root-hoisted dependency (sabotage probe, not written to disk)', () => {
+    const relFile = 'packages/clickhouse-http/test/unit/__boundary_probe_630p8_guard1_hoisted__.ts';
+    const source = "import { signal } from '@preact/signals-core';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const undeclared = specs.some(({ spec }) => {
+      if (spec.startsWith('.')) return false;
+      if (spec === packageManifest.name) return false;
+      if (spec === 'node' || spec.startsWith('node:')) return false;
+      const bareRoot = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      return !declaredDevDeps.has(bareRoot);
+    });
+    expect(undeclared).toBe(true);
+  });
+
+  it('does not flag a package test bare-importing its own declared devDependency (e.g. vitest)', () => {
+    const relFile = 'packages/clickhouse-http/test/unit/__boundary_probe_630p8_guard1_declared__.ts';
+    const source = "import { describe } from 'vitest';\n";
+    const specs = findModuleSpecifiers(source, relFile);
+    const undeclared = specs.some(({ spec }) => {
+      if (spec.startsWith('.')) return false;
+      if (spec === packageManifest.name) return false;
+      if (spec === 'node' || spec.startsWith('node:')) return false;
+      const bareRoot = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      return !declaredDevDeps.has(bareRoot);
+    });
+    expect(undeclared).toBe(false);
+  });
+});
+
+// Issue #630 Phase 8 (plan §22/§23, Guards 3/4) — root-wide top-level
+// declaration/re-export ownership for the historical generic transport/URL
+// surface and the moved progress-stream/exception-parsing primitives,
+// exercised through `findTransportSurfaceOwnershipViolations` — the SAME
+// helper the production `check:arch` gate calls.
+describe('Guards 3/4 — the historical generic transport/URL surface and the moved parser primitives cannot be redeclared or forwarded locally', () => {
+  const guard34Names = [...PHASE8_TRANSPORT_SURFACE_NAMES, ...PHASE8_PARSER_SURFACE_NAMES];
+
+  it('the real src/** tree declares none of the guarded names locally', () => {
+    const offenders = [];
+    for (const file of collectFiles(join(repoRoot, 'src'))) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      const text = readFileSync(file, 'utf8');
+      if (!mightReferenceRetiredTopLevelApi(text, guard34Names)) continue;
+      for (const name of findTransportSurfaceOwnershipViolations(text, relFile, guard34Names, CLICKHOUSE_HTTP_SPECIFIER)) {
+        offenders.push(`${relFile} → ${name}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the real src/net/authenticated-clickhouse-request.ts legitimately imports chUrl/streamLines/parseExceptionText from the package without tripping the guard', () => {
+    const text = readFileSync(join(repoRoot, 'src/net/authenticated-clickhouse-request.ts'), 'utf8');
+    expect(findTransportSurfaceOwnershipViolations(text, 'src/net/authenticated-clickhouse-request.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER)).toEqual([]);
+  });
+
+  it('flags a root local chUrl() function declaration (sabotage probe, not written to disk)', () => {
+    const probe = 'export function chUrl(origin, opts) { return origin; }\n';
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_localchurl__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['chUrl']);
+  });
+
+  it('flags a root local createHttpTransport() function declaration (sabotage probe, not written to disk)', () => {
+    const probe = 'export function createHttpTransport(deps) { return { send() {} }; }\n';
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_createhttptransport__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['createHttpTransport']);
+  });
+
+  it('flags a chUrl import whose specifier is NOT the package (a forwarding-alias vector) (sabotage probe, not written to disk)', () => {
+    const probe = "import { foo as chUrl } from './somewhere.js';\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_churlalias__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['chUrl']);
+  });
+
+  it('does NOT flag a chUrl named import whose specifier IS the package (the sanctioned Rule-D route)', () => {
+    const probe = "import { chUrl } from '@altinity/clickhouse-http';\nchUrl('https://x');\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_churlsanctioned__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual([]);
+  });
+
+  it('flags a root duplicate streamLines forwarding-alias vector (sabotage probe, not written to disk)', () => {
+    const probe = "import { foo as streamLines } from './somewhere.js';\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/core/__boundary_probe_630p8_streamlinesalias__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['streamLines']);
+  });
+
+  it('flags a root duplicate findExceptionFrame() function declaration (sabotage probe, not written to disk)', () => {
+    const probe = 'export function findExceptionFrame(tailBytes, tag) { return null; }\n';
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/core/__boundary_probe_630p8_findexceptionframedup__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['findExceptionFrame']);
+  });
+
+  it('flags a re-export gateway forwarding streamLines, regardless of specifier (sabotage probe, not written to disk)', () => {
+    const probe = "export { streamLines } from '@altinity/clickhouse-http';\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_streamlinesreexport__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['streamLines']);
+  });
+
+  it('restoring the retired ch-client.ts forwarding gateway (export { chUrl, parseExceptionText, findExceptionFrame }) trips the guard (sabotage probe, not written to disk)', () => {
+    const probe = "export { chUrl, parseExceptionText, findExceptionFrame };\n";
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_restoredgateway__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual(['chUrl', 'parseExceptionText', 'findExceptionFrame']);
+  });
+
+  it('does not flag a nested local function/variable inside a function body (declaration-scoped, not a blanket identifier walk)', () => {
+    const probe = `
+      export function outer() {
+        function chUrl() { return null; }
+        return chUrl();
+      }
+    `;
+    expect(findTransportSurfaceOwnershipViolations(probe, 'src/net/__boundary_probe_630p8_nested__.ts', guard34Names, CLICKHOUSE_HTTP_SPECIFIER))
+      .toEqual([]);
+  });
+});
+
+// Issue #630 Phase 8 (plan §10, §25's "production wrapper build-order
+// invariants") — every clean production build wrapper must build the
+// package's own dist/** before invoking the root application builder.
+// Exercised as a virtual/text composition check (not a real shell
+// invocation — the real clean-state proof was run manually per the plan's
+// §10.3/§38 acceptance sequence) so the sabotage case is a plain string, not
+// a mutation of the real file.
+function buildsPackageBeforeAppBuild(scriptText) {
+  const prereqIndex = scriptText.indexOf('build:clickhouse-http');
+  const appBuildIndex = scriptText.indexOf('build/build.mjs');
+  return prereqIndex !== -1 && appBuildIndex !== -1 && prereqIndex < appBuildIndex;
+}
+
+describe('production wrapper build-order invariant — build:clickhouse-http must precede build/build.mjs', () => {
+  it('the real build/bundle.sh builds the package before the app build', () => {
+    const text = readFileSync(join(repoRoot, 'build/bundle.sh'), 'utf8');
+    expect(buildsPackageBeforeAppBuild(text)).toBe(true);
+  });
+
+  it('the real deploy/install.sh builds the package before the app build', () => {
+    const text = readFileSync(join(repoRoot, 'deploy/install.sh'), 'utf8');
+    expect(buildsPackageBeforeAppBuild(text)).toBe(true);
+  });
+
+  it('flags a virtual bundle.sh composition with the package-build line removed (sabotage probe, not written to disk)', () => {
+    const sabotaged = 'echo "==> Building SPA"\nASB_VERSION="$VERSION" node "$ROOT/build/build.mjs"\n';
+    expect(buildsPackageBeforeAppBuild(sabotaged)).toBe(false);
+  });
+
+  it('flags a virtual install.sh composition with the package-build line removed (sabotage probe, not written to disk)', () => {
+    const sabotaged = 'echo "==> Building dist/sql.html"\nnode "$ROOT/build/build.mjs"\n';
+    expect(buildsPackageBeforeAppBuild(sabotaged)).toBe(false);
+  });
+
+  it('flags a virtual composition where the package build line comes AFTER the app build (wrong order, sabotage probe, not written to disk)', () => {
+    const sabotaged = 'node "$ROOT/build/build.mjs"\nnpm --prefix "$ROOT" run build:clickhouse-http\n';
+    expect(buildsPackageBeforeAppBuild(sabotaged)).toBe(false);
+  });
+
+  it('root package.json composes build:clickhouse-http as a prerequisite of build/size-report/dev/local/test', () => {
+    const rootPkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+    for (const script of ['build', 'size-report', 'dev', 'local', 'test', 'test:watch']) {
+      expect(rootPkg.scripts[script], `scripts.${script} missing`).toMatch(/npm run build:clickhouse-http/);
+    }
+    expect(rootPkg.scripts['check:types']).toMatch(/npm run check:types --workspace @altinity\/clickhouse-http/);
   });
 });

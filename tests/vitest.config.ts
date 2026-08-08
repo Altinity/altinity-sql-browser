@@ -56,7 +56,10 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: resolve(repoRoot, 'coverage'),
-      include: ['src/**/*.{js,ts}', 'packages/clickhouse-http/src/**/*.ts'],
+      // Issue #630 Phase 8 — package source moved to package-local coverage
+      // ownership (packages/clickhouse-http/vitest.config.ts); the root
+      // suite no longer includes it in its own coverage tree.
+      include: ['src/**/*.{js,ts}'],
       // Type-only seam interface files (ADR-0002 phase 0 / #262) have no
       // executable statements — nothing to cover, like src/generated/.
       exclude: ['src/generated/*.js', 'src/**/*.types.ts'],

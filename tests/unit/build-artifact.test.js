@@ -145,15 +145,6 @@ describe('buildArtifact against an alternate repoRoot', () => {
     }
   });
 
-  it('appends additionalNotices after the base notices without altering a call that omits it', async () => {
-    const dir = await makeFakeRepoRoot('9.9.9');
-    const withExtra = await buildArtifact({ repoRoot: dir, additionalNotices: '## extra-pkg\n\nMIT\n' });
-    const without = await buildArtifact({ repoRoot: dir });
-    expect(withExtra.thirdParty).toContain('fake-pkg');
-    expect(withExtra.thirdParty).toContain('extra-pkg');
-    expect(without.thirdParty).not.toContain('extra-pkg');
-  });
-
   it('reads notices from an explicit noticesPath instead of <repoRoot>/THIRD-PARTY-NOTICES.md', async () => {
     const dir = await makeFakeRepoRoot('9.9.9');
     const altNotices = join(dir, 'candidate-notices.md');

@@ -1,0 +1,282 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SQL Browser — authenticated ClickHouse request harness</title>
+</head>
+<body>
+  <!-- Issue #630 Phase 8 — split out of the former
+       `tests/e2e/clickhouse-http-transport.html` (issue #630 Phases 1/6/7):
+       this harness keeps ONLY the SQL Browser-specific authenticated
+       variants of the post-header cancellation family (formerly Scenarios
+       5-9's `*Auth` siblings) — the package-native scenarios themselves
+       moved to `packages/clickhouse-http/test/browser/harness.html`, the
+       package's own regression suite.
+
+       This harness proves the SAME native Fetch/Response/cancellation
+       semantics survive being driven through SQL Browser's own
+       credential/epoch composition (`/src/net/authenticated-clickhouse-
+       request.js`, raw ESM, mixed-tree .ts->.js served by
+       build/e2e-serve.mjs) — not just the package client with an
+       already-resolved Authorization. Each scenario below builds one
+       real-production-shaped `AuthenticatedRequestCtx` (`makeAuthCtx`) with
+       synthetic test credentials, one deterministic epoch, `refresh()`
+       disabled (returns `false`), and captures `onTransportConnected`/
+       `onTransportOffline`/`onSignedOut` calls — then passes each scenario's
+       original `AbortController.signal` straight through.
+
+       The `@altinity/clickhouse-http` import map below is a first-party SQL
+       Browser development/test composition, not rejected-vendor scaffolding
+       (plan §13) — it stays intentional until #639 replaces the workspace
+       dependency with a released external package. -->
+  <script type="importmap">
+    { "imports": {
+      "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
+    } }
+  </script>
+  <script type="module">
+    import { streamLines } from '@altinity/clickhouse-http';
+    import { authenticatedRequest, authenticatedProgress } from '/src/net/authenticated-clickhouse-request.js';
+
+    // A counting wrapper around the real, native `window.fetch` — the ONLY
+    // thing under `ctx.fetch`. It never replaces/derives the signal, never
+    // clones or wraps the Response, never consumes a body, never retries,
+    // never normalizes a value: it delegates exactly once per call and
+    // remembers what it was given / what it got back.
+    function makeWrapper() {
+      const calls = [];
+      let lastResponse = null;
+      async function wrapped(url, init) {
+        calls.push({
+          url: String(url),
+          method: init && init.method,
+          body: init && init.body,
+          authorization: init && init.headers && init.headers.Authorization,
+          hasSignal: !!(init && init.signal),
+        });
+        const resp = await window.fetch(url, init);
+        lastResponse = resp;
+        return resp;
+      }
+      return {
+        fn: wrapped,
+        calls,
+        get count() { return calls.length; },
+        get lastResponse() { return lastResponse; },
+      };
+    }
+
+    // A real production-shaped `AuthenticatedRequestCtx`: synthetic test
+    // credentials only (never real ones), one deterministic epoch
+    // (`currentEpoch` always returns 1 — nothing in these cancellation
+    // scenarios ever changes credential generation), `refresh()` disabled
+    // (returns `false`) unless a scenario explicitly overrides it, and
+    // `onSignedOut`/`onTransportConnected`/`onTransportOffline` captured as
+    // plain call counters so a scenario can assert none fired after a
+    // cancellation. Uses the SAME real, native `window.fetch` counting
+    // wrapper as above — the only thing under `ctx.fetch`.
+    function makeAuthCtx(baseUrl, overrides = {}) {
+      const wrapper = makeWrapper();
+      const onSignedOutCalls = [];
+      const onTransportConnectedCalls = [];
+      const onTransportOfflineCalls = [];
+      const ctx = {
+        fetch: wrapper.fn,
+        origin: baseUrl,
+        getToken: async () => 'auth-e2e-test-token',
+        refresh: async () => false,
+        onSignedOut: (detail, expectedEpoch) => { onSignedOutCalls.push({ detail, expectedEpoch }); },
+        currentEpoch: () => 1,
+        onTransportConnected: () => { onTransportConnectedCalls.push(true); },
+        onTransportOffline: (error) => { onTransportOfflineCalls.push(error); },
+        ...overrides,
+      };
+      return { ctx, wrapper, onSignedOutCalls, onTransportConnectedCalls, onTransportOfflineCalls };
+    }
+
+    async function nameOf(promise) {
+      try {
+        await promise;
+        return null;
+      } catch (e) {
+        return e && e.name;
+      }
+    }
+
+    // ── Scenario 5 — native post-header body lifetime, through
+    //    `authenticatedRequest()`. Same two-phase shape as the package's own
+    //    Scenario 5: phase 1 settles the authenticated request and reads the
+    //    immediate first chunk; phase 2 starts a second, genuinely pending
+    //    native reader.read() and THEN aborts the original signal. ─────────
+    window.__scenario5AuthStart = async function (baseUrl, queryId) {
+      const { ctx, wrapper } = makeAuthCtx(baseUrl);
+      const controller = new AbortController();
+      const resp = await authenticatedRequest(ctx, {
+        sql: 'SELECT 1',
+        defaultFormat: 'JSON',
+        params: { query_id: queryId },
+        signal: controller.signal,
+      });
+      const identity = resp === wrapper.lastResponse;
+      const bodyUsedBeforeRead = resp.bodyUsed;
+      const reader = resp.body.getReader();
+      const first = await reader.read();
+      const firstText = first.value ? new TextDecoder().decode(first.value) : null;
+      window.__scenario5AuthState = { controller, reader, resp };
+      return {
+        identity, bodyUsedBeforeRead, firstDone: first.done, firstText,
+        count: wrapper.count,
+        authorization: wrapper.calls[0].authorization,
+      };
+    };
+    window.__scenario5AuthAbortAndReadNext = async function () {
+      const { controller, reader, resp } = window.__scenario5AuthState;
+      const pending = reader.read();
+      controller.abort();
+      const rejectedName = await nameOf(pending);
+      return { rejectedName, sendResponseStatus: resp.status, sendResponseOk: resp.ok };
+    };
+
+    // ── Scenario 6 — no later package streamLines() callbacks after
+    //    cancellation, through `authenticatedRequest()` → package
+    //    `streamLines` — the exact production path `QueryExecutionService`
+    //    drives. ────────────────────────────────────────────────────────────
+    window.__scenario6Auth = async function (baseUrl, queryId, holdMs) {
+      const { ctx, onTransportOfflineCalls } = makeAuthCtx(baseUrl);
+      const controller = new AbortController();
+      const resp = await authenticatedRequest(ctx, {
+        sql: 'SELECT 1',
+        defaultFormat: 'JSON',
+        params: { query_id: queryId },
+        signal: controller.signal,
+      });
+      const lines = [];
+      let chunkCount = 0;
+      let aborted = false;
+      const streamPromise = streamLines(resp.body, {
+        onLine: (l) => lines.push(l),
+        onChunk: () => {
+          chunkCount++;
+          if (!aborted) {
+            aborted = true;
+            controller.abort();
+          }
+        },
+      });
+      const rejectedName = await nameOf(streamPromise);
+      const linesAtRejection = lines.length;
+      const chunksAtRejection = chunkCount;
+      await new Promise((r) => setTimeout(r, holdMs + 1000)); // comfortably past the fixture's hold
+      return {
+        rejectedName,
+        linesAtRejection,
+        chunksAtRejection,
+        linesAfterWait: lines.length,
+        chunksAfterWait: chunkCount,
+        offlineCallsAfterAbort: onTransportOfflineCalls.length, // abort must never report offline
+      };
+    };
+
+    // ── Scenario 7 — concurrent-request isolation, sharing ONE authenticated
+    //    context (ctx) for A and B — an auth-loop-global cancellation-state
+    //    bug would only be observable this way. ──────────────────────────────
+    window.__scenario7Auth = async function (baseUrl, queryIdA, queryIdB, holdMs) {
+      const { ctx } = makeAuthCtx(baseUrl);
+      const controllerA = new AbortController();
+      const controllerB = new AbortController();
+      const [respA, respB] = await Promise.all([
+        authenticatedRequest(ctx, { sql: 'SELECT 1', defaultFormat: 'JSON', params: { query_id: queryIdA }, signal: controllerA.signal }),
+        authenticatedRequest(ctx, { sql: 'SELECT 1', defaultFormat: 'JSON', params: { query_id: queryIdB }, signal: controllerB.signal }),
+      ]);
+      const readerA = respA.body.getReader();
+      const readerB = respB.body.getReader();
+      await readerA.read(); // immediate first chunk, both sides
+      await readerB.read();
+      const pendingA = readerA.read(); // now both genuinely pending on the fixture's hold
+      const pendingB = readerB.read();
+      controllerA.abort();
+      const aRejectedName = await nameOf(pendingA);
+      const bResult = await pendingB; // B must NOT be affected by A's abort
+      const bFirstHeldText = bResult.value ? new TextDecoder().decode(bResult.value) : null;
+      const bNext = await readerB.read();
+      return { aRejectedName, bFirstHeldDone: bResult.done, bFirstHeldText, bCompletedCleanly: bNext.done };
+    };
+
+    // ── Scenario 8 — abort after full completion has no effect, through
+    //    authenticatedRequest() + package streamLines(). ─────────────────────
+    window.__scenario8Auth = async function (baseUrl, queryId) {
+      const { ctx } = makeAuthCtx(baseUrl);
+      const controller = new AbortController();
+      const resp = await authenticatedRequest(ctx, {
+        sql: 'SELECT 1',
+        defaultFormat: 'JSON',
+        params: { query_id: queryId },
+        signal: controller.signal,
+      });
+      const lines = [];
+      let chunkCount = 0;
+      await streamLines(resp.body, { onLine: (l) => lines.push(l), onChunk: () => { chunkCount++; } });
+      const linesBefore = lines.length;
+      const chunksBefore = chunkCount;
+      let abortThrew = false;
+      try {
+        controller.abort();
+      } catch {
+        abortThrew = true;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      return { linesBefore, chunksBefore, linesAfter: lines.length, chunksAfter: chunkCount, abortThrew };
+    };
+
+    // ── Scenario 9 — routes through `authenticatedProgress()` (NOT the raw
+    //    package `client.queryProgress()` the package's own Scenario 9
+    //    uses), the real production composition: SQL Browser auth/epoch
+    //    policy -> package `request()` -> package `consumeProgressResponse()`
+    //    -> native body. Asserts exactly one Fetch for the successful attempt
+    //    and no callback after cancellation. ─────────────────────────────────
+    window.__scenario9Auth = async function (baseUrl, queryId, holdMs) {
+      const { ctx, wrapper } = makeAuthCtx(baseUrl);
+      const controller = new AbortController();
+      const lines = [];
+      let chunkCount = 0;
+      let aborted = false;
+      const progressPromise = authenticatedProgress(
+        ctx,
+        {
+          sql: 'SELECT 1',
+          defaultFormat: 'JSON',
+          params: { query_id: queryId },
+          signal: controller.signal,
+        },
+        {
+          onLine: (l) => lines.push(l),
+          onChunk: () => {
+            chunkCount++;
+            if (!aborted) {
+              aborted = true;
+              controller.abort();
+            }
+          },
+        },
+      );
+      const rejectedName = await nameOf(progressPromise);
+      const linesAtRejection = lines.length;
+      const chunksAtRejection = chunkCount;
+      const countAtRejection = wrapper.count;
+      await new Promise((r) => setTimeout(r, holdMs + 1000)); // comfortably past the fixture's hold
+      return {
+        rejectedName,
+        countAtRejection,
+        countAfterWait: wrapper.count,
+        linesAtRejection,
+        chunksAtRejection,
+        linesAfterWait: lines.length,
+        chunksAfterWait: chunkCount,
+        authorization: wrapper.calls[0].authorization,
+      };
+    };
+
+    window.__ready = true;
+  </script>
+</body>
+</html>

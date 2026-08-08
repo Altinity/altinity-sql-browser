@@ -369,6 +369,71 @@ Two roadmap tracks are current:
   (`build/lib/check-legacy-owners.mjs`) rather than a specifier-text regex,
   since a regex cannot tell which names a named import binds.
 
+  **Phase 8** (final phase, merged) claims **A17**/**A18**, completing issue
+  #630. `packages/clickhouse-http` becomes independently buildable/packable:
+  package-local `esbuild` (unbundled browser-first ESM, `bundle: false`) and
+  `tsc` (declaration-only emit) produce `dist/**`; the manifest's `main`/
+  `types`/`exports["."]` all point at that built output, never source;
+  `npm run build`/`build/bundle.sh`/`deploy/install.sh` all explicitly build
+  the package first (`npm run build:clickhouse-http`) before the root
+  application builder, so root esbuild's metafile resolves the workspace
+  symlink to `packages/clickhouse-http/dist/*.js` — attributed to the
+  `project` ownership bucket, never `external` — with no `packages/
+  clickhouse-http/src/*.ts` input anywhere. Root `tsconfig.json`/Vitest
+  coverage drop package source entirely; package-local `tsconfig.json`/
+  `vitest.config.ts` (100/95/90/100 per file) own it instead, exercising the
+  built public barrel via a relative import to `src/index.ts` (coverage
+  attribution reasons — the isolated-package proof below is the real
+  built-artifact proof). A new `test/isolated-package.mjs` (`npm run
+  test:pack`) builds the package, runs a REAL `npm pack`, installs the
+  tarball into a fixture OUTSIDE the repository, imports it as ESM, and
+  compiles a TypeScript consumer against its declarations — proving neither
+  runtime nor type resolution ever falls back into this repository's source.
+  A new package-owned Chromium/WebKit regression suite
+  (`packages/clickhouse-http/test/browser/**`) serves the package's own
+  generated `dist/**` directly (`harness.html` imports `/dist/index.js`, no
+  import map); its former root-suite home
+  (`tests/e2e/clickhouse-http-transport.{html,spec.js}`) splits into that
+  package suite plus a narrower root `tests/e2e/authenticated-clickhouse-
+  request.{html,spec.js}` for SQL Browser's own authentication-policy
+  variants (the package-owned `fault-server.mjs` fixture, moved from the
+  spike, stays importable from both). The migration-only `ch-client.ts`
+  forwarding aliases (`chUrl`/`parseExceptionText`/`findExceptionFrame`) are
+  removed now that every spike consumer is gone; `export-service.ts` imports
+  `findExceptionFrame` directly from the package under one narrow, named
+  Rule-D exception (`PHASE8_NARROW_RULE_D_EXCEPTIONS`) rather than through
+  that retired gateway. Five new/extended architecture guards
+  (`build/check-boundaries.mjs`/`build/lib/check-legacy-owners.mjs`, all
+  real-parser-backed, never a hand-rolled regex scanner): package
+  containment broadens to the package's own `test/**`/`build.mjs`/
+  `vitest.config.ts` (Guard 1); the relative-deep-import ban on the package
+  widens from `src/**` to the whole package directory, catching a
+  `dist/**` escape a source-only ban would have missed (Guard 2); root-wide
+  (not just former-owner-scoped) declaration/re-export ownership for the
+  historical `chUrl`/`createHttpTransport`/`ClickHouseTransport`/
+  `TransportDeps`/`TransportRequest` transport surface, with an exemption for
+  the sanctioned package import itself (Guard 3); the same root-wide
+  ownership rule for the moved progress-stream/exception-parsing primitives
+  (Guard 4); and the `@clickhouse/client-web` ban's former "future official
+  transport file" allowlist is deleted outright, its scan widened to
+  `src/**`/`packages/clickhouse-http/**` (excluding generated `dist/**`)/
+  `tests/**`/`build/**`, plus structural manifest/lock/script/directory
+  checks (Guard 5). The whole `@clickhouse/client-web` devDependency, its
+  npm scripts, and the executable `tests/spike/clickhouse-client/**`
+  directory (33 files by the plan's own count) are deleted per an exact
+  file-by-file disposition table — most outright, `fault-server.mjs` moved
+  (above), a handful ported into first-party regressions then deleted; the
+  candidate-build-only `additionalNotices`/`--notices` plumbing in
+  `build/build.mjs`/`build/size-report.mjs` goes with them.
+  `docs/evidence/585/**` and ADR-0005's Rejected decision/historical content
+  are untouched — only a narrow current-state addendum documents the
+  executable retirement (`tests/unit/client-web-retirement-policy.test.js`
+  replaces the former `client-web-spike-policy.test.js`, whose assertions
+  described the now-retired opposite state). #639 begins with external
+  repository creation/release and the SQL Browser consumer cutover, per the
+  tested mechanical extraction handoff this phase adds,
+  [`docs/clickhouse-http-repository-extraction.md`](../docs/clickhouse-http-repository-extraction.md).
+
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).
 
