@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { parsePlanAuthorResponse } from './plan-author.mjs';
 
 // ChatGPT virtualizes/prunes older turns out of the DOM in long conversations, so a raw
 // element COUNT of assistant messages does not grow monotonically — it can plateau or even
@@ -83,7 +84,7 @@ export class ChatGptBrowser {
     return { page, checks: { cdp: true, login: true, composer: true, fileUpload: upload, predefinedModelAndEffort: true } };
   }
 
-  async review({ session, prompt, uploadPath, timeoutMs, target, publish, diagnosticsDir }) {
+  async review({ session, prompt, uploadPath, timeoutMs, target, publish, diagnosticsDir, mode }) {
     const { page, reopened } = await this.pageFor(session);
     try {
       await this.assertReady(page);
@@ -93,7 +94,7 @@ export class ChatGptBrowser {
       const hasUncollected = generationActive || (Boolean(currentTail) && fingerprintText(currentTail) !== recordedFingerprint);
       if (session && hasUncollected) {
         this.stderr.write('Recovering an uncollected ChatGPT response...\n');
-        const responseText = await this.waitForCompletion(page, { before: null, timeoutMs, target, publish });
+        const responseText = await this.waitForCompletion(page, { before: null, timeoutMs, target, publish, mode });
         // Fingerprint the plain rendered tail, not responseText (which may now be the
         // upgraded Markdown from copyLatestAssistantMarkdown) — a future call's staleness
         // check compares against THIS stored value using latestAssistantText's same plain
@@ -106,7 +107,7 @@ export class ChatGptBrowser {
       await this.fillAndSend(page, prompt);
       await this.waitForPermanentConversationUrl(page);
       this.stderr.write('Waiting for ChatGPT response...\n');
-      const responseText = await this.waitForCompletion(page, { before, timeoutMs, target, publish });
+      const responseText = await this.waitForCompletion(page, { before, timeoutMs, target, publish, mode });
       return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false, responseFingerprint: fingerprintText(await this.latestAssistantText(page)) };
     } catch (error) {
       error.conversationUrl = page.url();
@@ -202,11 +203,23 @@ export class ChatGptBrowser {
     } catch { return null; }
   }
 
-  async waitForCompletion(page, { before, timeoutMs, target, publish }) {
+  async waitForCompletion(page, { before, timeoutMs, target, publish, mode }) {
     const started = this.now();
     let lastText = '';
     let stableSince = null;
     let streamRetries = 0;
+    // plan-author's protocol is a fixed-content island: once exactly one well-formed
+    // PLAN_STATUS: READY/BLOCKED block appears, its content is final by construction
+    // (parsePlanAuthorResponse requires exactly one delimiter pair) — anything ChatGPT
+    // keeps writing afterward (more reasoning, another tool call, a citation footnote)
+    // is explicitly tolerated by that same parser and never changes the extracted plan.
+    // Observed live on #630 phase 7: an Extra-High-effort turn can keep the "generating"
+    // indicator (stop button) visible for 20+ minutes after already emitting a complete,
+    // valid plan — the ordinary !generating + 7s-stability requirement below can never
+    // fire in that case, so the whole call times out despite a perfectly good answer
+    // already sitting in the DOM. For plan-author only, treat a validated match as done
+    // immediately, without waiting for `generating` to clear.
+    let planAuthorPendingConfirm = false;
     while (this.now() - started < timeoutMs) {
       const streamError = await firstVisible(page, SELECTORS.streamError);
       const retry = streamError ? await firstVisible(page, SELECTORS.streamRetry) : null;
@@ -245,6 +258,25 @@ export class ChatGptBrowser {
       // so DOM pruning of older turns in a long conversation cannot spuriously suppress it.
       const text = (before === null || currentText !== before) ? currentText : '';
       const generating = await anyVisible(page, SELECTORS.stop);
+      if (mode === 'plan-author' && text && hasCompletePlanAuthorProtocol(text)) {
+        if (planAuthorPendingConfirm) {
+          // Confirmed on two consecutive polls against the cheap innerText check — now
+          // validate against the authoritative clipboard-copied Markdown (innerText can
+          // strip literal '#' heading syntax the parser's heading check requires) before
+          // trusting it enough to return early while still generating.
+          const markdown = await this.copyLatestAssistantMarkdown(page);
+          if (markdown && hasCompletePlanAuthorProtocol(markdown)) return markdown;
+          if (!generating) return markdown || text; // clipboard read failed, but the turn is genuinely done anyway
+          // Clipboard copy disagreed while still generating (e.g. mid-stream race on a
+          // still-forming second attempt) — fall through to the ordinary stability wait
+          // rather than trusting an unconfirmed early exit.
+          planAuthorPendingConfirm = false;
+        } else {
+          planAuthorPendingConfirm = true;
+        }
+      } else {
+        planAuthorPendingConfirm = false;
+      }
       if (text && text === lastText) stableSince ??= this.now();
       else { lastText = text; stableSince = text ? this.now() : null; }
       if (text && !generating && stableSince !== null && this.now() - stableSince >= this.stableMs) {
@@ -328,3 +360,11 @@ export function classifyAlertText(text) {
 }
 function canonicalConversation(url) { return url?.replace(/[?#].*$/, '').replace(/\/$/, ''); }
 function summarize(text) { return text.replace(/\s+/g, ' ').trim().slice(0, 240); }
+// Non-throwing peek at whether `text` already satisfies plan-author's complete
+// protocol (exactly one READY delimiter pair with a real Markdown heading, or a
+// well-formed BLOCKED response) — reuses the real parser so this can never drift
+// from what actually gets accepted downstream.
+function hasCompletePlanAuthorProtocol(text) {
+  try { parsePlanAuthorResponse(text); return true; }
+  catch { return false; }
+}
