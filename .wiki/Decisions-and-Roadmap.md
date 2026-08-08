@@ -279,23 +279,87 @@ Two roadmap tracks are current:
   identical native Fetch/Response/cancellation semantics survive being
   driven through a real, production-shaped `AuthenticatedRequestCtx`
   (synthetic test credentials, one deterministic epoch) in both Chromium
-  and WebKit. Still deferred to **Phase 7**: `runQuery`/`exportQuery`'s
-  cutover onto the package's convenience consuming query APIs and their
-  own result/export ownership migration, the remaining
-  `killQuery`/`killQueryWithLease` transport migration, and deletion of
-  the now-superseded transport-adapter compatibility seam. See
-  [[Source-Map]] and [[Architecture]] for the file-level detail and
-  `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3/5 narrow
+  and WebKit. **Phase 7** (below) completes the deferred work from here:
+  `runQuery`/`exportQuery`'s cutover and their own result/export ownership
+  migration, the remaining `killQuery`/`killQueryWithLease` transport
+  migration, and deletion of the now-superseded transport-adapter
+  compatibility seam.
+
+  **Phase 7** (merged) migrates `src/application/query-execution-service.ts`
+  and `export-service.ts` off the generic `runQuery`/`exportQuery` and the
+  ordinary mutable-context `killQuery`, then deletes all three outright —
+  no forwarding wrapper. QES is injected three narrow authenticated
+  primitives (`runProgress`/`runText`/`cancel`) instead of a `ctx()`
+  provider, and now OWNS the Table/KPI/TSV/explicit-raw format→settings
+  mapping `runQuery` used to own. `runQuery` itself already computed a
+  positive ordinary row limit's `max_result_rows`/
+  `result_overflow_mode=break` cap independently of format and applied it
+  uniformly on every branch; QES's rewrite preserves that exact behavior on
+  ALL FOUR format branches and adds the per-branch regression coverage that
+  behavior never previously had at this granularity, including a dedicated
+  explicit-FORMAT-with-row-limit case — guarding against a future rewrite
+  scoping the cap to only Table/KPI. `ExportService` is injected
+  `exportResponse`/`runEffectText`/
+  `cancel` the same way; pre-header failure classification moves from its
+  own `resp.ok`/`resp.text()` check onto the package's
+  `ensureClickHouseSuccess()`, reached through a new fourth
+  `authenticated-clickhouse-request.ts` wrapper, `authenticatedResponse()`.
+  `src/ui/app.ts` adds one shared `cancelOwnedQuery(ownerEpoch, queryId)`
+  callback that QES's `kill()`, the workbench session's cancel, and both
+  `ExportService` cancel paths all delegate to.
+  `ConnectionSession.captureCancellationLease` widens to take an optional
+  `expectedEpoch` parameter (default: the current epoch): a caller holding
+  an older operation's owner epoch gets `null` once the session has moved
+  to a replacement epoch, while a same-epoch refreshed credential still
+  succeeds. `killQueryWithLease` is rewritten onto the package's own
+  stateless `client.killQuery(...)` (dropping its `sqlString` argument —
+  the package now owns that quoting) instead of the local transport
+  adapter, preserving the exact same no-`ChCtx`/no-refresh/no-retry
+  invariant Phase 6 established for this bypass. With every caller
+  migrated, `src/net/clickhouse-http-transport.ts`/
+  `clickhouse-transport.types.ts` (the local compatibility transport seam
+  Phase 3 introduced) are deleted outright, along with
+  `tests/unit/clickhouse-http-transport.test.ts` — there is now exactly
+  one generic ClickHouse HTTP transport implementation in the repository,
+  the package's.
+  `build/check-boundaries.mjs`/`build/lib/check-legacy-owners.mjs` gain two
+  new resurrection guards: a path-existence check on the two deleted
+  transport files, and `findRetiredTopLevelApiViolations` — a real-parser
+  check scoped to a module's own top-level statements (never descending
+  into function/class/block bodies) — banning top-level `runQuery`/
+  `exportQuery`/ordinary `killQuery` (and their types) from returning
+  anywhere under `src/**`, without rejecting the legitimate surviving
+  `client.killQuery(...)` member call inside `killQueryWithLease`.
+  `tests/unit/clickhouse-http-package-policy.test.js`'s Phase 3
+  former-owner registry (`PHASE3_LEGACY_OWNER_FILES`) stays unchanged as a
+  historical record; its own file-read loop is replaced with explicit
+  absence assertions for the two Phase 7 files plus a real scan of the
+  surviving `src/core/stream.ts`. A new real-browser (Chromium and WebKit)
+  e2e fixture, `tests/e2e/export-post-header-cancel.{html,spec.js}`, proves
+  native post-header cancellation semantics through the actual export
+  path, and `tests/spike/clickhouse-client/run-matrix.mjs`'s
+  deletion-estimate classification is reconciled with the post-cutover
+  tree (its spike consumers — `current-adapter.ts`/`official-adapter.ts`/
+  `parity.test.ts`/`live-sessions.test.ts` — retargeted off the retired
+  types onto the Phase 7 production seams, without otherwise redesigning
+  the official-client spike). Claims **A14**/**A15**/**A16**; **A17**
+  (standalone package build/pack/typecheck proof) and **A18** (final
+  ownership cleanup, `@clickhouse/client-web`/vendor-spike-wiring removal,
+  and the tested #639 extraction handoff) remain deferred to **Phase 8**.
+  See [[Source-Map]] and [[Architecture]] for the file-level detail and
+  `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3/5/7 narrow
   legacy-owner rules for the mechanical boundary enforcement: package↔root-src
   ban, package zero-bare-specifier ban, root↔package-deep-import ban, the
   former transport/contract/`core/stream.ts` owners (Phase 3) and the
   former SQL-quoting owner `format.ts` plus the retired Phase-4 killQuery
   stopgap owner (Phase 5) all rejected from regaining any moved identifier,
-  and deleted implementation files (`clickhouse-type.ts`/`sql-spans.ts`/
-  `quoted-span.ts`) mechanically required to stay absent. The bare-import
-  boundary is no longer a blanket "`src/net/**` only" rule: transport/
-  protocol package APIs (`createClickHouseHttpClient`, `chUrl`,
-  `streamLines`, the response consumers, `ClickHouseError`) remain
+  deleted implementation files (`clickhouse-type.ts`/`sql-spans.ts`/
+  `quoted-span.ts`) mechanically required to stay absent, and the retired
+  top-level `runQuery`/`exportQuery`/ordinary-`killQuery`
+  declarations/deleted transport files (Phase 7) mechanically banned from
+  returning. The bare-import boundary is no longer a blanket "`src/net/**`
+  only" rule: transport/protocol package APIs (`createClickHouseHttpClient`,
+  `chUrl`, `streamLines`, the response consumers, `ClickHouseError`) remain
   `src/net/**`-only, while the mechanically allowlisted pure-language exports
   (SQL quoting, the generic type grammar, the shared scanner) may be
   imported by their actual SQL Browser consumers outside `src/net/**` too —
