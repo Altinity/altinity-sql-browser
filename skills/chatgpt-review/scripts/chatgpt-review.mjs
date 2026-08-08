@@ -97,6 +97,7 @@ export async function run(argv, dependencies = {}) {
       target: prepared.target,
       publish: options.requestedPublication,
       diagnosticsDir: options.diagnosticsDir ? path.resolve(options.diagnosticsDir) : null,
+      mode: options.mode,
     });
     const metadata = extractReportedMetadata(review.responseText);
     session = await store.write({ ...session, conversationUrl: review.conversationUrl, passCount: passNumber, lastResponseFingerprint: review.responseFingerprint ?? null, ...metadata });

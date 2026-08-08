@@ -220,6 +220,61 @@ test('a completed response is fingerprinted by its plain rendered tail even when
   assert.equal(stage, 2);
 });
 
+test('plan-author mode returns as soon as a complete protocol appears, without waiting for generation to stop', async () => {
+  // Reproduced live on #630 phase 7: an Extra-High-effort plan-author turn kept the
+  // "generating" indicator (stop button) visible for 20+ minutes of further reasoning
+  // and tool calls AFTER already emitting a complete, valid PLAN_STATUS: READY block —
+  // the ordinary !generating + stableMs requirement can never fire in that case, so the
+  // whole call times out despite a perfectly good answer already sitting in the DOM.
+  const planText = 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\nbody\n<<<CHATGPT_PLAN_END>>>';
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  const page = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: planText })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+    [SELECTORS.stop[0]]: [new Element()], // never clears — ChatGPT is still "generating"
+  }, { evaluate: () => planText });
+  const driver = driverWith(page);
+  const text = await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false, mode: 'plan-author' });
+  assert.equal(text, planText);
+});
+
+test('non-plan-author modes still require generation to stop before returning', async () => {
+  // The early-exit is scoped to plan-author's fixed-content delimiter protocol only —
+  // other modes end with a VERDICT: line that could still change if more text follows,
+  // so they must keep waiting for the ordinary !generating + stability requirement.
+  const planText = 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\nbody\n<<<CHATGPT_PLAN_END>>>';
+  const page = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: planText })],
+    [SELECTORS.stop[0]]: [new Element()], // never clears
+  });
+  const driver = driverWith(page);
+  await assert.rejects(
+    () => driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false }),
+    (error) => error.status === 'timed_out',
+  );
+});
+
+test('plan-author early-exit requires the clipboard-copied Markdown to confirm the match before trusting it while still generating', async () => {
+  // innerText can pass the cheap protocol check (e.g. on plain text with no real Markdown
+  // heading, or a transient mid-stream coincidence) while the authoritative copied Markdown
+  // disagrees — must never return early on an unconfirmed match, however many times the
+  // cheap check alone keeps passing.
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  const planText = 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\nbody\n<<<CHATGPT_PLAN_END>>>';
+  const page = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: planText })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+    [SELECTORS.stop[0]]: [new Element()], // never clears
+  }, { evaluate: () => 'not a valid protocol response' });
+  const driver = driverWith(page);
+  await assert.rejects(
+    () => driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false, mode: 'plan-author' }),
+    (error) => error.status === 'timed_out',
+  );
+});
+
 test('missing copy control, denied permission, or a hung clipboard read fall back to the rendered text without hanging', async () => {
   const noGroupPage = readyPage({ [SELECTORS.assistant[0]]: [new Element({ text: 'plain answer' })] });
   assert.equal(await driverWith(noGroupPage).waitForCompletion(noGroupPage, { before: '', timeoutMs: 20 }), 'plain answer');
