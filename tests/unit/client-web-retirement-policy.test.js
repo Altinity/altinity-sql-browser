@@ -32,7 +32,7 @@ import {
   manifestDependencyFields,
   lockHasPackage,
   retiredClientSpikeScriptNames,
-  mightReferenceRetiredTopLevelApi,
+  mightReferencePackage,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const projectRoot = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -128,19 +128,28 @@ async function collectSourceFiles(dir, exts) {
 // The FULL production Guard 5 pipeline (prefilter → real parser → specifier
 // match), not just the parser half: `findModuleSpecifiers` alone proves the
 // parser-matching logic works, but every sabotage probe below used to call
-// it directly, bypassing the cheap `source.includes`-style prefilter that
-// gates whether the parser even runs at all in production — so none of them
-// could ever have caught a regression in that prefilter (review pass 1).
-// This mirrors production's own two-step shape (`build/check-boundaries.mjs`'s
-// CLIENT_WEB_BAN_ROOTS loop) end to end, including calling the SAME shared
-// prefilter helper production now calls (`mightReferenceRetiredTopLevelApi`)
-// rather than an independently hand-copied `source.includes(...)` — two
-// independently maintained copies of that exact one-line check previously
-// meant a production-only regression could leave this whole describe block
-// green, since every test here exercised only this file's own copy, never
-// production's.
+// it directly, bypassing the cheap prefilter that gates whether the parser
+// even runs at all in production — so none of them could ever have caught a
+// regression in that prefilter (review pass 1). This mirrors production's own
+// two-step shape (`build/check-boundaries.mjs`'s CLIENT_WEB_BAN_ROOTS loop)
+// end to end, including calling the SAME shared prefilter helper production
+// now calls.
+//
+// Review pass 2 finding: production used to gate the real parser behind
+// `mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])` — a bare
+// `source.includes(name)` substring test with no escape awareness (sound only
+// for the plain-identifier-name threat model it was actually built for, never
+// a package specifier). An import spelled through an escaped specifier (a hex
+// escape, e.g. `'@clickhouse/client-w\x65b'`) contains no raw `client-web`
+// substring, so that prefilter silently skipped the real parser for exactly
+// the file that most needed it, even though `findModuleSpecifiers` decodes
+// the escape via `node.text` and would have caught the reintroduced import.
+// `mightReferencePackage` (already Rule D's own escape-aware pre-filter) is
+// the shared, sound replacement: any backslash anywhere in the file routes it
+// through the real parser, exactly like the sibling `mightReferencePackage`
+// call this file's own Rule C mirror already relies on.
 function findsClientWebViolation(source, relFile) {
-  if (!mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])) return false;
+  if (!mightReferencePackage(source, CLIENT_WEB_SPECIFIER)) return false;
   return findModuleSpecifiers(source, relFile)
     .some(({ spec }) => spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`));
 }
@@ -179,25 +188,40 @@ describe('Guard 5 — @clickhouse/client-web cannot be virtually reintroduced an
 
   it('does not flag an unrelated import merely mentioning the string in a comment (comments are parser trivia, never AST nodes), through the full prefilter-to-parser path', () => {
     const source = "// see @clickhouse/client-web — rejected by ADR-0005\nexport const x = 1;\n";
-    // The prefilter is a plain substring test, so this source still passes
-    // it (the comment DOES contain the raw specifier text) — the real
-    // parser is what correctly finds no import/export/dynamic-import
-    // specifier here, proving the full path, not just the prefilter, must
-    // both agree before a violation is reported.
-    expect(mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])).toBe(true);
+    // The prefilter's plain-substring half still passes this source (the
+    // comment DOES contain the raw specifier text) — the real parser is what
+    // correctly finds no import/export/dynamic-import specifier here, proving
+    // the full path, not just the prefilter, must both agree before a
+    // violation is reported.
+    expect(mightReferencePackage(source, CLIENT_WEB_SPECIFIER)).toBe(true);
     expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_comment__.ts')).toBe(false);
   });
 
   it('the prefilter alone would skip a file with no mention of the specifier at all (proves the prefilter, not just the parser, is exercised)', () => {
     const source = 'export const x = 1;\n';
-    expect(mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])).toBe(false);
+    expect(mightReferencePackage(source, CLIENT_WEB_SPECIFIER)).toBe(false);
     expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_none__.ts')).toBe(false);
+  });
+
+  // Review pass 2 finding: the OLD prefilter (`mightReferenceRetiredTopLevelApi`,
+  // a bare `source.includes(name)` substring test) would have missed this
+  // entirely — a hex-escaped specifier contains no raw `client-web`
+  // substring, even though it decodes to the exact same text the real parser
+  // resolves via `node.text`. `\x65` decodes to `e`, so this specifier
+  // decodes to `@clickhouse/client-web`. `mightReferencePackage` catches it
+  // because the escape requires a literal backslash somewhere in the file,
+  // which routes the file through the real parser regardless of whether the
+  // raw substring is present.
+  it('flags an escaped-specifier spelling of the vendor package that bypasses a raw substring test (regression for a real escape found in review), through the full prefilter-to-parser path', () => {
+    const source = "import { createClient } from '@clickhouse/client-w\\x65b';\n";
+    expect(source.includes(CLIENT_WEB_SPECIFIER)).toBe(false); // sanity: no raw substring present
+    expect(findsClientWebViolation(source, 'src/net/__boundary_probe_630p8_clientweb_escaped__.ts')).toBe(true);
   });
 });
 
 // The describe block above only proves this file's OWN mirror (and the
-// shared `mightReferenceRetiredTopLevelApi`/`findModuleSpecifiers` helpers)
-// behave correctly; it does not prove `build/check-boundaries.mjs` (the
+// shared `mightReferencePackage`/`findModuleSpecifiers` helpers) behave
+// correctly; it does not prove `build/check-boundaries.mjs` (the
 // actual `check:arch` gate) still wires Guard 5 the same way — with that
 // wiring changed, this whole file could stay green while `check:arch`
 // silently regressed to an independently hand-copied prefilter (exactly
@@ -212,12 +236,18 @@ describe('build/check-boundaries.mjs still declares the Guard 5 rule block this 
     expect(checkerSource).toMatch(/CLIENT_WEB_BAN_ROOTS\s*=\s*\['src',\s*'packages\/clickhouse-http',\s*'tests',\s*'build'\]/);
   });
 
-  it('gates the real-parser call behind the SHARED mightReferenceRetiredTopLevelApi prefilter, not an inline hand-copied substring check', () => {
-    expect(checkerSource).toMatch(/mightReferenceRetiredTopLevelApi\(source,\s*\[CLIENT_WEB_SPECIFIER\]\)/);
+  it('gates the real-parser call behind the escape-aware SHARED mightReferencePackage prefilter, not the unsound name-list prefilter', () => {
+    expect(checkerSource).toMatch(/mightReferencePackage\(source,\s*CLIENT_WEB_SPECIFIER\)/);
     // Guards exactly the regression review pass 1 found: an independently
     // hand-copied `source.includes(CLIENT_WEB_SPECIFIER)` prefilter bypassing
     // the shared helper entirely.
     expect(checkerSource).not.toMatch(/if\s*\(\s*!\s*source\.includes\(CLIENT_WEB_SPECIFIER\)\s*\)/);
+    // Guards exactly the regression review pass 2 found: gating Guard 5's
+    // real-parser call behind `mightReferenceRetiredTopLevelApi` (a raw
+    // `source.includes(name)` substring test with no escape awareness) would
+    // silently skip a hex/Unicode-escaped spelling of the vendor specifier
+    // that the real parser would otherwise decode and catch.
+    expect(checkerSource).not.toMatch(/mightReferenceRetiredTopLevelApi\(source,\s*\[CLIENT_WEB_SPECIFIER\]\)/);
   });
 
   it('still calls the real parser and reports the exact Guard 5 violation message', () => {

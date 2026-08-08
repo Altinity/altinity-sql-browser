@@ -257,6 +257,24 @@ function extractSpecifiers(source) {
 
 // Relative specifiers resolve like esbuild/tsc do: a `.js` specifier written
 // against a `.ts` source file still resolves to the `.ts` file on disk.
+//
+// Review pass 2 finding: this used to return the purely LEXICAL path, with
+// no symlink canonicalization. The workspace link npm installs for
+// `@altinity/clickhouse-http` (package-lock.json's
+// `"node_modules/@altinity/clickhouse-http": { "resolved":
+// "packages/clickhouse-http", "link": true }`) makes `node_modules/@altinity/
+// clickhouse-http` an actual symlink to `packages/clickhouse-http` — so a
+// relative import spelled through that symlink (e.g.
+// `../../node_modules/@altinity/clickhouse-http/src/client.ts`) resolved
+// lexically to a `node_modules/...` path that never equals or starts with
+// `packages/clickhouse-http`, letting Guard 2 (and the generic RULES loop's
+// Rule A) miss a deep import into the package's own internals entirely, even
+// though the path is the exact same file on disk. `fs.realpathSync` on any
+// candidate that actually exists canonicalizes the symlink away before the
+// caller compares the resolved path against a forbidden prefix; a
+// non-existent candidate (an unresolved import, reported by other means if
+// at all) keeps its lexical path unchanged, since there is nothing on disk to
+// canonicalize.
 function resolveRelative(fromFile, spec) {
   const resolved = path.resolve(path.dirname(fromFile), spec);
   const noExt = resolved.replace(/\.(ts|tsx|js|mjs)$/, '');
@@ -264,7 +282,12 @@ function resolveRelative(fromFile, spec) {
     resolved, `${noExt}.ts`, `${noExt}.tsx`, `${noExt}.js`, `${noExt}.mjs`,
     path.join(resolved, 'index.ts'), path.join(resolved, 'index.js'),
   ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? resolved;
+  const found = candidates.find((candidate) => fs.existsSync(candidate)) ?? resolved;
+  try {
+    return fs.realpathSync(found);
+  } catch {
+    return found; // nothing on disk to canonicalize — keep the lexical path
+  }
 }
 
 const violations = [];
@@ -353,21 +376,27 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // module's header comment requires the real parser for, now covering four
 // trees instead of one: `src/**`, `packages/clickhouse-http/**` (excluding
 // generated `dist/**`, which is build output, not source), `tests/**`, and
-// `build/**`. A plain substring pre-filter gates the expensive real-parser
-// call per file (matching `mightReferenceRetiredTopLevelApi`'s established,
-// accepted-risk convention above, not Rule D's heavier escape-sequence-aware
-// `mightReferencePackage`) — an exotic escaped spelling of this well-known,
-// no-longer-evolving vendor package name is outside this guard's threat
-// model, same acceptance as this module's own stated scope. Review pass 1:
-// the prefilter now CALLS `mightReferenceRetiredTopLevelApi` (imported
-// above) instead of an inline `source.includes(CLIENT_WEB_SPECIFIER)` —
-// production and the in-suite mirror
-// (`tests/unit/client-web-retirement-policy.test.js`) previously each
-// hand-copied that same one-line check independently, so a production-only
-// regression could leave the mirror's own copy — and its sabotage tests —
-// green while production silently diverged; sharing the one implementation
-// closes that drift risk, matching this file's convention for every other
-// pre-filter above.
+// `build/**`. The expensive real-parser call is gated per file by
+// `mightReferencePackage` — the SAME escape-sequence-aware pre-filter Rule D
+// uses above, not `mightReferenceRetiredTopLevelApi`'s bare
+// `source.includes(name)` substring test. Review pass 2: an import spelled
+// through an escaped specifier (e.g. a hex escape,
+// `'@clickhouse/client-w\x65b'`) contains no raw `client-web` substring, so
+// `mightReferenceRetiredTopLevelApi` — sound only for the identifier-name
+// threat model it was built for (Phase 7/Guards 3-4's retired top-level API
+// names, never a package specifier) — would silently skip the real parser
+// for exactly the file that most needs it, even though `findModuleSpecifiers`
+// decodes the escape via `node.text` and would have caught the reintroduced
+// import. `mightReferencePackage` is unsound only for a NON-existent
+// backslash-free escape, which cannot occur, so it stays fail-closed here.
+// Review pass 1: the prefilter now CALLS a shared helper (imported above)
+// instead of an inline `source.includes(CLIENT_WEB_SPECIFIER)` — production
+// and the in-suite mirror (`tests/unit/client-web-retirement-policy.test.js`)
+// previously each hand-copied that same one-line check independently, so a
+// production-only regression could leave the mirror's own copy — and its
+// sabotage tests — green while production silently diverged; sharing the one
+// implementation closes that drift risk, matching this file's convention for
+// every other pre-filter above.
 const CLIENT_WEB_SPECIFIER = '@clickhouse/client-web';
 const CLIENT_WEB_BAN_ROOTS = ['src', 'packages/clickhouse-http', 'tests', 'build'];
 for (const rootDir of CLIENT_WEB_BAN_ROOTS) {
@@ -378,7 +407,7 @@ for (const rootDir of CLIENT_WEB_BAN_ROOTS) {
     if (relFile.startsWith('packages/clickhouse-http/dist/')) continue; // generated, not source
     checkedFiles += 1;
     const source = fs.readFileSync(file, 'utf8');
-    if (!mightReferenceRetiredTopLevelApi(source, [CLIENT_WEB_SPECIFIER])) continue;
+    if (!mightReferencePackage(source, CLIENT_WEB_SPECIFIER)) continue;
     for (const { spec } of findModuleSpecifiers(source, relFile)) {
       if (spec === CLIENT_WEB_SPECIFIER || spec.startsWith(`${CLIENT_WEB_SPECIFIER}/`)) {
         violations.push(`${relFile} → ${spec} (issue #630 Phase 8 Guard 5: @clickhouse/client-web must never be reintroduced — ADR-0005 remains Rejected)`);

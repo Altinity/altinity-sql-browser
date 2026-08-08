@@ -43,7 +43,7 @@
 // `findNamedIdentifierViolations` walker the Phase 3 rule now shares.
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifact } from '../../build/build.mjs';
@@ -116,6 +116,16 @@ function extractSpecifiers(source) {
   return specs;
 }
 
+// Mirrors production's `resolveRelative` (`build/check-boundaries.mjs`),
+// including the review-pass-2 symlink-canonicalization fix: `fs.realpathSync`
+// on any candidate that exists resolves the real, already-installed
+// `node_modules/@altinity/clickhouse-http` workspace-link symlink
+// (package-lock.json's `"link": true` entry) to its real target
+// (`packages/clickhouse-http`) before the caller compares the resolved path
+// against a forbidden prefix — without this, a relative import spelled
+// through that symlink resolves lexically to a `node_modules/...` path that
+// never starts with `packages/clickhouse-http`, letting Guard 2 miss a deep
+// import into the package's own internals.
 function resolveRelative(fromFile, spec) {
   const resolved = resolve(dirname(fromFile), spec);
   const noExt = resolved.replace(/\.(ts|tsx|js|mjs)$/, '');
@@ -123,7 +133,12 @@ function resolveRelative(fromFile, spec) {
     resolved, `${noExt}.ts`, `${noExt}.tsx`, `${noExt}.js`, `${noExt}.mjs`,
     join(resolved, 'index.ts'), join(resolved, 'index.js'),
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? resolved;
+  const found = candidates.find((candidate) => existsSync(candidate)) ?? resolved;
+  try {
+    return realpathSync(found);
+  } catch {
+    return found;
+  }
 }
 
 /** `virtualFiles` are `[repoRelativePath, source]` pairs checked alongside
@@ -532,6 +547,30 @@ describe('Rule C — SQL Browser source does not deep-import the package (relati
         "import { chUrl } from '../../pac\\u006bages/clickhouse-http/dist/client.js';\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630p8_deepdist_escaped__') && line.includes('packages/clickhouse-http'))).toBe(true);
+  });
+
+  // Review pass 2 finding — `resolveRelative` used to return the LEXICAL path
+  // only, with no symlink canonicalization. The real, already-installed
+  // `node_modules/@altinity/clickhouse-http` workspace-link symlink
+  // (package-lock.json's `"resolved": "packages/clickhouse-http", "link":
+  // true` entry — a real symlink on disk from `npm ci`, not a virtual
+  // fixture) resolves a relative import spelled through it into the
+  // package's own `src/**`, but the OLD `resolveRelative` reported the
+  // lexical `node_modules/@altinity/clickhouse-http/...` path, which never
+  // equals or starts with the forbidden `packages/clickhouse-http` prefix —
+  // Guard 2 missed this escape entirely even though it is the exact same
+  // file on disk `../../packages/clickhouse-http/src/client.ts` names
+  // directly (already covered by the first Rule C test above). No
+  // `@altinity/clickhouse-http` bare-specifier form is involved here — Rule D
+  // governs that route separately — this specifier is purely relative
+  // (`.`-prefixed), so only Guard 2's relative-deep-import ban is in scope.
+  it('flags a relative import that reaches the package through the real node_modules workspace-link symlink (sabotage probe, not written to disk)', () => {
+    expect(existsSync(join(repoRoot, 'node_modules/@altinity/clickhouse-http/src/client.ts')), 'the workspace-link symlink must actually be installed for this probe to be meaningful').toBe(true);
+    const found = relativeViolationsParserBacked(join(repoRoot, 'src'), ['packages/clickhouse-http'], [
+      ['src/net/__boundary_probe_630p8_symlink__.ts',
+        "import { createClickHouseHttpClient } from '../../node_modules/@altinity/clickhouse-http/src/client.ts';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630p8_symlink__') && line.includes('packages/clickhouse-http'))).toBe(true);
   });
 });
 
@@ -1176,6 +1215,21 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(importBlock[1]).toMatch(/\bmightReferenceForbiddenRelativeDir\b/);
     // Must actually CALL the shared helper, not merely import and shadow it.
     expect(checkerSource).toMatch(/mightReferenceForbiddenRelativeDir\(source,\s*\[?'packages\/clickhouse-http'/);
+  });
+
+  // Review pass 2 finding — `resolveRelative` used to return the LEXICAL
+  // path only, with no symlink canonicalization, so a relative import
+  // reaching the package through the real `node_modules/@altinity/
+  // clickhouse-http` workspace-link symlink (package-lock.json's
+  // `"link": true` entry) never matched Guard 2's `packages/clickhouse-http`
+  // prefix comparison. Pins that production's shared `resolveRelative` still
+  // canonicalizes an existing candidate via `fs.realpathSync` before Guard 2
+  // (and the generic RULES loop, and Guard 1) ever compares the resolved
+  // path against a forbidden prefix.
+  it('resolveRelative canonicalizes symlinks so a workspace-link relative import cannot bypass Guard 2', () => {
+    const fnMatch = checkerSource.match(/function resolveRelative\([^)]*\)\s*\{[\s\S]*?\n\}\n/);
+    expect(fnMatch, 'resolveRelative function missing from build/check-boundaries.mjs').not.toBeNull();
+    expect(fnMatch[0]).toMatch(/fs\.realpathSync\(/);
   });
 
   it('declares Rule D (deep imports banned everywhere; revised bare-specifier policy since issue #630 Phase 5)', () => {
