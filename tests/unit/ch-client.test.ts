@@ -429,6 +429,67 @@ describe('authedFetch', () => {
     await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
     expect(ctx.fetchMock.mock.calls[0][1].headers.Authorization).toBe('Basic TOK');
   });
+
+  // #630 Phase 6 sensor pass (plan §14 Commit 1) — characterization tests
+  // against the CURRENT authedFetch implementation, added before the
+  // ownership move so the move itself (Commit 2) can retarget every one of
+  // these onto `authenticatedRequest` unchanged, rather than writing them
+  // fresh against the new module with nothing to compare against.
+  it('computes a fresh, complete Authorization on the retried attempt, distinct from the first', async () => {
+    let fetchN = 0;
+    let tokenN = 0;
+    const ctx = ctxWith(async () => (fetchN++ === 0 ? jsonResp({}, false, 401) : jsonResp({ ok: 1 })), {
+      refresh: vi.fn(async () => true),
+      getToken: vi.fn(async () => (tokenN++ === 0 ? 'old-token' : 'new-token')),
+    });
+    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
+    const first = ctx.fetchMock.mock.calls[0][1].headers.Authorization;
+    const second = ctx.fetchMock.mock.calls[1][1].headers.Authorization;
+    expect(first).toBe('Bearer old-token');
+    expect(second).toBe('Bearer new-token');
+  });
+  it('does not attempt a second refresh when the retried request also fails authentication', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 401), {
+      refresh: vi.fn(async () => true),
+    });
+    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('signed out');
+    expect(ctx.refresh).toHaveBeenCalledTimes(1);
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
+    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
+  });
+  it('once authenticated, a later 401 is returned as a query error (no sign-out) — the 403 counterpart', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 291. DB::Exception: Access denied', false, 401), { authConfirmed: true });
+    const resp = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
+    expect(resp.status).toBe(401);
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+    expect(ctx.refresh).not.toHaveBeenCalled();
+  });
+  it('does not report a non-2xx response as a connected transport', async () => {
+    const onTransportConnected = vi.fn();
+    const ctx = ctxWith(async () => textResp('bad', false, 400), { onTransportConnected });
+    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
+    expect(onTransportConnected).not.toHaveBeenCalled();
+    expect(ctx.authConfirmed).toBeUndefined();
+  });
+  it('signals auth loss tagged with the epoch captured at entry', async () => {
+    const ctx = ctxWith(() => jsonResp({}), { currentEpoch: () => 7, getToken: async () => null });
+    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('not signed in');
+    expect(ctx.onSignedOut).toHaveBeenCalledWith(undefined, 7);
+  });
+  it('signals a credential-denial sign-out tagged with the epoch captured at entry', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 403), {
+      currentEpoch: () => 3, refresh: async () => false,
+    });
+    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('signed out');
+    expect((ctx.onSignedOut as Mock).mock.calls[0][1]).toBe(3);
+  });
+  it('passes the caller-supplied AbortSignal to fetch unchanged, by identity', async () => {
+    const controller = new AbortController();
+    const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
+    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress', signal: controller.signal });
+    expect(ctx.fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
 });
 
 describe('queryJson', () => {

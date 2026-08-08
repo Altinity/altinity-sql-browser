@@ -144,17 +144,23 @@ const RULES = [
   // file would leave the sibling contract file unguarded. `forbidden` targets
   // are resolved repo-relative paths (never raw specifier strings like
   // './ch-client.ts'), matching how the checker resolves and compares them.
+  //
+  // Issue #630 Phase 6: the normal-request auth/epoch/refresh/lifecycle
+  // policy moved out of `ch-client.ts` into the new
+  // `src/net/authenticated-clickhouse-request.ts` — the CURRENT auth-policy
+  // owner this transport leaf must not reach, so both forbidden lists below
+  // name it alongside `ch-client.ts`.
   {
     dir: 'src/net/clickhouse-http-transport.ts',
-    forbidden: ['src/net/ch-client.ts', 'src/net/oauth.ts',
-      'src/net/oauth-config.ts', 'src/application', 'src/ui'],
-    why: 'issue #585 Phase 1: the generic transport cannot reach auth/application policy or UI',
+    forbidden: ['src/net/ch-client.ts', 'src/net/authenticated-clickhouse-request.ts',
+      'src/net/oauth.ts', 'src/net/oauth-config.ts', 'src/application', 'src/ui'],
+    why: 'issue #585 Phase 1 / #630 Phase 6: the generic transport cannot reach auth/application policy or UI',
   },
   {
     dir: 'src/net/clickhouse-transport.types.ts',
-    forbidden: ['src/net/ch-client.ts', 'src/net/oauth.ts',
-      'src/net/oauth-config.ts', 'src/application', 'src/ui'],
-    why: 'issue #585 Phase 1: the transport contract must not couple to auth/application policy or UI, even type-only',
+    forbidden: ['src/net/ch-client.ts', 'src/net/authenticated-clickhouse-request.ts',
+      'src/net/oauth.ts', 'src/net/oauth-config.ts', 'src/application', 'src/ui'],
+    why: 'issue #585 Phase 1 / #630 Phase 6: the transport contract must not couple to auth/application policy or UI, even type-only',
   },
   // Issue #630 Phase 2 — Rule A: the new workspace package must not depend on
   // ANY SQL Browser source, relatively. (A separate dedicated block below
@@ -262,10 +268,18 @@ for (const rule of RULES) {
 // modules that own or project the lifecycle, and none may regain the retired
 // server-version shortcut. `serverVersion` remains legitimate catalog/query
 // capability metadata and user-menu display elsewhere.
+//
+// Issue #630 Phase 6: the normal-request lifecycle classification
+// (`onTransportConnected`/`onTransportOffline`/`onSignedOut` dispatch) moved
+// from `ch-client.ts` into `src/net/authenticated-clickhouse-request.ts` —
+// the list below keeps `ch-client.ts` (its product-client `ChCtx`/callers
+// still matter to this guard through Phase 6) and adds the new lifecycle-
+// owning file explicitly, rather than replacing one with the other.
 const connectionAuthorityFiles = [
   'src/core/connection-lifecycle.ts',
   'src/application/connection-session.ts',
   'src/net/ch-client.ts',
+  'src/net/authenticated-clickhouse-request.ts',
   'src/ui/app-header.ts',
   'src/ui/app-shell.ts',
 ];
