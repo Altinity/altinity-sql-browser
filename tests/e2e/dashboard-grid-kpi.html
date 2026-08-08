@@ -73,6 +73,15 @@
     </div>
   </section>
 
+  <!-- #630 Phase 5: core/kpi.js (imported below) now imports the generic
+       ClickHouse type grammar as a bare `@altinity/clickhouse-http`
+       specifier. No bundler serves this raw /src graph, so it needs an
+       import-map entry. -->
+  <script type="importmap">
+    { "imports": {
+      "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
+    } }
+  </script>
   <script type="module">
     import {
       computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, gridHeightUnitsToPx,

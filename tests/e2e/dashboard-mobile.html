@@ -4,10 +4,14 @@
   <meta charset="utf-8" />
   <title>Dashboard mobile harness</title>
   <link rel="stylesheet" href="/src/styles.css" />
+  <!-- #630 Phase 5: core/param-type.js (imported below via
+       time-range-field.js) now imports the generic ClickHouse type grammar
+       as a bare `@altinity/clickhouse-http` specifier. -->
   <script type="importmap">
     {
       "imports": {
-        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
+        "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
       }
     }
   </script>

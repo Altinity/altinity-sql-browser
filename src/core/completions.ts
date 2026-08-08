@@ -9,7 +9,9 @@
 import { SQL_KEYWORDS, SQL_FUNCS } from './sql-reference.js';
 import { lexSql, tokenText, unquoteIdent } from './sql-lex.js';
 import type { Token } from './sql-lex.js';
-import { quoteIdent } from './format.js';
+// Issue #630 Phase 5 — `quoteIdent` (SQL Browser's one identifier quoter) now
+// comes directly from `@altinity/clickhouse-http`.
+import { quoteIdent } from '@altinity/clickhouse-http';
 import { compactType, INLINE_TYPE_MAX } from './type-display.js';
 import type { SchemaDb, TableRef } from './from-scope.js';
 

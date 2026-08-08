@@ -10,6 +10,57 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#630 Phase 5: move ClickHouse SQL quoting and generic type-expression
+  grammar into `@altinity/clickhouse-http`.** `sqlString`, `quoteIdent`, and
+  `qualifyIdent` now have one package implementation (`sql-quote.ts`),
+  replacing `src/core/format.ts`'s former declarations outright — no
+  forwarding wrapper left behind. The generic ClickHouse type-expression
+  AST/parser/canonicalization/wrapper/enum mechanics now have one package
+  implementation too (`clickhouse-type.ts`), replacing the deleted
+  `src/core/clickhouse-type.ts`; `isSupportedOptionScalar` (SQL Browser
+  option/control policy, not generic grammar) moved to
+  `src/core/param-type.ts` instead and is not exported by the package. The
+  shared `scanSpans`/delimiter-scanning dependency closure
+  (`sql-spans.ts`/package-private `quoted-span.ts`) moved with the grammar,
+  replacing the deleted `src/core/sql-spans.ts`/`quoted-span.ts`, so no
+  duplicate scanner remains. `killQuery` now uses the same package
+  `sqlString` implementation and the private Phase-4 `quoteKillQueryId`
+  stopgap is removed. Every real SQL Browser consumer is retargeted through
+  the package's public `.` export: `src/net/ch-client.ts`, `src/ui/app.ts`,
+  `src/core/variable-options.ts`, `src/core/completions.ts`,
+  `src/ui/schema.ts`, `src/ui/schema-detail.ts`, `src/ui/explain-graph.ts`,
+  `src/core/param-type.ts`, `src/core/kpi.ts`,
+  `src/core/dashboard-variables.ts`, `src/core/sql-lex.ts`,
+  `src/core/sql-split.ts`, `src/core/param-scan.ts`,
+  `src/core/type-display.ts`, `src/core/optional-blocks.ts`, and
+  `src/core/format.ts` itself. SQL Browser-owned display/FORMAT/parameter-
+  control/KPI/Dashboard/UI policy stays outside the package — only the
+  underlying generic mechanics changed owner, the existing parser/helper
+  bodies moved rather than being redesigned. Architecture Rule D
+  (`build/check-boundaries.mjs`) is narrowed from a blanket
+  `src/net/**`-only bare-import rule to a parser-backed language-symbol
+  allowlist outside `src/net/**` (SQL quoting, the generic type grammar, the
+  shared scanner — a plain named import, value or type-only, of an approved
+  name only), while transport/protocol APIs (`createClickHouseHttpClient`,
+  `chUrl`, `streamLines`, the response consumers, `ClickHouseError`) remain
+  `src/net/**`-only with no type-only carve-out — a whole `import type`/
+  `export type` or an individual `import { type X }` specifier naming one
+  of them is flagged outside `src/net/**` on exactly the same terms as a
+  value reference, since the boundary is a source-level ownership boundary
+  over which subsystem may even NAME a transport export, not a
+  bundle-output one erasure before bundling could exempt — and deep imports
+  remain forbidden everywhere regardless of `import type`; the
+  identifier/import-shape analysis reuses the existing real-TypeScript-parser
+  mechanism (`build/lib/check-legacy-owners.mjs`, generalized from the
+  Phase 3 legacy-owner rule) rather than a new hand-rolled scanner. The
+  generic parser/scanner/quoting test corpora moved rather than being
+  duplicated (`tests/unit/clickhouse-http-type.test.ts`,
+  `clickhouse-http-sql-spans.test.ts`, `clickhouse-http-sql-quote.test.ts`);
+  the moved `isSupportedOptionScalar` describe block now lives in
+  `tests/unit/param-type.test.ts` alongside its relocated implementation.
+  Phase 6 auth composition and Phase 7 query/export/transport-seam cutover
+  remain deferred.
+
 - **#630 Phase 4: add consuming query APIs, a minimal ClickHouse HTTP error,
   and a stateless `KILL QUERY` to `@altinity/clickhouse-http`.** Purely
   additive — no SQL Browser production file under `src/**` changed, and no

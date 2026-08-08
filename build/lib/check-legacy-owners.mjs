@@ -23,21 +23,36 @@
 // `packages/clickhouse-http/**` runtime code.
 //
 // Scope stays deliberately narrow (this is NOT a generic static-analysis
-// framework): exactly the three former production owners of the moved
-// progress-stream/exception-parsing primitives, and exactly the identifier/
-// property names Phase 3 moved into `@altinity/clickhouse-http`. An AST walk
-// flags any Identifier with a moved name — a declaration, an import/export
-// specifier, a member reference — and any string-literal property/member
-// name (`{ "streamLines": … }`), so a second implementation and a forwarding
-// wrapper both fail. Intentionally obfuscated constructs (computed strings,
-// dynamically built property names) are outside this check's threat model.
-// Comments and JSDoc are trivia to the parser, so prose narrating the move
-// can never false-positive.
+// framework): exactly the former production owners of moved
+// progress-stream/exception-parsing/quoting primitives, and exactly the
+// identifier/property names each phase moved into `@altinity/clickhouse-http`
+// (plus, for Rule D, exactly which of the package's OWN export names are
+// pure-language vs. transport/protocol). An AST walk flags any Identifier
+// with a moved name — a declaration, an import/export specifier, a member
+// reference — and any string-literal property/member name (`{ "streamLines":
+// … }`), so a second implementation and a forwarding wrapper both fail.
+// Intentionally obfuscated constructs (computed strings, dynamically built
+// property names) are outside this check's threat model. Comments and JSDoc
+// are trivia to the parser, so prose narrating the move can never
+// false-positive.
+//
+// Issue #630 Phase 5 — generalized into a small shared AST utility (plan
+// §8.3): the Phase 3 owner/name-list check below is now a thin wrapper over
+// a parameterized `findNamedIdentifierViolations`, reused for the Phase 5
+// former-owner rules (`format.ts` must not regain SQL quoting; the retired
+// Phase-4 `quoteKillQueryId` stopgap must not return) — no parallel parser
+// implementation, only new owner/name-list DATA. The revised architecture
+// Rule D also needs real import/export/dynamic-import SHAPE analysis (which
+// names a named import binds; default/namespace/side-effect/dynamic/
+// re-export forms), added here as `findPackageImportUsages` for the same
+// reason the Phase 3 rule couldn't stay a text scanner: a specifier-text
+// regex cannot tell which NAMES a named import binds.
 
 import path from 'node:path';
 import { API } from 'typescript/unstable/sync';
 import { createVirtualFileSystem } from 'typescript/unstable/fs';
 import { SyntaxKind } from 'typescript/unstable/ast';
+import * as is from 'typescript/unstable/ast/is';
 
 /** Every symbol Phase 3 moved out of the legacy owners into the package
  *  (`splitBuffer` was absorbed into the package's stream loop rather than
@@ -62,22 +77,70 @@ export const PHASE3_LEGACY_OWNER_FILES = Object.freeze([
   'src/core/stream.ts',
 ]);
 
-const MOVED = new Set(PHASE3_MOVED_NAMES);
+/** Issue #630 Phase 5 — the SQL-quoting names moved out of `format.ts` into
+ *  the package's `sql-quote.ts` (`BARE_IDENT` was private there too, but a
+ *  reintroduced private helper of the same name is exactly the same
+ *  regrowth risk, so it stays in scope). */
+export const PHASE5_SQL_QUOTE_MOVED_NAMES = Object.freeze([
+  'sqlString',
+  'BARE_IDENT',
+  'quoteIdent',
+  'qualifyIdent',
+]);
 
-/**
- * Parse `source` with the real TypeScript parser and return the moved names
- * it declares or references (in `PHASE3_MOVED_NAMES` order, deduplicated).
- * `filename` is the repo-relative path the source claims to be; files that
- * are not one of the three legacy owners are out of scope and return `[]`.
- *
- * @param {string} source
- * @param {string} filename repo-relative, forward-slash separated
- * @returns {string[]} the forbidden names found (empty when clean)
- */
-export function findLegacyOwnerViolations(source, filename) {
-  if (!PHASE3_LEGACY_OWNER_FILES.includes(filename)) return [];
+/** The one former owner of the moved SQL-quoting helpers. */
+export const PHASE5_SQL_QUOTE_OWNER_FILES = Object.freeze(['src/core/format.ts']);
+
+/** Issue #630 Phase 5 — the retired Phase-4 `killQuery` quoting stopgap.
+ *  `sqlString` (the sanctioned replacement) is a DIFFERENT identifier and
+ *  never trips this rule. */
+export const PHASE5_KILL_STOPGAP_MOVED_NAMES = Object.freeze(['quoteKillQueryId']);
+
+/** The one former owner of the retired Phase-4 stopgap. */
+export const PHASE5_KILL_STOPGAP_OWNER_FILES = Object.freeze(['packages/clickhouse-http/src/client.ts']);
+
+/** Issue #630 Phase 5 — exactly the package's exported names that are pure
+ *  ClickHouse LANGUAGE mechanics (SQL quoting + the generic type grammar +
+ *  the shared lexical scanner) — plan §8.2's allowlist. Every other current
+ *  package export (`createClickHouseHttpClient`, `chUrl`,
+ *  `streamLines`, the response consumers, `ClickHouseError`, and their
+ *  types) is transport/protocol and stays `src/net/**`-only. */
+export const PHASE5_PACKAGE_LANGUAGE_EXPORTS = Object.freeze([
+  'sqlString',
+  'quoteIdent',
+  'qualifyIdent',
+  'scanSpans',
+  'Span',
+  'SpanKind',
+  'LiteralArg',
+  'TypeArg',
+  'TypeNode',
+  'EnumMember',
+  'TypeModifiers',
+  'parseClickHouseType',
+  'unwrapNullable',
+  'unwrapLowCardinality',
+  'unwrapValueTransparentWrappers',
+  'analyzeTypeModifiers',
+  'typeBaseName',
+  'arrayElement',
+  'mapTypes',
+  'namedTupleMembers',
+  'enumMembers',
+  'enumValues',
+  'canonicalType',
+]);
+
+// ── Shared real-parser plumbing ─────────────────────────────────────────────
+
+// Parse `source` (claiming to be the repo-relative `filename`) with the real
+// TypeScript parser and hand back its root AST node. Always used inside a
+// try/finally that calls `api.close()` — the native child process must
+// always be reaped, on every return path including a thrown parse failure.
+function withParsedSource(source, filename, fn) {
   // The virtual path keeps the real basename so the parser applies the right
-  // grammar for the file's extension (.ts here; never .tsx among the owners).
+  // grammar for the file's extension (.ts here; never .tsx among any of the
+  // owner files or import-usage callers below).
   const virtualPath = `/legacy-owner-check/${path.posix.basename(filename)}`;
   const api = new API({ fs: createVirtualFileSystem({ [virtualPath]: source }) });
   try {
@@ -90,9 +153,34 @@ export function findLegacyOwnerViolations(source, filename) {
       // as "no violations".
       throw new Error(`check-legacy-owners: could not parse ${filename}`);
     }
+    return fn(sourceFile);
+  } finally {
+    api.close(); // always reap the native child process
+  }
+}
+
+/**
+ * Parse `source` and return which of `movedNames` it declares or references
+ * — a declaration, an import/export specifier, a member reference, or a
+ * quoted (non-computed) property/member name (`{ "streamLines": impl }`,
+ * `"streamLines"() {}`, the string module-export-name forms) — in
+ * `movedNames` order, deduplicated. `filename` is the repo-relative path the
+ * source claims to be; files not in `ownerFiles` are out of scope and return
+ * `[]` without parsing at all.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @param {readonly string[]} ownerFiles
+ * @param {readonly string[]} movedNames
+ * @returns {string[]} the forbidden names found (empty when clean)
+ */
+export function findNamedIdentifierViolations(source, filename, ownerFiles, movedNames) {
+  if (!ownerFiles.includes(filename)) return [];
+  const moved = new Set(movedNames);
+  return withParsedSource(source, filename, (sourceFile) => {
     const found = new Set();
     const walk = (node) => {
-      if (node.kind === SyntaxKind.Identifier && MOVED.has(node.text)) {
+      if (node.kind === SyntaxKind.Identifier && moved.has(node.text)) {
         found.add(node.text);
       }
       // A quoted (non-computed) property/member name is an exact property
@@ -104,7 +192,7 @@ export function findLegacyOwnerViolations(source, filename) {
           nameNode
           && (nameNode.kind === SyntaxKind.StringLiteral
             || nameNode.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
-          && MOVED.has(nameNode.text)
+          && moved.has(nameNode.text)
         ) {
           found.add(nameNode.text);
         }
@@ -112,8 +200,296 @@ export function findLegacyOwnerViolations(source, filename) {
       node.forEachChild(walk);
     };
     walk(sourceFile);
-    return PHASE3_MOVED_NAMES.filter((name) => found.has(name));
-  } finally {
-    api.close(); // always reap the native child process
-  }
+    return movedNames.filter((name) => found.has(name));
+  });
+}
+
+/**
+ * Issue #630 Phase 3's original entry point — an exact-behavior wrapper over
+ * `findNamedIdentifierViolations` fixed to the three legacy owners and the
+ * Phase 3 moved-name set. Kept under its original name/signature so existing
+ * callers (the `check:arch` gate, this rule's own unit suite) are unaffected
+ * by the Phase 5 generalization.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @returns {string[]} the forbidden names found (empty when clean)
+ */
+export function findLegacyOwnerViolations(source, filename) {
+  return findNamedIdentifierViolations(source, filename, PHASE3_LEGACY_OWNER_FILES, PHASE3_MOVED_NAMES);
+}
+
+/**
+ * Issue #630 Phase 5 — `src/core/format.ts` must not regain
+ * `sqlString`/`BARE_IDENT`/`quoteIdent`/`qualifyIdent`.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @returns {string[]} the forbidden names found (empty when clean)
+ */
+export function findSqlQuoteOwnerViolations(source, filename) {
+  return findNamedIdentifierViolations(source, filename, PHASE5_SQL_QUOTE_OWNER_FILES, PHASE5_SQL_QUOTE_MOVED_NAMES);
+}
+
+/**
+ * Issue #630 Phase 5 — `packages/clickhouse-http/src/client.ts` must not
+ * regain the retired Phase-4 `quoteKillQueryId` stopgap.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @returns {string[]} the forbidden names found (empty when clean)
+ */
+export function findKillStopgapOwnerViolations(source, filename) {
+  return findNamedIdentifierViolations(source, filename, PHASE5_KILL_STOPGAP_OWNER_FILES, PHASE5_KILL_STOPGAP_MOVED_NAMES);
+}
+
+// ── Shared cheap pre-filter (review pass 2 hardening) ───────────────────────
+
+/**
+ * Cheap textual pre-filter, shared by the production `check:arch` gate
+ * (`build/check-boundaries.mjs`) and its in-suite mirror
+ * (`tests/unit/clickhouse-http-package-policy.test.js`), that decides
+ * whether a file is even worth handing to the real-parser checks above
+ * (`findDeepImportSpecifiers`/`findPackageImportUsages`) — spawning the
+ * native `tsc` child process for every file in the tree is the expensive
+ * part, so files that provably cannot reference `packageSpecifier` skip it.
+ *
+ * A raw substring test alone is unsound: a valid string/template literal can
+ * spell the exact same specifier through a JS escape sequence — a hex escape
+ * (`@altinity/clickhouse-h\x74tp`), a Unicode escape, or even a
+ * per-character identity escape (`\@\a\l\t...`, legal and decodes to the
+ * plain character for almost any char that isn't itself a multi-char escape
+ * introducer) — none of which contain the RAW substring, so
+ * `source.includes(packageSpecifier)` alone would silently skip the real
+ * parser for exactly the files that most need it. Every one of those escape
+ * forms requires at least one literal backslash in the source, so "no plain
+ * substring AND no backslash anywhere in the file" is the only combination
+ * that can safely skip the parser-backed checks — any backslash routes the
+ * file through them instead, which decode escapes correctly via the real
+ * parser's own `node.text`.
+ *
+ * Previously two independently hand-copied implementations (production and
+ * the test suite) mirrored this exact logic; a production-only regression
+ * back to the old exact-substring form would have left every
+ * escaped-specifier sabotage test green, since the test exercised only its
+ * own copy, never production's. Sharing this one implementation closes that
+ * gap — there is now only one place this logic can drift from.
+ *
+ * @param {string} source
+ * @param {string} packageSpecifier the exact bare specifier being guarded
+ * @returns {boolean} true if `source` might reference `packageSpecifier`
+ *   (via a plain substring OR an escape sequence) and must go through the
+ *   real-parser checks; false only when it provably cannot
+ */
+export function mightReferencePackage(source, packageSpecifier) {
+  return source.includes(packageSpecifier) || source.includes('\\');
+}
+
+// ── Revised Rule D: deep-import subpath detection ────────────────────────────
+
+/**
+ * Find every module-specifier string in `source` that names a DEEP subpath
+ * of `packageSpecifier` (`${packageSpecifier}/...`) — a real TypeScript
+ * parse, not a specifier-text regex. Unlike `findPackageImportUsages` below,
+ * this is intentionally unconditional on `import type`/type-only: the
+ * deep-import ban (only the package's `.` export is public) applies to a
+ * type-only deep import exactly as much as a value one, so there is no
+ * type-only carve-out to encode here.
+ *
+ * Covers every module-specifier-bearing form: a static `import ... from`
+ * (with or without a clause — including a bare side-effect `import 'pkg'`),
+ * a static `export ... from`, and a dynamic `import(...)` call — matching
+ * `findPackageImportUsages`'s own form coverage below. This function exists
+ * because a hand-rolled regex scan (`build/check-boundaries.mjs`'s retired
+ * `extractSpecifiers`) stayed vulnerable to comment-trivia bypasses no
+ * amount of further pattern-widening could close — e.g. a block comment
+ * sitting between the `import` keyword and its call parens, or between the
+ * open paren and the specifier itself — the exact class of lexical bypass
+ * the real parser is immune to by construction (comments are trivia, never
+ * AST nodes).
+ *
+ * The module specifier itself may be a plain string literal OR a
+ * no-substitution template literal (`` import(`pkg`) ``), for the same
+ * grammar reason `findPackageImportUsages` matches both kinds.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated (used only
+ *   for the virtual-file basename/grammar selection)
+ * @param {string} packageSpecifier the exact bare specifier whose deep
+ *   subpaths are forbidden
+ * @returns {string[]} every deep-subpath specifier text found (not deduped —
+ *   callers report one violation per occurrence, matching prior behavior)
+ */
+export function findDeepImportSpecifiers(source, filename, packageSpecifier) {
+  const prefix = `${packageSpecifier}/`;
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = [];
+    const deepSpecifierText = (node) => {
+      if (
+        !node
+        || (node.kind !== SyntaxKind.StringLiteral && node.kind !== SyntaxKind.NoSubstitutionTemplateLiteral)
+      ) return null;
+      return node.text.startsWith(prefix) ? node.text : null;
+    };
+    const walk = (node) => {
+      if (is.isImportDeclaration(node)) {
+        const spec = deepSpecifierText(node.moduleSpecifier);
+        if (spec) found.push(spec);
+      }
+      if (is.isExportDeclaration(node)) {
+        const spec = deepSpecifierText(node.moduleSpecifier);
+        if (spec) found.push(spec);
+      }
+      // Dynamic `import('pkg/deep')`: a CallExpression whose callee is the
+      // bare `import` keyword token, exactly as `findPackageImportUsages`
+      // recognizes it below.
+      if (
+        is.isCallExpression(node)
+        && node.expression
+        && node.expression.kind === SyntaxKind.ImportKeyword
+      ) {
+        const spec = deepSpecifierText(node.arguments[0]);
+        if (spec) found.push(spec);
+      }
+      // TypeScript's inline import-type expression — `type T =
+      // import('pkg/deep').Foo` or `typeof import('pkg/deep')` — is a FOURTH
+      // module-specifier-bearing form distinct from all three above (it is
+      // its own `ImportTypeNode`, never an ImportDeclaration/
+      // ExportDeclaration/dynamic-import CallExpression), so none of the
+      // three walks above ever visits it. The specifier lives one level
+      // deeper than the others: `node.argument` is a `LiteralTypeNode`, and
+      // `node.argument.literal` is the actual string/template literal.
+      if (is.isImportTypeNode(node)) {
+        const spec = deepSpecifierText(node.argument && node.argument.literal);
+        if (spec) found.push(spec);
+      }
+      node.forEachChild(walk);
+    };
+    walk(sourceFile);
+    return found;
+  });
+}
+
+// ── Revised Rule D: package import shape/name analysis ──────────────────────
+
+/**
+ * One usage of `packageSpecifier` found in `source`:
+ *   - `{ kind: 'named', name }` — a plain named import/export-specifier
+ *     binding, `name` being the ORIGINAL exported name in the package (the
+ *     `propertyName` side of an aliased specifier, matching how
+ *     `import { x as y }` / `export { x as y } from` bind);
+ *   - `{ kind: 'default' }` — a default import;
+ *   - `{ kind: 'namespace' }` — a namespace import (`import * as ns from`);
+ *   - `{ kind: 'side-effect' }` — a bare `import 'pkg'` with no clause;
+ *   - `{ kind: 'dynamic' }` — a dynamic `import('pkg')` call;
+ *   - `{ kind: 'reexport-gateway' }` — `export { ... } from 'pkg'` or
+ *     `export * from 'pkg'` (bypasses ever binding an import at all);
+ *   - `{ kind: 'import-type' }` — TypeScript's inline import-type expression,
+ *     `type T = import('pkg').Foo` or `typeof import('pkg')`. This is its
+ *     own `ImportTypeNode` grammar production, never an ImportDeclaration/
+ *     ExportDeclaration/dynamic-import CallExpression, so none of the other
+ *     branches below ever visits it — a real, previously-unhandled parser
+ *     gap, not a deliberate omission. Reported unconditionally, regardless
+ *     of which member it qualifies into (`import('pkg').Span` included): the
+ *     caller's per-name allowlist is specifically for a PLAIN named import
+ *     of an approved pure-language export, and an import-type expression is
+ *     a different access mechanism, not that form — narrowing this to
+ *     inspect the qualifier and allowlist it too would broaden the
+ *     documented contract, not just close the gap.
+ * `import type`/`export type` declarations and individual type-only
+ * specifiers (`import { type X }`) are reported on exactly the same terms as
+ * their value counterparts — there is no type-only carve-out. A named
+ * specifier's usage is keyed by NAME regardless of `isTypeOnly` (so a
+ * type-only reference to an approved pure-language export, e.g.
+ * `import type { Span }`, is not something the caller need forbid, exactly
+ * like the value form), but a type-only reference to anything else — a
+ * transport/protocol name, or any default/namespace/side-effect/dynamic/
+ * re-export form — is reported exactly like the value form would be. An
+ * earlier revision of this rule treated type-only access as inherently
+ * exempt (erasure before bundling — see `build/e2e-serve.mjs`'s
+ * type-stripping and esbuild's own `import type` elision — was read as "no
+ * real package access"), but the boundary this rule enforces is a
+ * SOURCE-level ownership boundary over which subsystem may even NAME a
+ * transport/protocol export, not a bundle-output boundary, so erasure at
+ * build time does not exempt it. This matches `findDeepImportSpecifiers`
+ * above, which was already unconditional on `import type` for the identical
+ * reason.
+ *
+ * The module specifier itself may be a plain string literal OR a
+ * no-substitution template literal (`` import(`pkg`) ``) — only a dynamic
+ * `import(...)` call can syntactically take the latter (a static
+ * import/export declaration's module specifier must be a StringLiteral per
+ * grammar), but matching both kinds here, like the sibling
+ * `findNamedIdentifierViolations` already does for property/member names,
+ * keeps this one check from being the only AST matcher in the file that
+ * still assumes quotes.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated (used only
+ *   for the virtual-file basename/grammar selection — this function is not
+ *   scoped to any owner-file allowlist, unlike the former-owner checks above)
+ * @param {string} packageSpecifier the exact bare specifier to look for
+ * @returns {{kind: string, name?: string}[]}
+ */
+export function findPackageImportUsages(source, filename, packageSpecifier) {
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = [];
+    const isTargetSpecifier = (node) =>
+      !!node
+      && (node.kind === SyntaxKind.StringLiteral || node.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
+      && node.text === packageSpecifier;
+    const walk = (node) => {
+      if (is.isImportDeclaration(node) && isTargetSpecifier(node.moduleSpecifier)) {
+        const clause = node.importClause;
+        if (!clause) {
+          found.push({ kind: 'side-effect' });
+        } else {
+          // Deliberately unconditional on `clause.isTypeOnly`/`el.isTypeOnly`:
+          // a type-only reference is reported on exactly the same terms as a
+          // value one (see this function's own doc comment above) — the
+          // per-name allowlist filtering happens in the caller, keyed by
+          // `name` alone, so a type-only named import of an approved
+          // pure-language export still passes there while a type-only named
+          // import of anything else still gets flagged.
+          if (clause.name) found.push({ kind: 'default' });
+          const bindings = clause.namedBindings;
+          if (bindings && is.isNamespaceImport(bindings)) {
+            found.push({ kind: 'namespace' });
+          } else if (bindings && is.isNamedImports(bindings)) {
+            for (const el of bindings.elements) {
+              found.push({ kind: 'named', name: (el.propertyName ?? el.name).text });
+            }
+          }
+        }
+      }
+      // Deliberately unconditional on `node.isTypeOnly` too, for the same
+      // reason: `export type { X } from 'pkg'` is a re-export gateway exactly
+      // like `export { X } from 'pkg'` is.
+      if (is.isExportDeclaration(node) && isTargetSpecifier(node.moduleSpecifier)) {
+        found.push({ kind: 'reexport-gateway' });
+      }
+      // Dynamic `import('pkg')`: a CallExpression whose callee is the bare
+      // `import` keyword token — the real parser's own representation, not a
+      // regex guess at parenthesized text.
+      if (
+        is.isCallExpression(node)
+        && node.expression
+        && node.expression.kind === SyntaxKind.ImportKeyword
+        && isTargetSpecifier(node.arguments[0])
+      ) {
+        found.push({ kind: 'dynamic' });
+      }
+      // `type T = import('pkg').Foo` / `typeof import('pkg')`: an
+      // `ImportTypeNode` whose `argument` is a `LiteralTypeNode` wrapping the
+      // actual string/template literal — one level deeper than every other
+      // form above, and structurally distinct from all of them (see this
+      // function's own doc comment for why no other branch can reach it).
+      if (is.isImportTypeNode(node) && isTargetSpecifier(node.argument && node.argument.literal)) {
+        found.push({ kind: 'import-type' });
+      }
+      node.forEachChild(walk);
+    };
+    walk(sourceFile);
+    return found;
+  });
 }

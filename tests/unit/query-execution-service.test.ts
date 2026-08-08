@@ -9,7 +9,9 @@ import type { ChCtx, RunQueryOptions, RunQueryResult, runQuery, killQuery } from
 import { newResult } from '../../src/core/stream.js';
 import { SELECT_ROW_CAP } from '../../src/core/script-result.js';
 import type { ScriptEntry } from '../../src/core/script-result.js';
-import { sqlString } from '../../src/core/format.js';
+// Issue #630 Phase 5 — sqlString now has one implementation, owned by the
+// package; format.js no longer declares it.
+import { sqlString } from '@altinity/clickhouse-http';
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 

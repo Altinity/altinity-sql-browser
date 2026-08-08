@@ -165,7 +165,8 @@ export const DOCUMENTATION_DISAMBIGUATION_LIMIT = 20;
  * `null` when the capability is unavailable OR `kind` has no known server
  * label to query by (the caller falls back to `buildDocumentationNameSelect`
  * for disambiguation in that case, or simply has nothing to ask). `escape` is
- * the injected SQL-string-escape seam (`core/format.js`'s `sqlString`). Pure.
+ * the injected SQL-string-escape seam (`@altinity/clickhouse-http`'s
+ * `sqlString`, issue #630 Phase 5). Pure.
  */
 export function buildDocumentationSelect(
   cap: DocumentationCapability,

@@ -1,7 +1,9 @@
 // Compatibility projection of declared ClickHouse parameter types (`{name:Type}`
-// declarations) onto the shared AST parser (#238, `clickhouse-type.js`). This
-// module contains no independent parsing — every shape below is derived
-// exclusively from `parseClickHouseType()` / `analyzeTypeModifiers()`.
+// declarations) onto the shared AST parser (#238, now
+// `@altinity/clickhouse-http`'s `clickhouse-type.ts`, moved there in issue
+// #630 Phase 5). This module contains no independent parsing — every shape
+// below is derived exclusively from `parseClickHouseType()` /
+// `analyzeTypeModifiers()`.
 //
 // `parseParamType()` turns the raw type text of a `{name:Type}` declaration
 // into the small structural shape the typed serializer (param-serialize.js)
@@ -14,58 +16,27 @@
 // Declaration-*identity* comparison (conflict detection) is a different
 // concern — LowCardinality is transparent for VALUE handling, never for
 // declaration identity — and lives in `canonicalType()`, not here.
+//
+// Issue #630 Phase 5 — `isSupportedOptionScalar` (and its private
+// `SCALAR_NAME_RE`) moved HERE from the generic grammar module: it is SQL
+// Browser option/control policy (which scalar families are eligible for an
+// option-backed control), not generic ClickHouse grammar, so the package
+// deliberately does not export it — this file is its one remaining owner.
 
 import {
-  parseClickHouseType as _parseClickHouseType,
-  analyzeTypeModifiers as _analyzeTypeModifiers,
-  canonicalType as _canonicalType,
-  enumMembers as _astEnumMembers,
-} from './clickhouse-type.js';
+  parseClickHouseType,
+  analyzeTypeModifiers,
+  canonicalType,
+  enumMembers as astEnumMembers,
+} from '@altinity/clickhouse-http';
+import type { TypeArg, TypeNode } from '@altinity/clickhouse-http';
 
-// The shared AST node shape `clickhouse-type.js` parses ClickHouse type
-// expressions into, narrowed to exactly the fields this file reads. A
-// non-type argument (Decimal's precision/scale, FixedString's length, …) is a
-// `LiteralArg`, never a `TypeNode` — `parseClickHouseType`'s `validArity`
-// check guarantees `Array`/`Nullable`/`LowCardinality` each carry exactly one
-// `TypeNode` argument, never a literal one.
-interface LiteralArg {
-  kind: 'string' | 'number';
-  value: string;
-  raw: string;
-}
-type TypeArg = TypeNode | LiteralArg;
-interface TypeNode {
-  kind: 'type';
-  name: string;
-  raw: string;
-  args: TypeArg[];
-  members: { name: string; type: TypeNode }[] | null;
-  enumMembers?: { name: string; code: number }[];
-}
-// `analyzeTypeModifiers` is only ever called here on a non-null `TypeNode`
-// (see `fromNode`), and its unwrap loop only ever steps into another
-// `TypeNode` (never a literal arg, per the same `validArity` guarantee above)
-// — so, for every call site in this file, `valueType` is always a real
-// `TypeNode`, never null.
-interface TypeModifiers {
-  valueType: TypeNode;
-  nullable: boolean;
-  lowCardinality: boolean;
-  wrapperOrder: string[];
-  lowCardinalityEnum: boolean;
-  valid: boolean;
-}
-// `clickhouse-type.js` is unconverted (checkJs:false), so TS infers its
-// exports' shapes structurally from the JS body rather than trusting these
-// hand-written contracts — a plain cast pins the honest, narrower type this
-// file actually relies on (verified against the wrapped function bodies).
-const parseClickHouseType = _parseClickHouseType as (input: string) => TypeNode | null;
-const analyzeTypeModifiers = _analyzeTypeModifiers as (node: TypeNode) => TypeModifiers;
-const canonicalType = _canonicalType as (input: string) => string;
-const astEnumMembers = _astEnumMembers as (node: TypeNode | null) => { name: string; code: number }[] | null;
-
-// An Array's single argument is always a type node, never a literal one (see
-// the `TypeArg` comment above) — this narrows that invariant for the
+// An Array's single argument is always a type node, never a literal one —
+// the package's clickhouse-type.ts documents the `TypeArg`/`LiteralArg`/
+// `TypeNode` discriminated union this narrows (a `LiteralArg` argument only
+// ever appears for a numeric-arg type constructor's own arity check —
+// `Decimal`'s precision/scale, `FixedString`'s length, `DateTime`'s
+// timezone — never for `Array`). This narrows that invariant for the
 // recursive `elem` projection below without inventing a new runtime state
 // (the check is always true for real data; it never changes behavior).
 function isTypeNode(arg: TypeArg): arg is TypeNode {
@@ -331,4 +302,29 @@ export function enumMembers(type: string | ParsedParamType): { name: string; cod
 export function enumValues(type: string | ParsedParamType): string[] | null {
   const members = enumMembers(type);
   return members && members.length ? members.map((m) => m.name) : null;
+}
+
+const SCALAR_NAME_RE = /^(?:String|FixedString|UUID|U?Int(?:8|16|32|64|128|256)|Decimal(?:32|64|128|256)?|Float(?:32|64)|Bool|Date|Date32|DateTime|DateTime64|Enum(?:8|16))$/;
+
+/**
+ * Is `node` an ordinary supported scalar, seen through a *valid* wrapper
+ * order? A semantically invalid order (`Nullable(LowCardinality(T))`) is
+ * never classified as a supported scalar, even though its inner type would
+ * otherwise qualify — see `analyzeTypeModifiers`. Pure.
+ *
+ * Issue #630 Phase 5 — moved here (verbatim) from the generic grammar
+ * module: this is SQL Browser option/control policy (which scalar families
+ * are eligible for an option-backed scalar control), not part of the
+ * package's generic ClickHouse type grammar — the package deliberately does
+ * not export it.
+ */
+export function isSupportedOptionScalar(node: TypeArg | null): boolean {
+  // `node` may structurally be a `LiteralArg` here (a Tuple member's value/
+  // label type is always a `TypeNode`, but a caller-general `TypeArg` result
+  // can, in principle, carry one) — `analyzeTypeModifiers` only ever acts
+  // meaningfully on a `TypeNode`; the cast documents that every real caller
+  // passes a type node.
+  const mods = analyzeTypeModifiers(node as TypeNode | null);
+  if (!mods.valid) return false;
+  return !!mods.valueType && SCALAR_NAME_RE.test(mods.valueType.name);
 }

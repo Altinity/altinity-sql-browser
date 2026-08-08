@@ -136,7 +136,7 @@ export interface SchemaCatalogDeps {
    *  never reads the resolved config, only awaits it. */
   ensureConfig(): Promise<unknown>;
   /** SQL-string-quoting function `loadColumns` needs to build its literals
-   *  (matches `core/format.js`'s `sqlString`). */
+   *  (matches `@altinity/clickhouse-http`'s `sqlString`, issue #630 Phase 5). */
   sqlString: (s: unknown) => string;
   state: SchemaCatalogStateSlice;
   hooks: SchemaCatalogHooks;

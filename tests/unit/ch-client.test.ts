@@ -4,7 +4,9 @@ import {
   chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
 import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable, StreamLine } from '../../src/net/ch-client.js';
-import { sqlString } from '../../src/core/format.js';
+// Issue #630 Phase 5 — sqlString now has one implementation, owned by the
+// package; format.js no longer declares it.
+import { sqlString } from '@altinity/clickhouse-http';
 
 // --- Response stubs -------------------------------------------------------
 

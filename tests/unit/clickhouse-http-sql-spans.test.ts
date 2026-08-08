@@ -1,5 +1,11 @@
+// Issue #630 Phase 5 — moved from tests/unit/sql-spans.test.ts: the shared
+// lexical scanner corpus now targets the package's public "." export
+// directly, the ONE scanner implementation. The backslash-run/doubled-
+// delimiter regression matrix formerly in tests/unit/quoted-span.test.ts is
+// folded in below (as public scanSpans() cases) since the lower-level
+// scanDelimited() it exercised directly is now package-private.
 import { describe, it, expect } from 'vitest';
-import { scanSpans } from '../../src/core/sql-spans.js';
+import { scanSpans } from '@altinity/clickhouse-http';
 
 // Reconstruct the classified spans as `[kind, source]` pairs for easy assertion,
 // and verify they tile the input exactly (contiguous, gap-free, cover-once) and
@@ -214,5 +220,101 @@ describe('scanSpans', () => {
       ['code', ' '],
       ['comment', '# z'],
     ]);
+  });
+});
+
+// Issue #630 Phase 5 — folded in from the former tests/unit/quoted-span.test.ts:
+// the backslash-run/doubled-delimiter regression matrix for the delimited-span
+// boundary rule. `scanDelimited` (the lower-level primitive `sql-spans.ts`
+// itself delegates to) is package-PRIVATE now — not exported from
+// `index.ts` — so these cases are pinned through the public `scanSpans()`
+// entry point instead: for a fixture whose entire text is one quoted span,
+// `spans[0]` carries the exact same `start`/`end`/`closed` a direct
+// `scanDelimited` call would have. `'` and `"` both classify as `'string'`
+// here only via their FIRST character — `'` opens a `'string'` span,
+// `` ` `` and `"` both open `'quoted-ident'` spans; the kind differs, but the
+// delimiter-boundary rule under test is identical for all three.
+describe('scanSpans — delimited-span backslash-run regression matrix (formerly quoted-span.test.ts)', () => {
+  // Construct fixtures programmatically so JS source escaping never obscures
+  // the actual character sequence under test (issue #241's own suggestion).
+  const quoted = (quote: string, slashCount: number, suffix = '') =>
+    quote + 'a' + '\\'.repeat(slashCount) + quote + suffix;
+  const kindOf = (quote: string): string => (quote === "'" ? 'string' : 'quoted-ident');
+
+  // | backslash count | required interpretation                       |
+  // |---:|---|
+  // | 0 | delimiter closes                                            |
+  // | 1 | delimiter is escaped                                        |
+  // | 2 | one literal backslash; delimiter closes                     |
+  // | 3 | one literal backslash plus escaped delimiter                |
+  // | 4 | two literal backslashes; delimiter closes                   |
+  for (const quote of ["'", '`', '"']) {
+    describe(`delimiter ${JSON.stringify(quote)}`, () => {
+      it('0 backslashes: the delimiter closes immediately', () => {
+        const text = quoted(quote, 0);
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ kind: kindOf(quote), start: 0, end: text.length, closed: true });
+      });
+
+      it('1 backslash: the delimiter is escaped, scanning continues past it', () => {
+        // No later terminator at all → unclosed, runs to end of text.
+        const text = quoted(quote, 1);
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: false });
+      });
+
+      it('1 backslash with a later real terminator: closes there, not at the escaped one', () => {
+        const text = quoted(quote, 1, quote); // e.g. 'a\'' -> the trailing quote closes it
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: true });
+        expect(text.slice(0, span.end)).toBe(text);
+      });
+
+      it('2 backslashes: one literal backslash; the delimiter closes', () => {
+        const text = quoted(quote, 2);
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: true });
+      });
+
+      it('3 backslashes: one literal backslash plus an escaped delimiter, unclosed with no later terminator', () => {
+        const text = quoted(quote, 3);
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: false });
+      });
+
+      it('4 backslashes: two literal backslashes; the delimiter closes', () => {
+        const text = quoted(quote, 4);
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: true });
+      });
+
+      it('structural text after the token is preserved (not absorbed)', () => {
+        const text = quoted(quote, 2, ' = 1, next');
+        const [span, next] = [...scanSpans(text)];
+        expect(span.closed).toBe(true);
+        expect(next).toMatchObject({ kind: 'code' });
+        expect(text.slice(next.start, next.end)).toBe(' = 1, next');
+      });
+
+      it('a doubled delimiter is content, not a terminator', () => {
+        const text = `${quote}a${quote}${quote}b${quote}`; // e.g. 'a''b'
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: true });
+      });
+
+      it('unterminated (no closing delimiter at all)', () => {
+        const text = `${quote}abc`;
+        const [span] = [...scanSpans(text)];
+        expect(span).toMatchObject({ start: 0, end: text.length, closed: false });
+      });
+    });
+  }
+
+  it('token offsets and raw source text remain exact for a span starting mid-string', () => {
+    const text = `prefix 'a\\\\' suffix`;
+    const [, span] = [...scanSpans(text)]; // ['code' prefix, 'string' span, 'code' suffix]
+    expect(span.closed).toBe(true);
+    expect(text.slice(span.start, span.end)).toBe("'a\\\\'");
+    expect(text.slice(span.end)).toBe(' suffix');
   });
 });

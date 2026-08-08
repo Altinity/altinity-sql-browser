@@ -20,7 +20,11 @@ import type { StoredWorkspaceV5 } from '../generated/json-schema.types.js';
 import { isAutoRunnable, splitStatements } from '../core/sql-split.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { sqlString, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
+import { shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
+// Issue #630 Phase 5 — `sqlString` (SQL Browser's one string-literal quoter)
+// now comes directly from `@altinity/clickhouse-http`; the revised
+// architecture Rule D allows this pure-language import outside `src/net/**`.
+import { sqlString } from '@altinity/clickhouse-http';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
 import {

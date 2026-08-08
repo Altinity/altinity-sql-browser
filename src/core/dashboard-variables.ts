@@ -25,7 +25,8 @@
 
 import { scanParamDeclarations } from './param-scan.js';
 import { analysisView } from './param-pipeline.js';
-import { canonicalType } from './clickhouse-type.js';
+// Issue #630 Phase 5 — `canonicalType` now comes directly from `@altinity/clickhouse-http`.
+import { canonicalType } from '@altinity/clickhouse-http';
 import type {
   DashboardVariable, DashboardVariableStatus, InferDashboardVariablesInput,
   VariableDeclaration,

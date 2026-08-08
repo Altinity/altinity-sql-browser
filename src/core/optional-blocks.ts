@@ -17,18 +17,12 @@
 // pipeline (param-pipeline.js) wires this into its analysis/execution stage
 // seams; this file only understands one statement string at a time.
 
-import { scanSpans as _scanSpans } from './sql-spans.js';
+// Issue #630 Phase 5 — the scanner (and its `Span` type) now come directly
+// from `@altinity/clickhouse-http`, the package's one scanner implementation
+// — no local narrowing shim needed any more.
+import { scanSpans } from '@altinity/clickhouse-http';
+import type { Span } from '@altinity/clickhouse-http';
 import { scanParamDeclarations } from './param-scan.js';
-
-// The lexical span shape `sql-spans.js`'s `scanSpans` yields, narrowed to
-// exactly the fields this file reads.
-interface Span {
-  kind: 'code' | 'string' | 'quoted-ident' | 'comment';
-  start: number;
-  end: number;
-  closed: boolean;
-}
-const scanSpans: (text: string) => Iterable<Span> = _scanSpans;
 
 /** Activation sentinel: materialize with *every* block retained (markers
  *  stripped) — the analysis view all param discovery works on (rule 9). */

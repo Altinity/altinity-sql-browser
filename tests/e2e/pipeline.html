@@ -13,6 +13,14 @@
 </head>
 <body data-theme="dark">
   <div id="host"></div>
+  <!-- #630 Phase 5: ui/explain-graph.js now imports `qualifyIdent` as a bare
+       `@altinity/clickhouse-http` specifier. No bundler serves this raw /src
+       graph, so it needs an import-map entry. -->
+  <script type="importmap">
+    { "imports": {
+      "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
+    } }
+  </script>
   <!-- Mount the real Pipeline renderer. No bundling: the browser resolves the
        /src ESM graph directly (renderExplainGraph → core/dot.js). -->
   <script type="module">

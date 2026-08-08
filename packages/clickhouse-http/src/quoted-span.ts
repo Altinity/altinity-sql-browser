@@ -1,12 +1,17 @@
-// Shared pure delimiter-scanning primitive (#241) — the single authoritative
-// escape/doubled-delimiter rule for a `'…'`, `` `…` ``, or `"…"` delimited
-// span, used by both `sql-spans.js` (SQL lexical spans) and
-// `clickhouse-type.js` (the ClickHouse type-expression tokenizer). Neither
-// consumer may reimplement this independently — a second, subtly different
+// Issue #630 Phase 5 — moved verbatim from SQL Browser's `src/core/quoted-
+// span.ts` into this package, alongside the generic ClickHouse lexical/type
+// grammar that depends on it. Shared pure delimiter-scanning primitive
+// (#241) — the single authoritative escape/doubled-delimiter rule for a
+// `'…'`, `` `…` ``, or `"…"` delimited span, used by both `sql-spans.ts`
+// (SQL lexical spans) and `clickhouse-type.ts` (the ClickHouse
+// type-expression tokenizer), both package-local now too. Neither consumer
+// may reimplement this independently — a second, subtly different
 // backslash-counting loop is exactly how the two drifted apart before (a
 // naive one-character lookback treats ANY backslash immediately before the
 // delimiter as escaping it, which is wrong for an even-length backslash run:
 // `'a\\'` is one escaped backslash followed by a real, unescaped closer).
+// Package-private: not re-exported from `index.ts` — only its two package
+// sibling modules import it, relatively.
 //
 // Rules:
 //   - a backslash consumes itself and the following character as one pair,

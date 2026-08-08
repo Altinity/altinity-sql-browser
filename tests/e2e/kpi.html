@@ -19,6 +19,14 @@
       <div id="dashboard-body" class="dash-kpi-stream" role="group" aria-label="Key performance indicators"></div>
     </div>
   </main>
+  <!-- #630 Phase 5: core/kpi.js now imports the generic ClickHouse type
+       grammar as a bare `@altinity/clickhouse-http` specifier. No bundler
+       serves this raw /src graph, so it needs an import-map entry. -->
+  <script type="importmap">
+    { "imports": {
+      "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
+    } }
+  </script>
   <script type="module">
     import { readKpiFields } from '/src/core/kpi.js';
     import { renderKpiPanel, renderKpiCards } from '/src/ui/kpi-panel.js';

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { signal } from '@preact/signals-core';
-import { sqlString } from '../../src/core/format.js';
+// Issue #630 Phase 5 — sqlString now has one implementation, owned by the
+// package; format.js no longer declares it.
+import { sqlString } from '@altinity/clickhouse-http';
 import { splitStatements } from '../../src/core/sql-split.js';
 import { createExportService } from '../../src/application/export-service.js';
 import type {

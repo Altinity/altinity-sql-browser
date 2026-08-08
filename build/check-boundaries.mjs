@@ -13,13 +13,22 @@
 // compile time. Extend RULES below in later phases rather than growing a
 // second script.
 //
-// Hand-rolled regex scan for the import-specifier rules: the codebase has no
-// exotic import syntax, so scanning for import/export specifiers is enough
-// and keeps those rules a zero-dependency, sub-second pretest step. The one
-// exception is the Phase 3 legacy-owner rule at the bottom, which needs
-// identifier-level (not specifier-level) detection and therefore delegates to
-// a real TypeScript parse in `build/lib/check-legacy-owners.mjs` — see that
-// module for why textual matching was retired there.
+// Hand-rolled regex scan for the internal src-layering rules (RULES below)
+// and the plain package-specifier bans (the @clickhouse/client-web ban, Rule
+// B's zero-bare-specifier check): the codebase has no exotic import syntax
+// there, so scanning for import/export specifiers is enough and keeps those
+// rules a zero-dependency, sub-second pretest step. The exceptions are the
+// former-owner rules and BOTH halves of the revised package Rule D below
+// (the deep-import-subpath ban and the bare-specifier name/shape check),
+// which need identifier/import-shape-level (not specifier-text-level)
+// detection and therefore delegate to a real TypeScript parse in
+// `build/lib/check-legacy-owners.mjs` — see that module for why textual
+// matching was retired there (issue #630 Phase 3), and why the same
+// real-parser mechanism (not a new hand-rolled scanner) was required again
+// for issue #630 Phase 5's revised Rule D, for both halves: a comment sitting
+// between `import`/`export` and the specifier defeats a regex (however far
+// its whitespace/delimiter patterns are widened) but is ordinary parser
+// trivia to a real parse.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,6 +36,14 @@ import { fileURLToPath } from 'node:url';
 import {
   findLegacyOwnerViolations,
   PHASE3_LEGACY_OWNER_FILES,
+  findSqlQuoteOwnerViolations,
+  PHASE5_SQL_QUOTE_OWNER_FILES,
+  findKillStopgapOwnerViolations,
+  PHASE5_KILL_STOPGAP_OWNER_FILES,
+  findDeepImportSpecifiers,
+  findPackageImportUsages,
+  PHASE5_PACKAGE_LANGUAGE_EXPORTS,
+  mightReferencePackage,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -175,11 +192,23 @@ function collectFiles(target) {
 // identifier/brace/comma/whitespace characters between the keyword and
 // `from`, so it can't skip past a from-less import into a later statement's
 // clause, and `\b` keeps it off the word "import" inside an identifier.
+// Used only by the checks named in the comment above (internal src layering,
+// the @clickhouse/client-web ban, Rule B) — NEITHER half of Rule D's
+// `@altinity/clickhouse-http` check calls this anymore (both now delegate to
+// the real-parser helpers in `build/lib/check-legacy-owners.mjs`, below).
+//
+// Only the dynamic-import pattern also accepts a backtick-delimited
+// no-substitution template literal (`` import(`pkg`) ``): a static
+// import/export declaration's module specifier and a bare side-effect
+// import's specifier must be a plain string literal per grammar — only a
+// dynamic `import(...)` call can take a template literal argument — so
+// widening the other three patterns to backticks would only ever match
+// syntax that can't occur.
 const SPECIFIER_PATTERNS = [
   /\bimport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bexport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bimport\s*['"]([^'"]+)['"]/g,
-  /\bimport\s*\(\s*['"]([^'"]+)['"]/g,
+  /\bimport\s*\(\s*[`'"]([^`'"]+)[`'"]/g,
 ];
 
 function extractSpecifiers(source) {
@@ -316,28 +345,77 @@ if (fs.existsSync(PACKAGE_SRC_DIR)) {
   }
 }
 
-// Issue #630 Phase 2 — Rule D: the public package name may be imported by
-// bare specifier only under src/net/** — the existing network-layer
-// boundary — so src/core, src/workspace, src/dashboard, src/application, or
-// UI code cannot bypass that layer merely because the low-level HTTP
-// mechanics moved behind a bare package name. The deep-import subpath form
-// (`@altinity/clickhouse-http/...`) is forbidden EVERYWHERE under src/** —
-// only the package's "." export is public (contract A4).
+// Issue #630 Phase 2 — Rule D (revised Phase 5, plan §8.2): the deep-import
+// subpath form (`@altinity/clickhouse-http/...`) is forbidden EVERYWHERE
+// under src/** — only the package's "." export is public (contract A4).
+// This half is a real TypeScript parse (`findDeepImportSpecifiers`), not a
+// specifier-text regex: a hand-rolled scanner stayed vulnerable to
+// comment-trivia bypasses no amount of pattern-widening could close (e.g.
+// `import/*c*/('@altinity/clickhouse-http/src/client')` or
+// `import(/*c*/'@altinity/clickhouse-http/src/client')` never matched
+// `\bimport\s*\(\s*['"\`]` because a comment token isn't whitespace) — the
+// same real-parser mechanism the bare-specifier half below already needed,
+// now applied to both halves of Rule D. Deliberately unconditional on
+// `import type`: the deep-import ban applies to a type-only deep import
+// exactly as much as a value one (see `findDeepImportSpecifiers`'s own
+// comment).
 const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
 for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
   checkedFiles += 1;
   const source = fs.readFileSync(file, 'utf8');
-  for (const spec of extractSpecifiers(source)) {
-    if (spec === CLICKHOUSE_HTTP_SPECIFIER) {
-      if (!relFile.startsWith('src/net/')) {
-        violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http may only be imported under src/net/**)`);
-      }
-      continue;
-    }
-    if (spec.startsWith(`${CLICKHOUSE_HTTP_SPECIFIER}/`)) {
+  // Cheap pre-filter before spawning the real parser — shared with the
+  // in-suite mirror (`tests/unit/clickhouse-http-package-policy.test.js`) as
+  // `build/lib/check-legacy-owners.mjs`'s `mightReferencePackage` (review
+  // pass 2: two independently hand-copied implementations here and in the
+  // test suite meant a production-only regression to the old exact-substring
+  // gate could leave the test's escaped-specifier sabotage cases green,
+  // since they exercised only the test's own copy — see that function's own
+  // doc comment for the escape-sequence reasoning).
+  const fileMightReferencePackage = mightReferencePackage(source, CLICKHOUSE_HTTP_SPECIFIER);
+
+  if (fileMightReferencePackage) {
+    for (const spec of findDeepImportSpecifiers(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http exposes only its "." export — deep imports are forbidden everywhere)`);
     }
+  }
+
+  // Issue #630 Phase 5 — Rule D's bare-specifier half now distinguishes two
+  // categories of package export (plan §8.2) rather than a blanket
+  // net-only ban: TRANSPORT/PROTOCOL APIs (`createClickHouseHttpClient`,
+  // `chUrl`, `streamLines`, the response consumers/types, `ClickHouseError`)
+  // remain importable only under `src/net/**` — value AND type-only alike —
+  // exactly as Phase 2 established; pure LANGUAGE APIs (SQL quoting, the
+  // generic type grammar, the shared scanner — `PHASE5_PACKAGE_LANGUAGE_EXPORTS`)
+  // may now be imported directly by their real SQL Browser consumers outside
+  // `src/net/**` too, but ONLY as a plain named import (value or type-only)
+  // of an approved name — a specifier-text regex cannot tell which names a
+  // named import binds, so this half needs the real parser
+  // (`findPackageImportUsages`). There is no type-only carve-out here:
+  // `findPackageImportUsages` reports a type-only named import/export on
+  // exactly the same terms as a value one (see its own doc comment), so a
+  // transport/protocol name stays `src/net/**`-only no matter how it is
+  // referenced — matching the deep-import half above, which was already
+  // unconditional on `import type` for the identical reason. This also
+  // covers TypeScript's inline import-type expression (`type T =
+  // import('pkg').Foo` / `typeof import('pkg')`) — a distinct grammar
+  // production none of the other forms' checks can reach, reported
+  // unconditionally rather than allowlisted by qualifier (see
+  // `findPackageImportUsages`'s own doc comment for why). Inside
+  // `src/net/**` every access form/name remains unrestricted, matching
+  // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
+  if (relFile.startsWith('src/net/')) continue;
+  if (!fileMightReferencePackage) continue;
+  for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+    if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+    const label = usage.kind === 'named' ? `named import of '${usage.name}' (transport/protocol API)`
+      : usage.kind === 'default' ? 'default import'
+        : usage.kind === 'namespace' ? 'namespace import'
+          : usage.kind === 'side-effect' ? 'side-effect import'
+            : usage.kind === 'dynamic' ? 'dynamic import'
+              : usage.kind === 'import-type' ? 'inline import-type expression'
+                : 'package re-export gateway';
+    violations.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${label}) (issue #630 Phase 5: outside src/net/**, only a named import of an approved pure-language export is allowed — the transport/client surface and every other access form stay src/net/**-only)`);
   }
 }
 
@@ -359,6 +437,45 @@ for (const relFile of PHASE3_LEGACY_OWNER_FILES) {
   checkedFiles += 1;
   for (const name of findLegacyOwnerViolations(fs.readFileSync(file, 'utf8'), relFile)) {
     violations.push(`${relFile} → regained ${name} (issue #630 Phase 3: the moved stream/exception primitives are owned by @altinity/clickhouse-http — a former owner must not redeclare, re-import, or forward them)`);
+  }
+}
+
+// Issue #630 Phase 5 — the same narrow former-owner regression rule for the
+// two SQL-quoting owners this phase moved: `src/core/format.ts` must not
+// regain `sqlString`/`BARE_IDENT`/`quoteIdent`/`qualifyIdent`, and the
+// package's own `client.ts` must not regain the retired Phase-4
+// `quoteKillQueryId` stopgap. Same shared real-parser helper as Phase 3.
+for (const relFile of PHASE5_SQL_QUOTE_OWNER_FILES) {
+  const file = path.join(repoRoot, relFile);
+  if (!fs.existsSync(file)) continue;
+  checkedFiles += 1;
+  for (const name of findSqlQuoteOwnerViolations(fs.readFileSync(file, 'utf8'), relFile)) {
+    violations.push(`${relFile} → regained ${name} (issue #630 Phase 5: ClickHouse SQL quoting is owned by @altinity/clickhouse-http — a former owner must not redeclare, re-import, or forward it)`);
+  }
+}
+for (const relFile of PHASE5_KILL_STOPGAP_OWNER_FILES) {
+  const file = path.join(repoRoot, relFile);
+  if (!fs.existsSync(file)) continue;
+  checkedFiles += 1;
+  for (const name of findKillStopgapOwnerViolations(fs.readFileSync(file, 'utf8'), relFile)) {
+    violations.push(`${relFile} → regained ${name} (issue #630 Phase 5: killQuery must quote through the shared public sql-quote.js API — the retired Phase-4 stopgap must not return)`);
+  }
+}
+
+// Issue #630 Phase 5 — the moved generic-grammar/scanner implementation
+// files must not be recreated under SQL Browser src/**, under any name
+// inside them: a path-existence check is stronger and simpler than
+// source-text matching here, since it catches a full reimplementation
+// regardless of what its internals are renamed to.
+const PHASE5_DELETED_ROOT_FILES = Object.freeze([
+  'src/core/clickhouse-type.ts',
+  'src/core/sql-spans.ts',
+  'src/core/quoted-span.ts',
+]);
+for (const relFile of PHASE5_DELETED_ROOT_FILES) {
+  checkedFiles += 1;
+  if (fs.existsSync(path.join(repoRoot, relFile))) {
+    violations.push(`${relFile} → recreated (issue #630 Phase 5: this implementation moved to @altinity/clickhouse-http and must not be recreated under SQL Browser src/**)`);
   }
 }
 

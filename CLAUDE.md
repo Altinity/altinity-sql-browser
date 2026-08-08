@@ -25,21 +25,47 @@ all bundled — see hard rule 4). Quality is held by tests.
    `src/net/`, with the fetch seam *injected*, never imported. Reusable,
    product-agnostic ClickHouse HTTP/Fetch mechanics (URL serialization, the
    low-level request, the progress-stream wire shape and its reader/decoder
-   loop, and HTTP exception-text/late-exception byte framing) may live in the
-   first-party workspace package `packages/clickhouse-http` (#630 Phase 2;
-   the progress-stream/exception primitives since Phase 3; since Phase 4 also
-   non-consuming HTTP success/error classification, explicit JSON/text/
-   progress consumers, a minimal `ClickHouseError`, and a stateless wire-level
-   `killQuery`) instead —
-   `src/net/**` is the only place allowed to import it, by its exact public
-   package name, never a deep import into its `src/**`; the package itself
-   may depend on nothing under SQL Browser `src/**` and declares zero
-   runtime dependencies (mechanically enforced, `build/check-boundaries.mjs`).
-   OAuth/Basic credential acquisition, refresh, epochs, lifecycle callbacks,
-   retries, and SQL Browser's own product operations/result modes stay
-   entirely in `src/net/**` — the package's Phase-4 APIs are additive and not
-   yet consumed by any `src/**` caller (that cutover is a later phase).
-   DOM rendering goes in `src/ui/` as functions that take the
+   loop, HTTP exception-text/late-exception byte framing, and — since #630
+   Phase 5 — ClickHouse SQL string-literal/identifier quoting, the generic
+   ClickHouse type-expression AST/parser/canonicalization/wrapper/enum
+   grammar, and the shared lexical scanner that grammar depends on) live in
+   the first-party workspace package `packages/clickhouse-http` (#630
+   Phase 2; the progress-stream/exception primitives since Phase 3; since
+   Phase 4 also non-consuming HTTP success/error classification, explicit
+   JSON/text/progress consumers, a minimal `ClickHouseError`, and a
+   stateless wire-level `killQuery`) instead. The package itself may depend
+   on nothing under SQL Browser `src/**` and declares zero runtime
+   dependencies, and every deep import into its `src/**` stays forbidden
+   everywhere (mechanically enforced, `build/check-boundaries.mjs`) — only
+   its public `.` export is consumable. Bare-specifier package access
+   splits into two categories: TRANSPORT/PROTOCOL APIs
+   (`createClickHouseHttpClient`, `chUrl`, `streamLines`, the response
+   consumers, `ClickHouseError`) remain importable only under `src/net/**`,
+   exactly as Phase 2 established, alongside OAuth/Basic credential
+   acquisition, refresh, epochs, lifecycle callbacks, retries, and SQL
+   Browser's own product operations/result modes; the Phase-4 consuming
+   query APIs (`queryJson`/`queryText`/`queryProgress`) remain additive and
+   not yet consumed by any `src/**` caller (that cutover is Phase 7). The
+   name/shape check has no type-only carve-out: `import type`/`export type`
+   and individual `import { type X }` specifiers of a transport/protocol
+   name are flagged on exactly the same terms as a value reference —
+   erasure before bundling does not exempt a source-level NAME ownership
+   boundary (`build/lib/check-legacy-owners.mjs`'s `findPackageImportUsages`
+   documents why), matching `docs/ARCHITECTURE.md`. Pure LANGUAGE APIs
+   (`sqlString`/`quoteIdent`/`qualifyIdent`,
+   `scanSpans`/`Span`/`SpanKind`, and the generic type-grammar exports —
+   `parseClickHouseType`, `analyzeTypeModifiers`, `canonicalType`,
+   `enumMembers`/`enumValues`, and the rest of the wrapper/structural-query
+   set) may instead be imported directly by their real SQL Browser
+   consumers outside `src/net/**` too (mechanically allowlisted by name,
+   `build/check-boundaries.mjs`'s revised Rule D) — only as a plain named
+   import, value or type-only; default/namespace/side-effect/dynamic
+   imports and package re-export gateways stay `src/net/**`-only regardless
+   of name or type-only-ness.
+   `isSupportedOptionScalar` (which scalar families are eligible for an
+   option-backed control) is SQL Browser option/control POLICY, not generic
+   grammar, and stays owned by `src/core/param-type.ts` — the package never
+   exports it. DOM rendering goes in `src/ui/` as functions that take the
    `app` controller — except the editor, which lives in `src/editor/` behind the
    injected editor seams (#143/#212): only `main.js` imports concrete adapters,
    and everything else addresses `app.sqlEditor` or `app.specEditor` explicitly.
@@ -143,7 +169,7 @@ Touch these in one change:
 |---|---|
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
-| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), and (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery` — behind a public `.` export only; importable from `src/net/**` alone; no `src/**` caller consumes the Phase-4 APIs yet |
+| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery`, and (Phase 5) the ONE ClickHouse SQL-quoting implementation (`sqlString`/`quoteIdent`/`qualifyIdent`), the ONE generic type-expression grammar (`parseClickHouseType`/`analyzeTypeModifiers`/`canonicalType`/wrapper/enum helpers), and the shared lexical scanner (`scanSpans`) — behind a public `.` export only; transport/protocol APIs stay `src/net/**`-only, while the pure-language exports above may be imported directly by their real SQL Browser consumers anywhere outside `src/net/**` too (mechanically allowlisted, `build/check-boundaries.mjs` Rule D); no `src/**` caller consumes the Phase-4 consuming query APIs yet |
 | `src/application/*` | app-level coordination, sessions, and pure projections; no UI/editor imports |
 | `src/workspace/*` | pure stored-workspace aggregate, persistence contracts, and mutations |
 | `src/dashboard/*` | Dashboard model, layouts, and application runtime; dependency direction is mechanically checked |

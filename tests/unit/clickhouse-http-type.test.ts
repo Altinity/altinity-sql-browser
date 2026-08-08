@@ -1,10 +1,16 @@
+// Issue #630 Phase 5 — moved from tests/unit/clickhouse-type.test.ts: the
+// generic ClickHouse type-expression AST/parser/canonicalization/wrapper/enum
+// corpus now targets the package's public "." export directly, the ONE
+// generic-grammar implementation. `isSupportedOptionScalar` (SQL Browser
+// option/control policy, not generic grammar) moved out of this file into
+// tests/unit/param-type.test.ts, alongside its relocated implementation.
 import { describe, expect, it } from 'vitest';
 import {
   analyzeTypeModifiers, arrayElement, canonicalType, enumMembers, enumValues,
-  isSupportedOptionScalar, mapTypes, namedTupleMembers, parseClickHouseType,
+  mapTypes, namedTupleMembers, parseClickHouseType,
   typeBaseName, unwrapLowCardinality, unwrapNullable, unwrapValueTransparentWrappers,
-} from '../../src/core/clickhouse-type.js';
-import type { LiteralArg, TypeNode } from '../../src/core/clickhouse-type.js';
+} from '@altinity/clickhouse-http';
+import type { LiteralArg, TypeNode } from '@altinity/clickhouse-http';
 
 describe('parseClickHouseType — parser', () => {
   it('rejects empty and whitespace-only input', () => {
@@ -376,33 +382,6 @@ describe('structural queries', () => {
 
   it('enumValues is null (never []) for an enum whose member list yields nothing', () => {
     expect(enumValues(parseClickHouseType('Enum8()'))).toBeNull();
-  });
-});
-
-describe('isSupportedOptionScalar', () => {
-  it('classifies supported scalars through Nullable/LowCardinality in valid orders', () => {
-    for (const value of ['String', 'FixedString(3)', 'UUID', 'UInt256', 'Int8', 'Decimal(20, 4)', 'Float64', 'Bool', 'Date32', 'DateTime64(3)']) {
-      expect(isSupportedOptionScalar(parseClickHouseType(`Nullable(${value})`))).toBe(true);
-      expect(isSupportedOptionScalar(parseClickHouseType(`LowCardinality(${value})`))).toBe(true);
-      expect(isSupportedOptionScalar(parseClickHouseType(`LowCardinality(Nullable(${value}))`))).toBe(true);
-    }
-  });
-
-  it('classifies a bare or Nullable-wrapped Enum as a supported scalar, but never LowCardinality-wrapped', () => {
-    expect(isSupportedOptionScalar(parseClickHouseType("Enum8('a' = 1)"))).toBe(true);
-    expect(isSupportedOptionScalar(parseClickHouseType("Nullable(Enum8('a' = 1))"))).toBe(true);
-    expect(isSupportedOptionScalar(parseClickHouseType("LowCardinality(Enum8('a' = 1))"))).toBe(false);
-    expect(isSupportedOptionScalar(parseClickHouseType("LowCardinality(Nullable(Enum8('a' = 1)))"))).toBe(false);
-    expect(isSupportedOptionScalar(parseClickHouseType("Nullable(LowCardinality(Enum8('a' = 1)))"))).toBe(false);
-  });
-
-  it('rejects a semantically invalid wrapper order even though the inner type is a supported scalar', () => {
-    expect(isSupportedOptionScalar(parseClickHouseType('Nullable(LowCardinality(String))'))).toBe(false);
-  });
-
-  it('rejects composite and unrecognized types', () => {
-    expect(isSupportedOptionScalar(parseClickHouseType('Array(String)'))).toBe(false);
-    expect(isSupportedOptionScalar(null)).toBe(false);
   });
 });
 

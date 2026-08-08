@@ -217,18 +217,58 @@ Two roadmap tracks are current:
   `client.queryProgress()` Chromium/WebKit scenario (added to the existing
   `tests/e2e/clickhouse-http-transport.{html,spec.js}` harness, alongside
   the unchanged Phase 1/3 scenarios) proves the identical native
-  post-header-cancellation semantics through the new API. Still deferred to
-  later phases: SQL quoting/type-grammar extraction (Phase 5), an
-  authentication-composition rewrite (Phase 6), and
-  `runQuery`/`exportQuery`/the remaining request transport seam's own
-  eventual migration/deletion (Phase 7). See
+  post-header-cancellation semantics through the new API. **Phase 5**
+  (merged) moves SQL Browser's own ClickHouse SQL string-literal/identifier
+  quoting (`sqlString`/`quoteIdent`/`qualifyIdent`) and its generic
+  ClickHouse type-expression AST/parser/canonicalization/wrapper/enum
+  grammar into the package too, along with the shared lexical scanner
+  (`scanSpans`/`Span`/`SpanKind`) that grammar's dependency closure
+  requires — a real move+delete, not an additive layer: `src/core/format.ts`
+  no longer declares any quoting helper or forwarding alias, and
+  `src/core/clickhouse-type.ts`/`sql-spans.ts`/`quoted-span.ts` are deleted
+  outright. `packages/clickhouse-http/src/client.ts`'s `killQuery` now
+  quotes through the package's own `sqlString`, retiring the Phase-4
+  `quoteKillQueryId` stopgap. Every real production consumer is retargeted
+  onto the package's public `.` export: `src/net/ch-client.ts`,
+  `src/ui/app.ts`, `src/core/variable-options.ts`, `src/core/completions.ts`,
+  `src/ui/schema.ts`, `src/ui/schema-detail.ts`, `src/ui/explain-graph.ts`,
+  `src/core/param-type.ts`, `src/core/kpi.ts`,
+  `src/core/dashboard-variables.ts`, and the scanner's other surviving
+  consumers (`sql-lex.ts`, `sql-split.ts`, `param-scan.ts`,
+  `type-display.ts`, `optional-blocks.ts`, `format.ts` itself).
+  `isSupportedOptionScalar` (SQL Browser option/control policy over which
+  scalar families are eligible for an option-backed control, not generic
+  grammar) moved to `src/core/param-type.ts` instead — the package never
+  exports it. SQL Browser's own display/FORMAT/parameter-control/KPI/
+  Dashboard-variable/UI policy stays exactly where it was; only the
+  underlying generic mechanics changed owner, and the existing parser/
+  helper bodies moved rather than being redesigned. This required revising
+  the architecture boundary itself (see below) since SQL Browser language
+  consumers now legitimately import the package outside `src/net/**`. Still
+  deferred to later phases: an authentication-composition rewrite (Phase 6),
+  and `runQuery`/`exportQuery`/the remaining request transport seam's own
+  eventual migration/deletion plus the Phase-4 consuming query APIs' actual
+  cutover (Phase 7). See
   [[Source-Map]] and [[Architecture]] for the file-level detail and
-  `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3 narrow
-  legacy-owner rule for the mechanical boundary enforcement (package↔root-src
-  ban, package zero-bare-specifier ban, root↔package-deep-import ban,
-  bare-import location restricted to `src/net/**`, and the former
-  transport/contract/`core/stream.ts` owners rejected from regaining any
-  moved identifier).
+  `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3/5 narrow
+  legacy-owner rules for the mechanical boundary enforcement: package↔root-src
+  ban, package zero-bare-specifier ban, root↔package-deep-import ban, the
+  former transport/contract/`core/stream.ts` owners (Phase 3) and the
+  former SQL-quoting owner `format.ts` plus the retired Phase-4 killQuery
+  stopgap owner (Phase 5) all rejected from regaining any moved identifier,
+  and deleted implementation files (`clickhouse-type.ts`/`sql-spans.ts`/
+  `quoted-span.ts`) mechanically required to stay absent. The bare-import
+  boundary is no longer a blanket "`src/net/**` only" rule: transport/
+  protocol package APIs (`createClickHouseHttpClient`, `chUrl`,
+  `streamLines`, the response consumers, `ClickHouseError`) remain
+  `src/net/**`-only, while the mechanically allowlisted pure-language exports
+  (SQL quoting, the generic type grammar, the shared scanner) may be
+  imported by their actual SQL Browser consumers outside `src/net/**` too —
+  as a plain named import only; every other access form
+  (default/namespace/side-effect/dynamic import, package re-export gateway)
+  stays `src/net/**`-only regardless of name, a real-parser check
+  (`build/lib/check-legacy-owners.mjs`) rather than a specifier-text regex,
+  since a regex cannot tell which names a named import binds.
 
 Re-read GitHub before acting because issue state can change; a MERGED PR is
 not proof its code is on `main` (see the reset above).

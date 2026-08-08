@@ -10,7 +10,6 @@
 import { isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
-import { sqlString } from '../core/format.js';
 // Issue #585 Phase 1 — the transport seam. `chUrl` moved verbatim to
 // `clickhouse-http-transport.ts`; re-exported here (with its `ChUrlOpts`
 // parameter type) so every existing importer — including
@@ -37,12 +36,21 @@ import { sqlString } from '../core/format.js';
 // `killQueryWithLease`'s request/send paths, which Phase 7 eventually
 // retires. `parseExceptionText`/`findExceptionFrame`/`StreamLine`/
 // `StreamCallbacks` are re-exported below as zero-logic migration plumbing:
-// `src/core/**`/`src/application/**` cannot import the package directly
-// (Rule D), so `export-service.ts`'s `findExceptionFrame` use and this
+// `src/application/**` cannot import the package directly (Rule D — its
+// language-export allowlist is for the SQL Browser layers that consume
+// generic ClickHouse quoting/type-grammar directly, not a general escape
+// hatch), so `export-service.ts`'s `findExceptionFrame` use and this
 // module's own callers of the removed root `core/stream.js` exports resolve
 // through this one gateway instead.
+//
+// Issue #630 Phase 5 — `sqlString` now comes from the package too (the ONE
+// quoting implementation, `sql-quote.ts`); this module is itself under
+// `src/net/**`, the one layer Rule D always allows to import the package's
+// full surface (transport APIs and language exports alike), so it imports
+// `sqlString` directly rather than through `../core/format.js` (which no
+// longer declares it at all).
 import {
-  chUrl, streamLines, parseExceptionText, findExceptionFrame,
+  chUrl, streamLines, parseExceptionText, findExceptionFrame, sqlString,
 } from '@altinity/clickhouse-http';
 import type { StreamLine } from '@altinity/clickhouse-http';
 import { createHttpTransport } from './clickhouse-http-transport.js';
