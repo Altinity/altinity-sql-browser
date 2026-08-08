@@ -150,10 +150,16 @@ export interface ConnectionSession {
   connectBasic(input: { username: string; password: string; host?: string }): Promise<void>;
   signOut(): void;
   ensureFreshToken(): Promise<boolean>;
-  /** Snapshot exact cancellation authority for the current credential epoch.
-   * The returned header already includes its scheme; consumers must treat it
-   * as opaque and never route it through normal auth/refresh code. */
-  captureCancellationLease(): AuthenticatedCancellationLease | null;
+  /** Snapshot exact cancellation authority for the given credential epoch
+   * (default: the current epoch). The epoch fence rejects a stale capture: if
+   * the live session has since moved to a replacement epoch (a new sign-in or
+   * an auth-required transition, not a same-epoch token refresh), this
+   * returns null instead of the current credential — a caller holding an
+   * older operation's owner epoch can never authorize a KILL against a
+   * different login/session. The returned header already includes its
+   * scheme; consumers must treat it as opaque and never route it through
+   * normal auth/refresh code. */
+  captureCancellationLease(expectedEpoch?: number): AuthenticatedCancellationLease | null;
 }
 
 export function createConnectionSession(deps: ConnectionSessionDeps): ConnectionSession {

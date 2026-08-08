@@ -1504,6 +1504,62 @@ describe('chCtx.onSignedOut', () => {
   });
 });
 
+// ── captureCancellationLease (#630 Phase 7 p7-02: expectedEpoch fence) ──────
+
+describe('captureCancellationLease(expectedEpoch?)', () => {
+  it('captures the current epoch when no expected epoch is given', () => {
+    const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const lease = session.captureCancellationLease();
+    expect(lease).toEqual({
+      epoch: session.connection.value.epoch,
+      origin: session.chCtx.origin,
+      authorization: `Bearer ${validToken}`,
+      fetch: session.chCtx.fetch,
+    });
+    expect(Object.isFrozen(lease)).toBe(true);
+  });
+
+  it('captures a lease frozen to the given, currently-matching expected epoch', () => {
+    const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const ownerEpoch = session.connection.value.epoch;
+    const lease = session.captureCancellationLease(ownerEpoch);
+    expect(lease).toEqual({
+      epoch: ownerEpoch,
+      origin: session.chCtx.origin,
+      authorization: `Bearer ${validToken}`,
+      fetch: session.chCtx.fetch,
+    });
+  });
+
+  it('rejects a mismatching (replacement) expected epoch', () => {
+    const { session } = setup({ storage: memStorage({ oauth_id_token: validToken }) });
+    const replacementEpoch = session.connection.value.epoch + 1;
+    expect(session.captureCancellationLease(replacementEpoch)).toBeNull();
+  });
+
+  it('reflects a same-epoch refreshed credential captured at cancel time', async () => {
+    const { session } = setup({
+      storage: memStorage({ oauth_id_token: expiredToken, oauth_refresh_token: 'r0' }),
+      routes: [(url) => (url.endsWith('/token')
+        ? jsonResponse(200, { id_token: validToken, refresh_token: 'r1' })
+        : null)],
+    });
+    // The owner captures its epoch at registration/start, before the token
+    // has expired-and-refreshed underneath it.
+    const ownerEpoch = session.connection.value.epoch;
+    await expect(session.getToken()).resolves.toBe(validToken);
+    // A same-session refresh does not create a new epoch.
+    expect(session.connection.value.epoch).toBe(ownerEpoch);
+    const lease = session.captureCancellationLease(ownerEpoch);
+    expect(lease).toEqual({
+      epoch: ownerEpoch,
+      origin: session.chCtx.origin,
+      authorization: `Bearer ${validToken}`,
+      fetch: session.chCtx.fetch,
+    });
+  });
+});
+
 // ── ensureFreshToken ─────────────────────────────────────────────────────────
 
 describe('ensureFreshToken', () => {
