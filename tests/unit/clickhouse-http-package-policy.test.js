@@ -42,7 +42,7 @@
 // `quoteKillQueryId` stopgap), through the same generalized
 // `findNamedIdentifierViolations` walker the Phase 3 rule now shares.
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -360,6 +360,20 @@ describe('Rule C — SQL Browser source does not deep-import the package\'s own 
     expect(found.some((line) => line.includes('__boundary_probe_630_deep__') && line.includes('packages/clickhouse-http/src'))).toBe(true);
   });
 });
+
+// Pre-warm both real-tree caches once, in `beforeAll`, rather than letting
+// whichever test happens to run first inside the two Rule D describe blocks
+// below pay for it under the DEFAULT per-test timeout: the cache-filling
+// pass spawns the real TypeScript-parser child process once per real file
+// that matches the widened `mightReferencePackage` filter, and that one-time
+// cost — comfortably under a few seconds on a normal dev machine — has
+// exceeded vitest's 5000ms per-test default under CI's more constrained
+// scheduling. Explicit longer timeout here, attributed to setup rather than
+// to an arbitrary specific test (also robust to test reordering).
+beforeAll(() => {
+  deepImportViolations(join(repoRoot, 'src'));
+  packageNameShapeViolations(join(repoRoot, 'src'));
+}, 30000);
 
 describe('Rule D, deep-import half — the deep-import subpath form is forbidden everywhere under src/**', () => {
   it('the real src/** tree has no deep-import subpath', () => {
