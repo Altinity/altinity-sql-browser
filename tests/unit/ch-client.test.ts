@@ -1,12 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
 import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable, StreamLine } from '../../src/net/ch-client.js';
 // Issue #630 Phase 5 — sqlString now has one implementation, owned by the
-// package; format.js no longer declares it.
-import { sqlString } from '@altinity/clickhouse-http';
+// package; format.js no longer declares it. Issue #630 Phase 6 — ClickHouseError
+// is the package's own non-2xx error class; queryJson's compatibility test
+// below proves the exported queryJson() still translates it to a plain Error.
+import { sqlString, ClickHouseError } from '@altinity/clickhouse-http';
 
 // --- Response stubs -------------------------------------------------------
 
@@ -95,402 +96,18 @@ function deferred<T>() {
 
 // Issue #630 Phase 2 — the small legacy `chUrl` output-shape tests that used
 // to live here moved to tests/unit/clickhouse-http-package.test.ts along
-// with `chUrl` itself; this file keeps only the malformed-URL `authedFetch`
-// test below, which proves the pre-credential ORDERING contract (chUrl
-// called before the first await), not serializer output.
+// with `chUrl` itself. Issue #630 Phase 6 — every low-level `authedFetch`
+// test (including its malformed-URL preflight-ordering proof) MOVED to
+// `tests/unit/authenticated-clickhouse-request.test.ts`, retargeted onto
+// `authenticatedRequest` — this file now keeps only caller-level proofs that
+// the exported `queryJson`/`runQuery`/`exportQuery` still reach that new
+// module correctly.
 
 // (queryDashboardTile was retired in #193 — dashboard tiles now stream through
 // runQuery via the shared app.exec.executeRead seam (#276), carrying readonly:2 /
 // max_result_bytes / param_* in `params` and capping with resultRowLimit. Its
 // URL-shaping is covered by runQuery's tests below; the dashboard's use of the
 // seam is covered in dashboard.test.js.)
-
-describe('authedFetch', () => {
-  it('throws + signals out when no token', async () => {
-    const ctx = ctxWith(() => jsonResp({}), { getToken: async () => null });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('not signed in');
-    expect(ctx.onSignedOut).toHaveBeenCalled();
-  });
-  it('cancels without signaling auth loss when a missing-token request becomes stale', async () => {
-    let epoch = 1;
-    const token = deferred<string | null>();
-    const ctx = ctxWith(() => jsonResp({}), { currentEpoch: () => epoch, getToken: () => token.promise });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    epoch = 2;
-    token.resolve(null);
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('does not fetch a replacement credential when the initial token lookup crosses an epoch', async () => {
-    let epoch = 1;
-    const token = deferred<string | null>();
-    const onTransportConnected = vi.fn();
-    const onTransportOffline = vi.fn();
-    const ctx = ctxWith(() => jsonResp({}), {
-      currentEpoch: () => epoch,
-      getToken: () => token.promise,
-      onTransportConnected,
-      onTransportOffline,
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    epoch = 2;
-    token.resolve('replacement-token');
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(ctx.fetchMock).not.toHaveBeenCalled();
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-    expect(onTransportConnected).not.toHaveBeenCalled();
-    expect(onTransportOffline).not.toHaveBeenCalled();
-  });
-  it('rechecks the epoch after constructing authorization and immediately before fetch', async () => {
-    let epoch = 1;
-    const ctx = ctxWith(() => jsonResp({}), {
-      currentEpoch: () => epoch,
-      authHeader: (token) => {
-        epoch = 2;
-        return 'Bearer replacement-' + token;
-      },
-    });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toMatchObject({ name: 'AbortError' });
-    expect(ctx.fetchMock).not.toHaveBeenCalled();
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('returns the response on success', async () => {
-    const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
-    const r = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(r.ok).toBe(true);
-    expect(ctx.fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer tok');
-  });
-  it('reports a successful current transport connection when lifecycle hooks are supplied', async () => {
-    const onTransportConnected = vi.fn();
-    const ctx = ctxWith(async () => jsonResp({ ok: 1 }), { currentEpoch: () => 4, onTransportConnected });
-    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(onTransportConnected).toHaveBeenCalledTimes(1);
-  });
-  it('reports a non-abort fetch rejection as transport-offline', async () => {
-    const failure = new Error('network unavailable');
-    const onTransportOffline = vi.fn();
-    const ctx = ctxWith(async () => { throw failure; }, { currentEpoch: () => 4, onTransportOffline });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toBe(failure);
-    expect(onTransportOffline).toHaveBeenCalledWith(failure);
-  });
-  it('does not report a stale fetch rejection as transport-offline', async () => {
-    let epoch = 1;
-    const failure = new Error('network unavailable');
-    const rejectedFetch = deferred<FakeResponse>();
-    const fetchStarted = deferred<void>();
-    const onTransportOffline = vi.fn();
-    const ctx = ctxWith(async () => {
-      fetchStarted.resolve();
-      return rejectedFetch.promise;
-    }, { currentEpoch: () => epoch, onTransportOffline });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await fetchStarted.promise;
-    epoch = 2;
-    rejectedFetch.reject(failure);
-    await expect(pending).rejects.toBe(failure);
-    expect(onTransportOffline).not.toHaveBeenCalled();
-  });
-  it('does not report HTTP failures or caller cancellation as transport-offline', async () => {
-    const onTransportOffline = vi.fn();
-    const httpCtx = ctxWith(async () => textResp('server error', false, 500), { onTransportOffline });
-    await authedFetch(httpCtx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    const controller = new AbortController();
-    controller.abort();
-    const abortCtx = ctxWith(async () => { throw new Error('cancelled request'); }, { onTransportOffline });
-    await expect(authedFetch(abortCtx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress', signal: controller.signal })).rejects.toThrow('cancelled request');
-    expect(onTransportOffline).not.toHaveBeenCalled();
-  });
-  it('does not report an AbortError rejection as transport-offline', async () => {
-    const onTransportOffline = vi.fn();
-    const abortError = Object.assign(new Error('cancelled request'), { name: 'AbortError' });
-    const ctx = ctxWith(async () => { throw abortError; }, { onTransportOffline });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toBe(abortError);
-    expect(onTransportOffline).not.toHaveBeenCalled();
-  });
-  it('rejects a malformed URL param synchronously without a token read, a fetch, or an offline signal (review pass 2, P1)', async () => {
-    const onTransportOffline = vi.fn();
-    const ctx = ctxWith(async () => jsonResp({ ok: 1 }), { onTransportOffline });
-    // A lone UTF-16 surrogate makes `chUrl`'s `encodeURIComponent` throw a
-    // URIError — request-preparation failure, not a network failure.
-    await expect(
-      authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress', params: { x: '\ud800' } }),
-    ).rejects.toBeInstanceOf(URIError);
-    expect(ctx.getToken).not.toHaveBeenCalled();
-    expect(ctx.fetchMock).not.toHaveBeenCalled();
-    expect(onTransportOffline).not.toHaveBeenCalled();
-  });
-  it('refreshes once on 401 then retries', async () => {
-    let n = 0;
-    const ctx = ctxWith(async () => (n++ === 0 ? jsonResp({}, false, 401) : jsonResp({ ok: 1 })), {
-      refresh: vi.fn(async () => true),
-      getToken: vi.fn(async () => (n === 0 ? 'old' : 'new')),
-    });
-    const r = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(r.ok).toBe(true);
-    expect(ctx.refresh).toHaveBeenCalledTimes(1);
-  });
-  it('signs out with an authorization message + server reason when CH rejects a valid token (403)', async () => {
-    const ctx = ctxWith(
-      async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 403),
-      { refresh: async () => false },
-    );
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('signed out');
-    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
-    // Not overridden by `over` in this test, so it's still ctxWith's default
-    // `vi.fn()` — the cast just recovers `.mock` from the (over-widened, since
-    // `over.onSignedOut` COULD have replaced it) static union type.
-    const msg = (ctx.onSignedOut as Mock).mock.calls[0][0];
-    expect(msg).toContain('HTTP 403');
-    expect(msg).toContain('not authorizing you');
-    expect(msg).toContain('Server: Code: 516. DB::Exception: Authentication failed');
-  });
-  it('marks the ctx authenticated on a successful response', async () => {
-    const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
-    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(ctx.authConfirmed).toBe(true);
-  });
-  it('fences a stale successful response from lifecycle and authentication state', async () => {
-    let epoch = 1;
-    const response = deferred<FakeResponse>();
-    const fetchStarted = deferred<void>();
-    const onTransportConnected = vi.fn();
-    const ctx = ctxWith(async () => {
-      fetchStarted.resolve();
-      return response.promise;
-    }, { currentEpoch: () => epoch, onTransportConnected });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await fetchStarted.promise;
-    epoch = 2;
-    response.resolve(jsonResp({ ok: 1 }));
-    expect((await pending).ok).toBe(true);
-    expect(ctx.authConfirmed).toBeUndefined();
-    expect(onTransportConnected).not.toHaveBeenCalled();
-  });
-  it('fences a stale auth-failure response from refresh and sign-out', async () => {
-    let epoch = 1;
-    const onTransportOffline = vi.fn();
-    const response = deferred<FakeResponse>();
-    const fetchStarted = deferred<void>();
-    const ctx = ctxWith(async () => {
-      fetchStarted.resolve();
-      return response.promise;
-    }, {
-      currentEpoch: () => epoch,
-      refresh: vi.fn(async () => true),
-      onTransportOffline,
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await fetchStarted.promise;
-    epoch = 2;
-    response.resolve(jsonResp({}, false, 401));
-    expect((await pending).status).toBe(401);
-    expect(ctx.refresh).not.toHaveBeenCalled();
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-    expect(onTransportOffline).not.toHaveBeenCalled();
-  });
-  it('does not refresh a replacement epoch after delayed body classification', async () => {
-    let epoch = 1;
-    const body = deferred<string>();
-    const bodyStarted = deferred<void>();
-    const response: FakeResponse = {
-      ok: false,
-      status: 500,
-      text: async () => {
-        bodyStarted.resolve();
-        return body.promise;
-      },
-      clone() { return this; },
-    };
-    const ctx = ctxWith(async () => response, {
-      currentEpoch: () => epoch,
-      refresh: vi.fn(async () => true),
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await bodyStarted.promise;
-    epoch = 2;
-    body.resolve('jwt::token_verification_exception');
-
-    expect((await pending).status).toBe(500);
-    expect(ctx.refresh).not.toHaveBeenCalled();
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('does not retry or sign out when refresh settles after its request becomes stale', async () => {
-    let epoch = 1;
-    const refresh = deferred<boolean>();
-    const refreshStarted = deferred<void>();
-    const ctx = ctxWith(async () => jsonResp({}, false, 401), {
-      currentEpoch: () => epoch,
-      refresh: vi.fn(async () => {
-        refreshStarted.resolve();
-        return refresh.promise;
-      }),
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await refreshStarted.promise;
-    expect(ctx.refresh).toHaveBeenCalledTimes(1);
-    epoch = 2;
-    refresh.resolve(true);
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('does not retry when the post-refresh token lookup becomes stale', async () => {
-    let epoch = 1;
-    let tokenCalls = 0;
-    const freshToken = deferred<string | null>();
-    const freshTokenStarted = deferred<void>();
-    const ctx = ctxWith(async () => textResp('expired', false, 401), {
-      currentEpoch: () => epoch,
-      refresh: vi.fn(async () => true),
-      getToken: vi.fn(async () => {
-        tokenCalls += 1;
-        if (tokenCalls === 1) return 'old';
-        freshTokenStarted.resolve();
-        return freshToken.promise;
-      }),
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await freshTokenStarted.promise;
-    epoch = 2;
-    freshToken.resolve('new');
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('does not sign out when an unsuccessful refresh becomes stale', async () => {
-    let epoch = 1;
-    const refresh = deferred<boolean>();
-    const refreshStarted = deferred<void>();
-    const ctx = ctxWith(async () => textResp('expired', false, 401), {
-      currentEpoch: () => epoch,
-      refresh: vi.fn(async () => {
-        refreshStarted.resolve();
-        return refresh.promise;
-      }),
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await refreshStarted.promise;
-    epoch = 2;
-    refresh.resolve(false);
-    expect((await pending).status).toBe(401);
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('does not sign out when parsing the denial reason crosses an epoch', async () => {
-    let epoch = 1;
-    const denialText = deferred<string>();
-    const textStarted = deferred<void>();
-    const response: FakeResponse = {
-      ok: false,
-      status: 403,
-      text: async () => {
-        textStarted.resolve();
-        return denialText.promise;
-      },
-      clone() { return this; },
-    };
-    const ctx = ctxWith(async () => response, {
-      currentEpoch: () => epoch,
-      refresh: vi.fn(async () => false),
-    });
-    const pending = authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    await textStarted.promise;
-    epoch = 2;
-    denialText.resolve('Code: 516. Authentication failed');
-    expect((await pending).status).toBe(403);
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-  });
-  it('once authenticated, a later 403 is returned as a query error (no sign-out)', async () => {
-    // e.g. SHOW CREATE USER <missing> → HTTP 403 / UNKNOWN_USER, mid-session.
-    const ctx = ctxWith(async () => textResp('Code: 192. DB::Exception: There is no user x', false, 403),
-      { authConfirmed: true });
-    const resp = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(resp.status).toBe(403);
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-    expect(ctx.refresh).not.toHaveBeenCalled();
-  });
-  it('treats a token_verification body as auth-expired', async () => {
-    let n = 0;
-    const ctx = ctxWith(
-      async () => (n++ === 0 ? textResp('jwt::token_verification_exception', false, 500) : jsonResp({ ok: 1 })),
-      { refresh: vi.fn(async () => true) },
-    );
-    const r = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(r.ok).toBe(true);
-  });
-  it('returns a non-auth error response unchanged', async () => {
-    const ctx = ctxWith(async () => textResp('syntax error', false, 400));
-    const r = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(r.status).toBe(400);
-  });
-  it('uses a provided authHeader (e.g. Basic) instead of Bearer', async () => {
-    const ctx = ctxWith(async () => jsonResp({ ok: 1 }), {
-      authHeader: (t) => 'Basic ' + t.toUpperCase(),
-    });
-    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(ctx.fetchMock.mock.calls[0][1].headers.Authorization).toBe('Basic TOK');
-  });
-
-  // #630 Phase 6 sensor pass (plan §14 Commit 1) — characterization tests
-  // against the CURRENT authedFetch implementation, added before the
-  // ownership move so the move itself (Commit 2) can retarget every one of
-  // these onto `authenticatedRequest` unchanged, rather than writing them
-  // fresh against the new module with nothing to compare against.
-  it('computes a fresh, complete Authorization on the retried attempt, distinct from the first', async () => {
-    let fetchN = 0;
-    let tokenN = 0;
-    const ctx = ctxWith(async () => (fetchN++ === 0 ? jsonResp({}, false, 401) : jsonResp({ ok: 1 })), {
-      refresh: vi.fn(async () => true),
-      getToken: vi.fn(async () => (tokenN++ === 0 ? 'old-token' : 'new-token')),
-    });
-    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
-    const first = ctx.fetchMock.mock.calls[0][1].headers.Authorization;
-    const second = ctx.fetchMock.mock.calls[1][1].headers.Authorization;
-    expect(first).toBe('Bearer old-token');
-    expect(second).toBe('Bearer new-token');
-  });
-  it('does not attempt a second refresh when the retried request also fails authentication', async () => {
-    const ctx = ctxWith(async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 401), {
-      refresh: vi.fn(async () => true),
-    });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('signed out');
-    expect(ctx.refresh).toHaveBeenCalledTimes(1);
-    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
-    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
-  });
-  it('once authenticated, a later 401 is returned as a query error (no sign-out) — the 403 counterpart', async () => {
-    const ctx = ctxWith(async () => textResp('Code: 291. DB::Exception: Access denied', false, 401), { authConfirmed: true });
-    const resp = await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(resp.status).toBe(401);
-    expect(ctx.onSignedOut).not.toHaveBeenCalled();
-    expect(ctx.refresh).not.toHaveBeenCalled();
-  });
-  it('does not report a non-2xx response as a connected transport', async () => {
-    const onTransportConnected = vi.fn();
-    const ctx = ctxWith(async () => textResp('bad', false, 400), { onTransportConnected });
-    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' });
-    expect(onTransportConnected).not.toHaveBeenCalled();
-    expect(ctx.authConfirmed).toBeUndefined();
-  });
-  it('signals auth loss tagged with the epoch captured at entry', async () => {
-    const ctx = ctxWith(() => jsonResp({}), { currentEpoch: () => 7, getToken: async () => null });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('not signed in');
-    expect(ctx.onSignedOut).toHaveBeenCalledWith(undefined, 7);
-  });
-  it('signals a credential-denial sign-out tagged with the epoch captured at entry', async () => {
-    const ctx = ctxWith(async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 403), {
-      currentEpoch: () => 3, refresh: async () => false,
-    });
-    await expect(authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress' })).rejects.toThrow('signed out');
-    expect((ctx.onSignedOut as Mock).mock.calls[0][1]).toBe(3);
-  });
-  it('passes the caller-supplied AbortSignal to fetch unchanged, by identity', async () => {
-    const controller = new AbortController();
-    const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
-    await authedFetch(ctx, { sql: 'sql', defaultFormat: 'JSONStringsEachRowWithProgress', signal: controller.signal });
-    expect(ctx.fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
-  });
-});
 
 describe('queryJson', () => {
   it('returns parsed JSON on success', async () => {
@@ -501,6 +118,18 @@ describe('queryJson', () => {
     const ctx = ctxWith(async () => textResp('{"exception":"DB::Exception: x"}', false, 500));
     await expect(queryJson(ctx, 'bad')).rejects.toThrow('DB::Exception: x');
   });
+  // #630 Phase 6 — queryJson now delegates to authenticatedJson(), which
+  // throws the package's ClickHouseError on a resolved non-2xx response;
+  // this proves the Phase-6 compatibility translation back to queryJson's
+  // EXISTING outward shape: a plain Error, not ClickHouseError, carrying the
+  // identical parsed message.
+  it('translates the package ClickHouseError back to a plain Error, preserving the parsed message (Phase 6 compatibility)', async () => {
+    const ctx = ctxWith(async () => textResp('{"exception":"DB::Exception: x"}', false, 500));
+    const err = await queryJson(ctx, 'bad').catch((e) => e);
+    expect(err).not.toBeInstanceOf(ClickHouseError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('DB::Exception: x');
+  });
   it('forwards params as param_<name> query-string args, omitted when absent', async () => {
     const ctx = ctxWith(async () => jsonResp({ data: [] }));
     await queryJson(ctx, 'SELECT {id:UInt32}', undefined, undefined, { param_id: '5' });
@@ -510,14 +139,17 @@ describe('queryJson', () => {
   });
 });
 
-// Issue #585 Phase 1 — `authedFetch`'s centralized entry snapshot (pass-5
-// revision): `extra`/`params` are captured synchronously the instant
-// `authedFetch` is entered, before its first await (`ctx.getToken()`),
-// preserving today's pre-await `chUrl` serialization timing under ONE
-// mechanism instead of per-call-site defensive spreads. `queryJson` is the
-// caller that historically forwarded these by reference
-// (`ch-client.ts:218-228` pre-refactor), so these cases exercise it directly.
-describe('queryJson — invocation-time settings/params capture (authedFetch\'s entry snapshot)', () => {
+// Issue #585 Phase 1 — the centralized entry snapshot (pass-5 revision):
+// `extra`/`params` are captured synchronously the instant the request is
+// entered, before its first await (`ctx.getToken()`), preserving pre-await
+// `chUrl` serialization timing under ONE mechanism instead of per-call-site
+// defensive spreads. `queryJson` is the caller that historically forwarded
+// these by reference (`ch-client.ts:218-228` pre-refactor), so these cases
+// exercise it directly. Issue #630 Phase 6 — the snapshot itself now lives
+// in `authenticatedRequest` (`authenticated-clickhouse-request.ts`, whose own
+// test file also proves it directly); this describe block stays here as the
+// CALLER-level proof that `queryJson` still reaches that module correctly.
+describe('queryJson — invocation-time settings/params capture (reaches authenticatedRequest\'s entry snapshot)', () => {
   it('captures extra/params synchronously at entry — mutating the caller\'s live objects while token acquisition is pending does not reach the initial request', async () => {
     const token = deferred<string | null>();
     const extra: Record<string, string | number> = { readonly: 2 };
@@ -564,48 +196,10 @@ describe('queryJson — invocation-time settings/params capture (authedFetch\'s 
   });
 });
 
-// Issue #585 Phase 1, Adaptation A5 — `TransportDeps.origin()` is an
-// accessor read live per request, never snapshotted; the live, mutable
-// `ctx.origin` (mutated in place on sign-in — `connection-session.ts`) stays
-// authoritative through `ch-client.ts`'s own `transportFor` wiring, not just
-// in `createHttpTransport`'s isolated unit tests.
-describe('transportFor — live origin authority through production wiring (Adaptation A5)', () => {
-  it('reads ctx.origin live per request across two independent authedFetch calls', async () => {
-    const ctx = ctxWith(async () => jsonResp({ data: [] }));
-    await queryJson(ctx, 'SELECT 1');
-    ctx.origin = 'https://new-cluster.example';
-    await queryJson(ctx, 'SELECT 1');
-    expect(ctx.fetchMock.mock.calls[0][0]).toContain('https://ch.example');
-    expect(ctx.fetchMock.mock.calls[1][0]).toContain('https://new-cluster.example');
-  });
-
-  // The case above reconstructs a transport per authedFetch call, so it can't
-  // by itself distinguish a live-read `deps.origin()` from one snapshotted at
-  // `createHttpTransport` construction time (sabotage case 2). This one uses
-  // the SAME transport instance across authedFetch's one-refresh retry loop
-  // (transportFor(ctx) is called once per authedFetch invocation, before the
-  // retry loop) to prove the origin read is live per SEND, not per
-  // construction.
-  it('reads ctx.origin live per send within one authedFetch retry cycle, not once at transport construction', async () => {
-    let n = 0;
-    const refreshStarted = deferred<void>();
-    const refresh = deferred<boolean>();
-    const ctx = ctxWith(async () => (n++ === 0 ? jsonResp({}, false, 401) : jsonResp({ data: [] })), {
-      refresh: vi.fn(async () => {
-        refreshStarted.resolve();
-        return refresh.promise;
-      }),
-    });
-    const pending = queryJson(ctx, 'SELECT 1');
-    await refreshStarted.promise;
-    ctx.origin = 'https://new-cluster.example';
-    refresh.resolve(true);
-    await pending;
-    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
-    expect(ctx.fetchMock.mock.calls[0][0]).toContain('https://ch.example');
-    expect(ctx.fetchMock.mock.calls[1][0]).toContain('https://new-cluster.example');
-  });
-});
+// Issue #585 Phase 1, Adaptation A5's "live origin authority" proof MOVED to
+// `tests/unit/authenticated-clickhouse-request.test.ts` (#630 Phase 6) —
+// retargeted directly onto `authenticatedRequest`, since that module (not
+// this file's `queryJson`) is what actually reads `ctx.origin` live.
 
 describe('loadServerVersion', () => {
   it('returns the version string', async () => {

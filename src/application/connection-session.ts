@@ -84,8 +84,10 @@ export interface ConnectionSessionDeps {
 
 /** The live ClickHouse auth context this session owns — `origin`/
  *  `authConfirmed` are mutated IN PLACE by `signOut`/`connectBasic`/
- *  `applyAuthSnapshot` here, and by `net/ch-client.js`'s `authedFetch` (its
- *  own one-shot latch) — this ONE object is never reconstructed, only ever
+ *  `applyAuthSnapshot` here, and by `net/authenticated-clickhouse-request.js`'s
+ *  `authenticatedRequest` (its own one-shot latch, reached through
+ *  `net/ch-client.js`'s `queryJson`/`runQuery`/`exportQuery` — #630 Phase 6)
+ *  — this ONE object is never reconstructed, only ever
  *  mutated, so a caller holding a reference (or passing it straight into
  *  ch-client's functions) always observes the current auth state. Assignable
  *  to `net/ch-client.js`'s own `ChCtx` (whose `authConfirmed`/`authHeader`
@@ -481,7 +483,8 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
 
   function refresh(): Promise<boolean> {
     // Basic credentials don't expire and can't be refreshed; a surviving 401
-    // means the password is wrong → authedFetch falls through to onSignedOut.
+    // means the password is wrong → authenticatedRequest (net/authenticated-
+    // clickhouse-request.js) falls through to onSignedOut.
     if (authMode === 'basic') return Promise.resolve(false);
     const epoch = connectionSignal.value.epoch;
     if (refreshSlot?.epoch === epoch) return refreshSlot.promise;
@@ -529,7 +532,8 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   }
 
   async function getToken(): Promise<string | null> {
-    // In basic mode the stored credential is the "token" authedFetch carries.
+    // In basic mode the stored credential is the "token" authenticatedRequest
+    // (net/authenticated-clickhouse-request.js) carries.
     if (authMode === 'basic') return basicCreds();
     if (!token) return null;
     if (!isTokenExpired(token)) return token;

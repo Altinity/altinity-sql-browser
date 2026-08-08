@@ -16,10 +16,17 @@
 // production stream implementation in the repository now — the package's;
 // this file does not reintroduce a second one, forwarding or otherwise.
 //
+// Issue #630 Phase 6 — this adapter's one remaining production caller is
+// `killQueryWithLease`'s frozen-lease bypass (`ch-client.ts`); the normal
+// mutable-`ChCtx` request path moved to
+// `src/net/authenticated-clickhouse-request.ts`, which builds the package
+// client directly rather than through this adapter.
+//
 // Ownership boundary: this file may depend only on `src/core` and the
 // `@altinity/clickhouse-http` public package export — never on
-// `ch-client.ts`, `oauth.ts`, `oauth-config.ts`, `src/application/`, or
-// `src/ui/`. `build/check-boundaries.mjs` enforces this mechanically.
+// `ch-client.ts`, `authenticated-clickhouse-request.ts`, `oauth.ts`,
+// `oauth-config.ts`, `src/application/`, or `src/ui/`. `build/check-
+// boundaries.mjs` enforces this mechanically.
 
 import { createClickHouseHttpClient } from '@altinity/clickhouse-http';
 import type { ClickHouseTransport, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
