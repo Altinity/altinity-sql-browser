@@ -187,7 +187,10 @@ The generated upload is stored in a permission-restricted temporary directory an
 ```text
 --question-file <path>   Add focused project and acceptance context
 --output-file <path>     Absolute canonical plan path (plan-author only)
---session <handle>       Continue the exact saved ChatGPT conversation
+--session <handle>       Continue the exact saved ChatGPT conversation (same mode+target)
+--seed-from-session <h>  Start a NEW mode's session, but reopen an existing conversation
+                         from a DIFFERENT mode/target's session <h> instead of a fresh
+                         chat. Mutually exclusive with --session.
 --timeout <seconds>      Completion timeout; default 1800 (30 minutes)
 --format json|text       Output format; default json
 --cdp-url <url>          Chrome CDP endpoint
@@ -237,7 +240,11 @@ Only `completed` means a complete response. `timed_out` may include partial resp
 
 ## Browser and permission behavior
 
-- Starting without `--session` creates a fresh ChatGPT conversation.
+- Starting without `--session` or `--seed-from-session` creates a fresh ChatGPT conversation.
+- `--seed-from-session <handle>` creates this mode's own new session (its own pass counter)
+  but reopens `<handle>`'s conversation instead of a fresh one — for threading one unit of
+  work (e.g. plan authoring, then that plan's PR review) through DIFFERENT CLI modes without
+  losing conversational context. Once that new session exists, resume it with `--session`.
 - A matching open tab is reused for a session; otherwise the saved conversation URL is reopened.
 - Completion requires a new non-empty assistant response, no active generation control, and stable text for seven seconds.
 - A visible **Continue generating** control is handled automatically.

@@ -35,9 +35,14 @@ test('CLI parses documented modes, defaults, environment, and publication rules'
 });
 
 test('CLI rejects invalid combinations', () => {
-  for (const args of [[], ['wat'], ['pr'], ['doctor', 'x'], ['local', 'x'], ['issue', 'x', '--publish', '--no-publish'], ['plan', 'x', '--timeout', 'nope'], ['doctor', '--wat'], ['plan-author', 'https://github.com/o/r/issues/1'], ['plan-author', 'https://github.com/o/r/issues/1', '--output-file', 'relative.md', '--question-file', '/tmp/q'], ['plan-author', 'https://github.com/o/r/issues/1', '--output-file', '/tmp/p', '--question-file', '/tmp/q', '--publish']]) {
+  for (const args of [[], ['wat'], ['pr'], ['doctor', 'x'], ['local', 'x'], ['issue', 'x', '--publish', '--no-publish'], ['plan', 'x', '--timeout', 'nope'], ['doctor', '--wat'], ['plan-author', 'https://github.com/o/r/issues/1'], ['plan-author', 'https://github.com/o/r/issues/1', '--output-file', 'relative.md', '--question-file', '/tmp/q'], ['plan-author', 'https://github.com/o/r/issues/1', '--output-file', '/tmp/p', '--question-file', '/tmp/q', '--publish'], ['pr', 'https://github.com/o/r/pull/1', '--session', 'a', '--seed-from-session', 'b']]) {
     assert.throws(() => parseArgs(args), CliError);
   }
+});
+
+test('CLI accepts --seed-from-session as a documented value flag', () => {
+  const parsed = parseArgs(['pr', 'https://github.com/o/r/pull/7', '--seed-from-session', '00000000-0000-4000-8000-000000000009'], {});
+  assert.equal(parsed.seedFromSession, '00000000-0000-4000-8000-000000000009');
 });
 
 test('GitHub targets are canonical and kind checked', () => {
@@ -228,6 +233,44 @@ test('run retains a session and enforces three PR passes', async () => {
   result = await run(['pr', 'https://github.com/o/r/pull/1', '--session', result.session], { store, driver });
   assert.equal(result.status, 'invalid_request');
   assert.match(result.error, /at most three/);
+});
+
+test('--seed-from-session threads a prior, different-mode conversation into a brand-new session', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-review-seed-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = new SessionStore(dir);
+  // A prior plan-author session for this SAME unit, already carrying a real conversation
+  // and the fingerprint of ChatGPT's last message in it (as a completed plan-author pass
+  // would leave behind).
+  const seed = await store.create({
+    mode: 'plan-author', targetIdentity: 'plan-author:o/r#8:/tmp/plan.md',
+    conversationUrl: 'https://chatgpt.com/c/seed-conversation', lastResponseFingerprint: 'seed-fingerprint',
+  });
+  const seenSessions = [];
+  const driver = {
+    async review({ session }) {
+      seenSessions.push(session ? { conversationUrl: session.conversationUrl, lastResponseFingerprint: session.lastResponseFingerprint } : null);
+      return { responseText: `VERDICT: SHIP\nReviewed head ${'c'.repeat(40)}`, conversationUrl: session?.conversationUrl ?? 'https://chatgpt.com/c/new' };
+    },
+  };
+  const result = await run(['pr', 'https://github.com/o/r/pull/1', '--seed-from-session', seed.handle, '--no-publish'], { store, driver });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.pass_number, 1);
+  assert.notEqual(result.session, seed.handle);
+  assert.equal(result.conversation_url, 'https://chatgpt.com/c/seed-conversation');
+  // review() must have been called with a session whose conversationUrl/lastResponseFingerprint
+  // were already the seed's — proving the new pr-mode session reopened that exact conversation
+  // (rather than opening a fresh chat) and was seeded with the fingerprint needed so the
+  // "uncollected response" recovery path does not mistake the seed's last message for this
+  // mode's own answer.
+  assert.deepEqual(seenSessions, [{ conversationUrl: 'https://chatgpt.com/c/seed-conversation', lastResponseFingerprint: 'seed-fingerprint' }]);
+  const newSession = await store.load(result.session);
+  assert.equal(newSession.mode, 'pr');
+  assert.equal(newSession.passCount, 1);
+  // The seed session itself is untouched — seeding copies its conversation, it does not
+  // consume or mutate the original record.
+  const reloadedSeed = await store.load(seed.handle);
+  assert.equal(reloadedSeed.passCount, 0);
 });
 
 test('plan mode uploads a pass-numbered copy (never the literal session-identity path) and never authorizes publication', async (t) => {

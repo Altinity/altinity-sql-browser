@@ -14,7 +14,7 @@ export const EXIT_CODES = Object.freeze({
 });
 
 const VALUE_FLAGS = new Set([
-  '--question-file', '--session', '--timeout', '--format', '--repo', '--base',
+  '--question-file', '--session', '--seed-from-session', '--timeout', '--format', '--repo', '--base',
   '--cdp-url', '--diagnostics-dir', '--output-file',
 ]);
 const BOOL_FLAGS = new Set(['--publish', '--no-publish', '--working-tree', '--include-untracked']);
@@ -22,11 +22,17 @@ const BOOL_FLAGS = new Set(['--publish', '--no-publish', '--working-tree', '--in
 export function usage() {
   return `Usage:
   chatgpt-review.mjs doctor [--cdp-url <url>] [--format json|text]
-  chatgpt-review.mjs pr <url> [--question-file <path>] [--session <handle>] [--no-publish] [--timeout 1800]
-  chatgpt-review.mjs issue <url> [--question-file <path>] [--session <handle>] [--publish] [--timeout 1800]
-  chatgpt-review.mjs plan <plan-file> [--question-file <path>] [--session <handle>] [--timeout 1800]
-  chatgpt-review.mjs plan-author <issue-url> --output-file <absolute-plan-path> --question-file <path> [--session <handle>] [--timeout 1800]
-  chatgpt-review.mjs local [--repo <path>] [--base <ref>] [--working-tree] [--include-untracked] [--question-file <path>] [--session <handle>] [--timeout 1800]`;
+  chatgpt-review.mjs pr <url> [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--no-publish] [--timeout 1800]
+  chatgpt-review.mjs issue <url> [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--publish] [--timeout 1800]
+  chatgpt-review.mjs plan <plan-file> [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
+  chatgpt-review.mjs plan-author <issue-url> --output-file <absolute-plan-path> --question-file <path> [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
+  chatgpt-review.mjs local [--repo <path>] [--base <ref>] [--working-tree] [--include-untracked] [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
+
+  --session <handle>: resume THIS exact mode+target's own prior session (same conversation, same pass counter).
+  --seed-from-session <handle>: start a NEW session for this mode+target, but continue an EXISTING
+  ChatGPT conversation from a prior session of a DIFFERENT mode (e.g. thread a plan-author
+  conversation into this PR's own pr-mode review) instead of opening a fresh chat. The new
+  session gets its own pass counter; only one of --session/--seed-from-session may be given.`;
 }
 
 export function parseArgs(argv, env = process.env) {
@@ -50,6 +56,7 @@ export function parseArgs(argv, env = process.env) {
     }
   }
   if (options.publish && options.noPublish) throw new CliError('Use only one of --publish and --no-publish');
+  if (options.session && options.seedFromSession) throw new CliError('Use only one of --session and --seed-from-session');
   if (options.format && !['json', 'text'].includes(options.format)) throw new CliError('--format must be json or text');
   const timeout = Number(options.timeout ?? 1800);
   if (!Number.isFinite(timeout) || timeout <= 0) throw new CliError('--timeout must be a positive number of seconds');

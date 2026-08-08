@@ -471,12 +471,20 @@ in the main tree, per pass:
 Workflow {
   scriptPath: "skills/ship/references/code-review-pass.workflow.mjs",
   args: { prUrl, questionFile, session: <handle|null>, pass: <n>,
-          integrationBranch: "<this unit's branch>", issueRef: "<issue>" }
+          integrationBranch: "<this unit's branch>", issueRef: "<issue>",
+          seedFromSession: <this unit's plan-loop session handle, pass-1 only> }
 }
 ```
 
 (`integrationBranch` is the script's existing argument name — pass this unit's own
-branch into it; no script edit is required.)
+branch into it; no script edit is required.) **On pass 1 only** (`session: null`), pass
+`seedFromSession` as the session handle returned by this unit's plan loop (step 2.2) —
+`chatgpt-review.mjs pr`'s own `--seed-from-session` flag threads that existing ChatGPT
+conversation into the brand-new pr-mode session instead of opening a fresh chat, so
+planning and code review land in the one conversation `references/review-loops.md`'s
+"one unit, one ChatGPT session" rule requires. On pass 2/3 (`session` is now the
+code-review loop's own returned handle from pass 1), omit `seedFromSession` — `session`
+alone resumes that conversation.
 
 The pass reviews (publishing a PR comment), verifies every finding with parallel
 read-only agents, and — when findings are accepted — applies the fixes with tests,
