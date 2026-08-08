@@ -49,13 +49,26 @@ test.describe('#630 Phase 7 — export post-header cancellation (real ExportServ
     expect(result.directRequestCount).toBe(1);
     expect(result.directRequestOk).toBe(true);
 
-    // File bytes were committed (a real write + progress event) BEFORE the
-    // held tail was ever released — proves this is genuine post-header,
-    // past-hold-back streaming, not a headers-only proof.
-    expect(result.progressCountBeforeCancel).toBe(1);
-    expect(result.writesBeforeCancelCount).toBe(1);
-    expect(result.firstProgressBytes).toBeGreaterThan(0);
-    expect(result.totalWrittenBytes).toBe(result.firstProgressBytes);
+    // File bytes were committed (at least one real write + progress event)
+    // BEFORE the held tail was ever released — proves this is genuine
+    // post-header, past-hold-back streaming, not a headers-only proof. The
+    // exact number of write/progress pairs the initial ~40 KiB burst
+    // produces is engine-dependent (Chromium delivers it as a single native
+    // read; WebKit has been observed splitting it into a few smaller reads,
+    // each individually crossing the 32 KiB hold-back on its own) — the
+    // invariant this asserts is "comfortably past the hold-back, at least
+    // once", not an exact read count.
+    expect(result.progressCountBeforeCancel).toBeGreaterThanOrEqual(1);
+    expect(result.writesBeforeCancelCount).toBe(result.progressCountBeforeCancel);
+    // The fixture's first chunk is ~40 KiB, comfortably past ExportService's
+    // 32 KiB hold-back — but the amount actually COMMITTED to the file is
+    // (bytes received so far) minus the 32 KiB still retained in the
+    // hold-back buffer, so this is a small positive number (a few KiB), not
+    // itself > 32 KiB. ">0" is the real invariant: a real write happened at
+    // all, proving the hold-back threshold was genuinely crossed rather than
+    // this being a headers-only proof.
+    expect(result.bytesBeforeCancel).toBeGreaterThan(0);
+    expect(result.totalWrittenBytes).toBe(result.bytesBeforeCancel);
 
     // Cancel occurred during the pending second reader.read(); that read
     // aborted, and NO later write/progress occurred (the fixture's held

@@ -137,11 +137,24 @@
       const fakeFile = makeFakeFile('export.tsv');
       const toastMessages = [];
       const progressEvents = [];
-      let firstProgressResolve;
-      const firstProgress = new Promise((resolve) => { firstProgressResolve = resolve; });
       const cancelCalls = [];
       const killWrapper = makeWrapper();
       let textCalledOnSuccessfulResponse = false;
+      // Snapshotted synchronously, from INSIDE the first `update()` call
+      // below (never via a wall-clock wait) — the same deterministic,
+      // load-independent technique `clickhouse-http-transport.spec.js`'s own
+      // Scenario 6/7/9 already use ("abort scheduled from inside the first
+      // onChunk callback"): calling `cancelExport()` synchronously here, in
+      // the SAME microtask that just committed the first hold-back-crossing
+      // write, aborts before `streamToFile`'s loop can receive any FURTHER
+      // network data — a fixed post-hoc wall-clock delay was tried first and
+      // found genuinely flaky under parallel Chromium+WebKit load (the whole
+      // fixture's 3000ms server-side hold could occasionally elapse before a
+      // delayed JS timer fired, letting the export race to normal EOF
+      // completion instead of being cancelled).
+      let progressCountBeforeCancel = 0;
+      let writesBeforeCancelCount = 0;
+      let bytesBeforeCancel = 0;
 
       // Wraps the real counting fetch wrapper: on a successful (2xx) response
       // ONLY, shadow `.text()` with a throwing instance property — a real,
@@ -221,7 +234,22 @@
           showExportProgress: () => ({
             update(bytes) {
               progressEvents.push(bytes);
-              if (progressEvents.length === 1) firstProgressResolve();
+              // Fires exactly once, synchronously, the FIRST time a real
+              // write has been committed past the 32 KiB hold-back — this is
+              // the "pending reader.read()" moment: `streamToFile`'s
+              // `for(;;)` loop has already (synchronously, no intervening
+              // await) issued its NEXT `reader.read()` by the time this
+              // microtask continuation reaches here (see the file-level
+              // comment above), and that read is genuinely blocked on the
+              // fixture's still-in-progress POST_HEADER_ABORT_HOLD_MS
+              // server-side hold. Calling `cancelExport()` here — never via a
+              // later wall-clock delay — aborts that exact pending read.
+              if (progressCountBeforeCancel === 0) {
+                progressCountBeforeCancel = progressEvents.length;
+                writesBeforeCancelCount = fakeFile.writes.length;
+                bytesBeforeCancel = fakeFile.totalBytes();
+                exportService.cancelExport();
+              }
             },
             remove() {},
           }),
@@ -231,16 +259,6 @@
       });
 
       const donePromise = exportService.exportDirect('SELECT 1', Date.now());
-      await firstProgress;
-      // Comfortably shorter than the fixture's POST_HEADER_ABORT_HOLD_MS hold
-      // (3000ms server-side, starting from right after the first chunk was
-      // SENT) — by the time this resolves, streamToFile's for-loop has long
-      // since issued its second, now genuinely pending `reader.read()` (no
-      // other await stands between onProgress returning and that call).
-      await new Promise((r) => setTimeout(r, 150));
-      const progressCountBeforeCancel = progressEvents.length;
-      const writesBeforeCancel = fakeFile.writes.length;
-      exportService.cancelExport();
       await donePromise; // exportDirect swallows AbortError internally and resolves normally
 
       // `cancelExport()` fires the owner-scoped remote KILL fire-and-forget
@@ -268,8 +286,8 @@
         directRequestOk: !!directRequest,
         // Progress/write semantics — committed BEFORE the held tail released.
         progressCountBeforeCancel,
-        writesBeforeCancelCount: writesBeforeCancel,
-        firstProgressBytes: progressEvents[0] ?? null,
+        writesBeforeCancelCount,
+        bytesBeforeCancel,
         totalWrittenBytes: fakeFile.totalBytes(),
         // No later write/progress after cancellation.
         progressCountFinal: progressEvents.length,
