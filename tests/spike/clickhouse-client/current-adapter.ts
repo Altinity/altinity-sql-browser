@@ -21,7 +21,10 @@ import { emptyOutcome, IncrementalSha256 } from './normalize.js';
 
 /** Build the `Authorization` header for a `SpikeCredential` — the harness's
  * own request-local credential concept, translated into exactly the header
- * `ch-client.ts`'s `authedFetch` would send for that credential kind. */
+ * production's authenticated request path would send for that credential
+ * kind (at the time this spike was written, `ch-client.ts`'s `authedFetch`;
+ * since #630 Phase 6, `authenticated-clickhouse-request.ts`'s
+ * `authenticatedRequest`, unchanged in shape). */
 export function credentialAuthHeader(credential: SpikeCredential): string {
   // `btoa` (standard Web API, global in Node >=18 and every target browser)
   // rather than `Buffer` — see normalize.ts's `IncrementalSha256` docstring
@@ -46,7 +49,11 @@ export function credentialAuthHeader(credential: SpikeCredential): string {
 /** Optional hooks `makeCurrentCtx` wires onto `ChCtx`'s own epoch/lifecycle
  * seam (plan §21's "stale before request" / "stale during refresh" /
  * "stale response" cases need REAL `ch-client.ts` epoch fencing exercised
- * through `authedFetch`, not a harness reimplementation of it). Every field
+ * through its real production request path — at the time this spike was
+ * written, `authedFetch`; since #630 Phase 6, `authenticated-clickhouse-
+ * request.ts`'s `authenticatedRequest`, reached the same way, through
+ * `runQuery`/`exportQuery`/`killQuery` — not a harness reimplementation of
+ * it). Every field
  * is optional and defaults to the pre-existing no-op behavior, so no
  * existing call site needs to change. */
 export interface CurrentCtxHooks {
@@ -64,8 +71,11 @@ export interface CurrentCtxHooks {
    *  refresh's resolved token is never re-read for the delegate fetch). */
   getToken?: () => Promise<string | null>;
   /** Fires the instant a delegate fetch RESOLVES — before `runCurrent`'s own
-   *  `lastResponse` capture and before `authedFetch`'s own post-fetch epoch
-   *  check runs (plan §21 "stale response"). A test flips a shared epoch
+   *  `lastResponse` capture and before production's own post-fetch epoch
+   *  check runs (at the time this spike was written, `authedFetch`'s; since
+   *  #630 Phase 6, `authenticated-clickhouse-request.ts`'s
+   *  `authenticatedRequest`'s, unchanged in shape) (plan §21 "stale
+   *  response"). A test flips a shared epoch
    *  variable here to deterministically land the flip in that exact window,
    *  with no timing race. */
   onFetchResponse?: (resp: Response) => void;

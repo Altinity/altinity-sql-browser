@@ -41,9 +41,12 @@ export interface EpochFence {
    *  original caller's data is still theirs to read), it only proves a
    *  post-response checkpoint EXISTS and fires, so a future Phase 1 adapter
    *  wiring a real lifecycle callback (`onTransportConnected`-equivalent)
-   *  would have somewhere to gate it, exactly like `ch-client.ts`'s own
-   *  `authedFetch` gates `ctx.authConfirmed`/`onTransportConnected` on the
-   *  same check immediately after its `fetch` resolves. */
+   *  would have somewhere to gate it, exactly like production's own auth
+   *  request path gates `ctx.authConfirmed`/`onTransportConnected` on the
+   *  same check immediately after its `fetch` resolves — at the time this
+   *  spike was written, that was `ch-client.ts`'s `authedFetch`; since #630
+   *  Phase 6 it is `authenticated-clickhouse-request.ts`'s
+   *  `authenticatedRequest`, unchanged in shape. */
   readonly staleResponses: number;
 }
 

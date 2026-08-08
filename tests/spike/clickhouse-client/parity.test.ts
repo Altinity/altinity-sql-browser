@@ -222,7 +222,10 @@ describe('deterministic parity — rows path', () => {
   });
 
   it('post-confirmation 403: a query outcome on both adapters, not a sign-out/offline error', async () => {
-    // `authedFetch` (ch-client.ts) treats a FIRST-CONTACT 401/403 as a
+    // Production's authenticated request path (at the time this spike was
+    // written, `ch-client.ts`'s `authedFetch`; since #630 Phase 6,
+    // `authenticated-clickhouse-request.ts`'s `authenticatedRequest`,
+    // unchanged in shape) treats a FIRST-CONTACT 401/403 as a
     // login-denial (sign-out) — by design (see its own docstring). The
     // invariant this scenario actually proves ("post-confirmation 401/403
     // remain query outcomes") only applies once `ctx.authConfirmed` has
@@ -379,7 +382,9 @@ describe('cancellation lease — the REAL production killQueryWithLease uses the
     // that happens AFTER the lease was captured — killQueryWithLease must
     // have no way to observe this; it only ever reads `lease.authorization`,
     // never a live ctx/auth-mode lookup (unlike plain `killQuery`, which
-    // does go through `queryJson`/`authedFetch`'s live auth path).
+    // does go through `queryJson`'s live auth path — `authenticatedRequest`,
+    // `authenticated-clickhouse-request.ts`, since #630 Phase 6; formerly
+    // `authedFetch`).
     const rotatedAuthorization = `Basic ${btoa('rotated-user:rotated-pass')}`;
     expect(rotatedAuthorization).not.toBe(frozenAuthorization); // sanity: the two really differ
 
@@ -1008,7 +1013,7 @@ describe('credential-epoch fencing — stale before request, during refresh, and
     const current = await runCurrent(req, fault.baseUrl, fetch, undefined, {
       currentEpoch: () => epoch,
       onTransportConnected: () => { connectedCalled = true; },
-      onFetchResponse: () => { epoch = 2; }, // flips AFTER the response, before authedFetch's own post-check
+      onFetchResponse: () => { epoch = 2; }, // flips AFTER the response, before authenticatedRequest's own post-check (formerly authedFetch's)
     });
     expect(connectedCalled).toBe(false);
     expect(current.outcome.rows).toEqual([['1'], ['2']]);
