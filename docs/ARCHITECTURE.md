@@ -206,7 +206,7 @@ folded via the pure `applyStreamLine`; a single automatic token refresh on
 401/403/`token_verification_exception` (before `authConfirmed` flips, an auth
 failure signs out; after, it is a query error).
 
-### Transport seam (#585 Phase 1) and the clickhouse-http package (#630 Phases 2-3)
+### Transport seam (#585 Phase 1) and the clickhouse-http package (#630 Phases 2-4)
 
 Generic request construction and stream mechanics are split out behind a
 narrow contract: `net/clickhouse-transport.types.ts` declares
@@ -273,6 +273,49 @@ second copy of the package's `StreamLine` wire type), plus editor-caret
 the package's byte-oriented `findExceptionFrame` directly on its retained
 `Uint8Array` holdback — the caller-side latin1 conversion it used to carry
 is gone, since the package computes byte-exact offsets internally.
+
+**Phase 4** adds purely additive consuming query APIs and a stateless
+`KILL QUERY` on top of the unchanged `request()` — no `src/**` caller
+consumes any of this yet (that cutover is a later phase). The layering:
+
+```
+request()
+  -> ensureClickHouseSuccess()
+  -> consumeJson/Text/ProgressResponse()
+  -> queryJson/queryText/queryProgress
+  -> stateless killQuery
+```
+
+`response.ts` adds `ensureClickHouseSuccess(response)`: on a 2xx response it
+returns the SAME `Response` by strict identity, never cloning or reading its
+body (`bodyUsed` stays `false`); on a non-2xx response it reads the complete
+error text exactly once and throws the new minimal `ClickHouseError`
+(`status`, exact `responseText`, a `message` derived from the existing
+`parseExceptionText` — never `findExceptionFrame`, which stays Phase-3's
+late-success-stream mechanic). `consumeJsonResponse`/`consumeTextResponse`/
+`consumeProgressResponse` each compose that classifier with exactly one
+further native operation (`.json()`/`.text()`/`streamLines()`) — no retry, no
+extra try/catch, so a native network/abort/body-reader error always
+propagates unwrapped, and a successful in-band `{"exception": ...}` progress
+line remains ordinary `onLine` callback data, never a thrown error.
+`client.ts` extends `ClickHouseHttpClient` with `queryJson`/`queryText`/
+`queryProgress` — each one `client.request(...)` call plus one matching
+consumer, so every convenience method makes exactly one Fetch. Only
+`queryJson` defaults its `defaultFormat` (via `??`, to `'JSON'`, only when
+omitted); `queryText`/`queryProgress` require an explicit wire format and
+apply no SQL Browser Table/KPI/TSV mapping — a literal format string is
+opaque wire data to the package. `killQuery` is a genuinely stateless
+wire-level `KILL QUERY WHERE query_id = <quoted> ASYNC`, built from one
+`queryText()` call: no credential lookup, refresh, epoch, lifecycle
+callback, retry, or query registry of its own, and it never writes its SQL
+target into the HTTP request's own `params.query_id`. Its own private
+`quoteKillQueryId` reproduces only `src/core/format.ts`'s `sqlString()`
+backslash-then-quote escaping convention as a narrow, unexported Phase-4
+stopgap — Phase 5 replaces it with the package's own shared public
+string-literal quoting API. Root `killQuery`/`killQueryWithLease` and
+`queryJson`/`runQuery`/`exportQuery` are unaffected: they continue to reach
+`authedFetch`'s auth/epoch/retry policy exactly as before, and none of them
+have been migrated onto the new package APIs in this phase.
 
 ## Build
 

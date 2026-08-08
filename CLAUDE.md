@@ -27,11 +27,18 @@ all bundled — see hard rule 4). Quality is held by tests.
    low-level request, the progress-stream wire shape and its reader/decoder
    loop, and HTTP exception-text/late-exception byte framing) may live in the
    first-party workspace package `packages/clickhouse-http` (#630 Phase 2;
-   the progress-stream/exception primitives since Phase 3) instead —
+   the progress-stream/exception primitives since Phase 3; since Phase 4 also
+   non-consuming HTTP success/error classification, explicit JSON/text/
+   progress consumers, a minimal `ClickHouseError`, and a stateless wire-level
+   `killQuery`) instead —
    `src/net/**` is the only place allowed to import it, by its exact public
    package name, never a deep import into its `src/**`; the package itself
    may depend on nothing under SQL Browser `src/**` and declares zero
    runtime dependencies (mechanically enforced, `build/check-boundaries.mjs`).
+   OAuth/Basic credential acquisition, refresh, epochs, lifecycle callbacks,
+   retries, and SQL Browser's own product operations/result modes stay
+   entirely in `src/net/**` — the package's Phase-4 APIs are additive and not
+   yet consumed by any `src/**` caller (that cutover is a later phase).
    DOM rendering goes in `src/ui/` as functions that take the
    `app` controller — except the editor, which lives in `src/editor/` behind the
    injected editor seams (#143/#212): only `main.js` imports concrete adapters,
@@ -136,7 +143,7 @@ Touch these in one change:
 |---|---|
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
-| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization and the low-level injected-`fetch()` request, behind a public `.` export only; importable from `src/net/**` alone |
+| `packages/clickhouse-http/src/*` | first-party npm workspace (repo's first, #630 Phase 2) — `chUrl`/URL serialization, the low-level injected-`fetch()` request, the progress-stream read loop and HTTP exception parsing/framing (Phase 3), and (Phase 4) non-consuming success/error classification (`ensureClickHouseSuccess`), JSON/text/progress consumers, a minimal `ClickHouseError`, convenience `queryJson`/`queryText`/`queryProgress` client methods, and a stateless wire-level `killQuery` — behind a public `.` export only; importable from `src/net/**` alone; no `src/**` caller consumes the Phase-4 APIs yet |
 | `src/application/*` | app-level coordination, sessions, and pure projections; no UI/editor imports |
 | `src/workspace/*` | pure stored-workspace aggregate, persistence contracts, and mutations |
 | `src/dashboard/*` | Dashboard model, layouts, and application runtime; dependency direction is mechanically checked |

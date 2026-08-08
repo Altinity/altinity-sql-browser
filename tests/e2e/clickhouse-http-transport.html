@@ -28,7 +28,19 @@
        stream member at all): they import the package's own `streamLines`
        directly, exercising the SAME real production call path
        `ch-client.ts`'s `runQuery` uses — no additional import-map entry is
-       needed, since the specifier is already mapped above. -->
+       needed, since the specifier is already mapped above.
+
+       #630 Phase 4 — Scenario 9 (new, additive) exercises the package's own
+       `createClickHouseHttpClient(...).queryProgress()` convenience method
+       directly against the same real cross-origin fault server and the same
+       'post-header-abort-hold' fixture Scenario 6 already uses — proving the
+       NEW Phase-4 API preserves the identical native post-header cancellation
+       semantics (one real Fetch, the caller's own AbortSignal driving
+       cancellation for the response's whole lifetime, no callbacks after
+       rejection). Scenarios 1-8 are otherwise UNCHANGED: they still exercise
+       the still-live SQL Browser production composition
+       (`createHttpTransport().send()` -> package `streamLines`), which
+       remains the production path until Phase 7's cutover. -->
   <script type="importmap">
     { "imports": {
       "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js"
@@ -36,7 +48,7 @@
   </script>
   <script type="module">
     import { createHttpTransport } from '/src/net/clickhouse-http-transport.js';
-    import { streamLines } from '@altinity/clickhouse-http';
+    import { streamLines, createClickHouseHttpClient } from '@altinity/clickhouse-http';
 
     // A counting wrapper around the real, native `window.fetch` — the ONLY
     // thing under `deps.fetch()`. It never replaces/derives the signal,
@@ -70,6 +82,17 @@
       const wrapper = makeWrapper();
       const transport = createHttpTransport({ fetch: () => wrapper.fn, origin: () => baseUrl });
       return { transport, wrapper };
+    }
+
+    // #630 Phase 4 — same real, native `window.fetch` counting wrapper as
+    // `makeTransport` above, but constructing the package's OWN
+    // `createClickHouseHttpClient(...)` directly (not the SQL Browser
+    // compatibility adapter) — Scenario 9 below exercises the new
+    // `queryProgress()` convenience method through it.
+    function makeClient(baseUrl) {
+      const wrapper = makeWrapper();
+      const client = createClickHouseHttpClient({ fetch: () => wrapper.fn, origin: () => baseUrl });
+      return { client, wrapper };
     }
 
     async function nameOf(promise) {
@@ -305,6 +328,57 @@
       }
       await new Promise((r) => setTimeout(r, 50));
       return { linesBefore, chunksBefore, linesAfter: lines.length, chunksAfter: chunkCount, abortThrew };
+    };
+
+    // ── Scenario 9 (#630 Phase 4, new/additive) — the package's own
+    //    `queryProgress()` proves the SAME native post-header cancellation
+    //    semantics Scenario 6 already proves for the production compatibility
+    //    path, but through the NEW Phase-4 convenience API directly: one
+    //    package client, one `queryProgress()` call, the original
+    //    `AbortController.signal` passed straight through, abort scheduled
+    //    from inside the first `onChunk` callback (proving headers have
+    //    already resolved and a real body chunk has already been read), then
+    //    a wait comfortably past the fixture's held second write to confirm
+    //    the abort truly stopped the loop rather than merely delaying it. ──
+    window.__scenario9 = async function (baseUrl, queryId, holdMs) {
+      const { client, wrapper } = makeClient(baseUrl);
+      const controller = new AbortController();
+      const lines = [];
+      let chunkCount = 0;
+      let aborted = false;
+      const progressPromise = client.queryProgress(
+        {
+          sql: 'SELECT 1',
+          defaultFormat: 'JSON',
+          params: { query_id: queryId },
+          authorization: 'Bearer tok',
+          signal: controller.signal,
+        },
+        {
+          onLine: (l) => lines.push(l),
+          onChunk: () => {
+            chunkCount++;
+            if (!aborted) {
+              aborted = true;
+              controller.abort();
+            }
+          },
+        },
+      );
+      const rejectedName = await nameOf(progressPromise);
+      const linesAtRejection = lines.length;
+      const chunksAtRejection = chunkCount;
+      const countAtRejection = wrapper.count;
+      await new Promise((r) => setTimeout(r, holdMs + 1000)); // comfortably past the fixture's hold
+      return {
+        rejectedName,
+        countAtRejection,
+        countAfterWait: wrapper.count,
+        linesAtRejection,
+        chunksAtRejection,
+        linesAfterWait: lines.length,
+        chunksAfterWait: chunkCount,
+      };
     };
 
     // ── Extra — invalid UTF-8 raw bytes stay byte-identical at the native

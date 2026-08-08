@@ -10,6 +10,32 @@
 // caller's responsibility — removing the workaround
 // `src/application/export-service.ts` used to carry for exactly this reason.
 
+// Issue #630 Phase 4 — the minimal ClickHouse HTTP error the new response
+// consumers (`response.ts`) throw for a resolved non-2xx `Response`. It
+// carries only what the plan's settled contract needs: the exact HTTP
+// status, the exact text of the one `.text()` read that produced it, and a
+// `message` derived through the SAME `parseExceptionText` below (never a
+// second exception parser). No code/type parsing, retryability, auth state,
+// stored `Response`, or registry data — those stay out of scope for this
+// phase (and, for auth/retry, are SQL-Browser-owned policy that never moves
+// into this package at all).
+
+/** Thrown by `response.ts`'s consumers for a resolved non-2xx `Response`.
+ *  `responseText` is the complete, exact text of that one failed-response
+ *  `.text()` read; `message` is `parseExceptionText(responseText)` — the
+ *  same parser this module already owns, not a duplicate. */
+export class ClickHouseError extends Error {
+  readonly status: number;
+  readonly responseText: string;
+
+  constructor(status: number, responseText: string) {
+    super(parseExceptionText(responseText));
+    this.name = 'ClickHouseError';
+    this.status = status;
+    this.responseText = responseText;
+  }
+}
+
 /**
  * Pull the ClickHouse exception out of an error response body. CH emits one
  * `{"exception": "..."}` line; fall back to the raw text if absent.

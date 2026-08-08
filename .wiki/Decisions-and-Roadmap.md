@@ -196,11 +196,31 @@ Two roadmap tracks are current:
   row caps, percentages, raw/result presentation, editor-caret positioning,
   and auth-expiry/denial UI policy exactly where they were —
   `applyStreamLine` now narrows an open `Record<string, unknown>` parsed
-  record instead of re-declaring the package's wire type. Still deferred to
-  later phases: `queryJson`/`queryText`/`queryProgress` convenience APIs,
-  `ensureClickHouseSuccess`, `ClickHouseError`, package `KILL QUERY`, SQL
-  quoting/type-grammar extraction, an authentication-composition rewrite,
-  and `runQuery`/`exportQuery`/the remaining request transport seam's own
+  record instead of re-declaring the package's wire type. **Phase 4** (merged)
+  is purely additive: `ensureClickHouseSuccess` (non-consuming success
+  classification — returns a successful `Response` by strict identity,
+  never cloned/read; a non-2xx response reads its error text exactly once
+  and throws a new minimal `ClickHouseError`), `consumeJsonResponse`/
+  `consumeTextResponse`/`consumeProgressResponse` (`response.ts`, new),
+  convenience `queryJson`/`queryText`/`queryProgress` client methods (each
+  exactly one `request()` plus one matching consumer — one Fetch, no SQL
+  Browser Table/KPI/TSV mode knowledge), and a stateless wire-level
+  `killQuery` (`KILL QUERY WHERE query_id = <quoted> ASYNC` via one
+  `queryText()` call; no credential lookup, refresh, epoch, retry, or query
+  registry; a private, unexported `quoteKillQueryId` reproduces only
+  `src/core/format.ts`'s backslash-then-quote string-literal escaping as a
+  narrow Phase-4 stopgap, not general SQL quoting). Zero SQL Browser
+  production files under `src/**` changed — root `queryJson`/`runQuery`/
+  `exportQuery`/ordinary `killQuery`/`killQueryWithLease` all continue
+  unchanged through `authedFetch`'s existing auth/epoch/retry policy; no
+  `src/**` caller adopts the new package APIs yet. A new direct
+  `client.queryProgress()` Chromium/WebKit scenario (added to the existing
+  `tests/e2e/clickhouse-http-transport.{html,spec.js}` harness, alongside
+  the unchanged Phase 1/3 scenarios) proves the identical native
+  post-header-cancellation semantics through the new API. Still deferred to
+  later phases: SQL quoting/type-grammar extraction (Phase 5), an
+  authentication-composition rewrite (Phase 6), and
+  `runQuery`/`exportQuery`/the remaining request transport seam's own
   eventual migration/deletion (Phase 7). See
   [[Source-Map]] and [[Architecture]] for the file-level detail and
   `build/check-boundaries.mjs`'s Rules A–D plus the Phase 3 narrow
