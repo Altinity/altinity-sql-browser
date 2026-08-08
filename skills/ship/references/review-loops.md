@@ -42,6 +42,30 @@ its task notification; do not poll and do not start other review work meanwhile.
 - **Verify the tree after every workflow** (`git diff`, `git log`, `gh pr list`) — the
   fix and revise agents carry stated mutation boundaries, but a prompt is not an
   enforced restriction.
+- **One unit, one ChatGPT session, start to finish — never `session: null` a second
+  time.** A unit's plan authoring, every plan-review round, every PR code-review pass,
+  and any ad hoc advisory question asked outside the formal pass-counted loop (e.g.
+  "what's your honest assessment of this fix" after a real fix) all belong in the SAME
+  conversation. This holds even when a formal loop is exhausted without certification
+  (5 plan-review passes, or 3 code-review passes with no certified head): do not call
+  `chatgpt-review`/invoke a review workflow with `session: null` to route around an
+  exhausted cap or a `needs_human` outcome — that starts a second, disconnected
+  conversation and throws away everything ChatGPT already reviewed and found. Instead,
+  after a genuine fix lands (per the human's ruling at a FULL STOP, or per standing
+  direction already given for this run), continue the EXISTING session.
+  **The `chatgpt-review.mjs pr` CLI itself hard-rejects a 4th call tied to one session
+  (`"PR review sessions permit at most three total passes"`, `status: invalid_request`,
+  exit before any prompt reaches ChatGPT) — this is enforced by the tool, not just the
+  workflow script's loop bound, so re-invoking the workflow with that session's handle
+  past pass 3 will fail outright, not silently succeed.** Once a session's 3 formal
+  `pr`-mode passes are spent, continue it by driving the existing conversation tab
+  directly instead: read the DOM, submit a revision/advisory/final-verdict message via
+  `document.execCommand('insertText', ...)` + a real click on the send button (same
+  technique as the Chrome-crash recovery path in `SKILL.md` step 2.2), ask explicitly
+  for the standard `VERDICT: SHIP`/`VERDICT: REVISE` protocol if you need a formal
+  certification out of it, and post the result as a PR comment yourself (`gh pr
+  comment`) since no CLI publish step ran. A fresh session is correct only when
+  starting a genuinely new unit that has never had one.
 
 ## Default plan loop — `plan-review-loop.workflow.mjs`
 

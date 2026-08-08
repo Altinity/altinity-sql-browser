@@ -521,7 +521,10 @@ STOP, right now, for the whole run.** Do not merge, and do not attempt any furth
 or spine. Summarize the PR URL, head SHA, CI state, certification state, and every
 accepted, rejected, and **unresolved** finding with its comment URL, then ask the human
 to rule: merge anyway, leave the PR open, or direct further work. Their decision
-governs.
+governs. **Even after the human rules and a real fix lands, do not open a fresh
+ChatGPT session to re-certify it** — continue the SAME session this unit has used since
+its plan was authored (see `references/review-loops.md`'s "one unit, one ChatGPT
+session" rule); a fresh session throws away everything already reviewed.
 
 ### 2.8 Before the next unit: re-check the gate, then auto-chain or stop
 
