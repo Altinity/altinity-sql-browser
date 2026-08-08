@@ -179,13 +179,42 @@ const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
 function mightReferencePackage(text) {
   return text.includes(CLICKHOUSE_HTTP_SPECIFIER) || text.includes('\\');
 }
+// The on-disk tree under `dir` never changes within one test-file run, but
+// every call site above re-passes `join(repoRoot, 'src')` with a DIFFERENT
+// single sabotage probe appended — ~30 call sites across this describe
+// block. Re-scanning and re-spawning the real TypeScript-parser child
+// process (`findDeepImportSpecifiers`/`findPackageImportUsages`, transitively
+// `withParsedSource`'s `new API(...)`) for every real file under `src/` that
+// merely CONTAINS a backslash — common in ordinary source (regex literals,
+// `\n`/`\t` escapes, JSDoc) now that `mightReferencePackage` had to widen
+// past a plain substring test — turned "one full-tree scan" into "one
+// full-tree scan PER TEST CASE," which is what actually timed out in CI
+// (5000ms per-test default) even though it stayed comfortably under a
+// human's patience locally. Memoize the on-disk component ONCE per `dir` and
+// only re-run the (cheap, single-file) parser-backed check on the ACTUAL
+// virtual probe each test adds — the combined result is identical to the
+// unmemoized version, since the real tree's own violations (there are none
+// today) can't change between calls in the same process.
+const realTreeDeepImportCache = new Map();
 function deepImportViolations(dir, virtualFiles = []) {
-  const found = [];
-  for (const [file, source] of collectEntries(dir, virtualFiles)) {
-    const relFile = relative(repoRoot, file).split(sep).join('/');
-    const text = source ?? readFileSync(file, 'utf8');
-    if (!mightReferencePackage(text)) continue;
-    for (const spec of findDeepImportSpecifiers(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+  let cached = realTreeDeepImportCache.get(dir);
+  if (!cached) {
+    cached = [];
+    for (const file of collectFiles(dir)) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      const text = readFileSync(file, 'utf8');
+      if (!mightReferencePackage(text)) continue;
+      for (const spec of findDeepImportSpecifiers(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+        cached.push(`${relFile} → ${spec}`);
+      }
+    }
+    realTreeDeepImportCache.set(dir, cached);
+  }
+  const found = [...cached];
+  for (const [rel, source] of virtualFiles) {
+    const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
+    if (!mightReferencePackage(source)) continue;
+    for (const spec of findDeepImportSpecifiers(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       found.push(`${relFile} → ${spec}`);
     }
   }
@@ -198,14 +227,33 @@ function deepImportViolations(dir, virtualFiles = []) {
 // form (default/namespace/side-effect/dynamic import, package re-export
 // gateway), stays `src/net/**`-only. Calls the SAME real-parser helper the
 // production `check:arch` gate calls.
+// Same memoization rationale as `deepImportViolations` above — this half
+// spawns the real-parser child process even more often (every describe
+// block below adds its own single virtual probe), so the same O(tests ×
+// real-tree-size) blowup applies here too.
+const realTreePackageNameShapeCache = new Map();
 function packageNameShapeViolations(dir, virtualFiles = []) {
-  const found = [];
-  for (const [file, source] of collectEntries(dir, virtualFiles)) {
-    const relFile = relative(repoRoot, file).split(sep).join('/');
+  let cached = realTreePackageNameShapeCache.get(dir);
+  if (!cached) {
+    cached = [];
+    for (const file of collectFiles(dir)) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
+      const text = readFileSync(file, 'utf8');
+      if (!mightReferencePackage(text)) continue;
+      for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+        if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
+        cached.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
+      }
+    }
+    realTreePackageNameShapeCache.set(dir, cached);
+  }
+  const found = [...cached];
+  for (const [rel, source] of virtualFiles) {
+    const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
     if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
-    const text = source ?? readFileSync(file, 'utf8');
-    if (!mightReferencePackage(text)) continue;
-    for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
+    if (!mightReferencePackage(source)) continue;
+    for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
       found.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
     }
