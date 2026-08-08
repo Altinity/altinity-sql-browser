@@ -41,7 +41,19 @@ export async function run(argv, dependencies = {}) {
       session = await store.load(options.session);
       if (session.mode !== options.mode || session.targetIdentity !== prepared.targetIdentity) throw new CliError('Session does not match this mode and target');
     } else {
-      session = await store.create({ mode: options.mode, targetIdentity: prepared.targetIdentity, canonicalUrl: prepared.target?.canonicalUrl });
+      // --seed-from-session threads an EXISTING ChatGPT conversation (from a different mode,
+      // e.g. this unit's own plan-author session) into a brand-new session record for this
+      // mode+target, so pageFor() reopens that conversation instead of a fresh chat. Copying
+      // lastResponseFingerprint too is required, not cosmetic: without it, review()'s
+      // hasUncollected check would see the seed conversation's last (unrelated) assistant
+      // message as an "uncollected response" and return it without ever sending this mode's
+      // prompt.
+      let seed = {};
+      if (options.seedFromSession) {
+        const seedSession = await store.load(options.seedFromSession);
+        seed = { conversationUrl: seedSession.conversationUrl, lastResponseFingerprint: seedSession.lastResponseFingerprint };
+      }
+      session = await store.create({ mode: options.mode, targetIdentity: prepared.targetIdentity, canonicalUrl: prepared.target?.canonicalUrl, ...seed });
     }
     passNumber = (session.passCount ?? 0) + 1;
     if (options.mode === 'pr' && passNumber > 3) throw new CliError('PR review sessions permit at most three total passes');
@@ -72,8 +84,13 @@ export async function run(argv, dependencies = {}) {
       previousSha: session.reportedReviewedSha,
       uploadName: uploadPath ? path.basename(uploadPath) : null,
     });
+    // A genuinely fresh conversation (neither --session nor --seed-from-session) passes
+    // null so pageFor() opens chatgpt.com from scratch. Both --session (resuming this exact
+    // mode+target, even if an earlier pass never got far enough to record a conversationUrl)
+    // and --seed-from-session (a brand-new session record pre-populated with a prior,
+    // different-mode conversation) must pass the real session through.
     const review = await driver.review({
-      session: options.session ? session : null,
+      session: (options.session || options.seedFromSession) ? session : null,
       prompt,
       uploadPath,
       timeoutMs: options.timeoutMs,

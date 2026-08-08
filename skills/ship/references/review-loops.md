@@ -13,9 +13,12 @@ bodies inline, and change them here so there is one copy:
 - `chatgpt-plan-author-loop.workflow.mjs` — `--planner chatgpt`: ChatGPT authors and Fable/high approves.
 - `code-review-pass.workflow.mjs` — exactly one PR review pass per call, scoped to one
   unit's own PR (SKILL.md step 2.6). `pass`/`session` reset to `1`/`null` for every
-  unit — never carried over from a previous unit's loop, even on the same spine. The
-  coordinator pushes, waits for CI, and re-invokes (the 3-pass cap is enforced by the
-  `chatgpt-review` script itself).
+  unit — never carried over from a previous unit's loop, even on the same spine.
+  Pass 1's `session: null` should still carry `seedFromSession` set to this unit's own
+  plan-loop session handle (see "one ChatGPT conversation" below) so it reopens that
+  conversation instead of starting a disconnected one. The coordinator pushes, waits
+  for CI, and re-invokes with the returned `session` handle (the 3-pass cap is
+  enforced by the `chatgpt-review` script itself).
 
 These Workflow calls are part of this skill's contract — invoking `/ship` is the
 explicit multi-agent opt-in. Workflows run in the background: launch one, then wait for
@@ -42,30 +45,51 @@ its task notification; do not poll and do not start other review work meanwhile.
 - **Verify the tree after every workflow** (`git diff`, `git log`, `gh pr list`) — the
   fix and revise agents carry stated mutation boundaries, but a prompt is not an
   enforced restriction.
-- **One unit, one ChatGPT session, start to finish — never `session: null` a second
-  time.** A unit's plan authoring, every plan-review round, every PR code-review pass,
-  and any ad hoc advisory question asked outside the formal pass-counted loop (e.g.
-  "what's your honest assessment of this fix" after a real fix) all belong in the SAME
-  conversation. This holds even when a formal loop is exhausted without certification
-  (5 plan-review passes, or 3 code-review passes with no certified head): do not call
-  `chatgpt-review`/invoke a review workflow with `session: null` to route around an
-  exhausted cap or a `needs_human` outcome — that starts a second, disconnected
-  conversation and throws away everything ChatGPT already reviewed and found. Instead,
-  after a genuine fix lands (per the human's ruling at a FULL STOP, or per standing
-  direction already given for this run), continue the EXISTING session.
-  **The `chatgpt-review.mjs pr` CLI itself hard-rejects a 4th call tied to one session
-  (`"PR review sessions permit at most three total passes"`, `status: invalid_request`,
-  exit before any prompt reaches ChatGPT) — this is enforced by the tool, not just the
-  workflow script's loop bound, so re-invoking the workflow with that session's handle
-  past pass 3 will fail outright, not silently succeed.** Once a session's 3 formal
-  `pr`-mode passes are spent, continue it by driving the existing conversation tab
-  directly instead: read the DOM, submit a revision/advisory/final-verdict message via
+- **One unit, one ChatGPT *conversation*, start to finish.** `chatgpt-review.mjs`
+  scopes each *session record* (handle, pass counter) to one CLI mode + target — a
+  `plan-author`-mode session and a `pr`-mode session are always separate records, and
+  `--session <handle>` hard-rejects a handle whose recorded mode doesn't match
+  (`"Session does not match this mode and target"`). That is a real, permanent
+  constraint, not a bug to route around: within ONE mode (repeatedly resuming the same
+  `pr`-mode PR review, or the same `plan`/`plan-author` authoring/revision loop),
+  always reuse that mode's own session handle — never `session: null` a second time
+  for work already in progress under that handle. This holds even when a formal loop
+  is exhausted without certification (5 plan-review passes, or 3 code-review passes
+  with no certified head): do not call `chatgpt-review`/invoke a review workflow with
+  `session: null` to route around an exhausted cap or a `needs_human` outcome — that
+  abandons everything ChatGPT already reviewed and found in that mode's conversation.
+  Continue the EXISTING session instead (see the pass-cap paragraph below for what to
+  do once a mode's own cap is truly spent).
+
+  **Across modes** (plan authoring → plan review → PR code review → any ad hoc
+  advisory question outside a formal pass-counted loop), the CLI cannot literally
+  share one session RECORD, but it can and should share one underlying ChatGPT
+  *conversation*: pass `--seed-from-session <handle>` (instead of `--session`) the
+  FIRST time a new mode starts for this unit, naming the most recent session handle
+  from whichever mode/loop just finished. This creates a brand-new session record for
+  the new mode (its own pass counter, so a `pr`-mode cap counts only `pr`-mode passes)
+  but reopens the SAME browser tab/conversation rather than starting a fresh chat —
+  `SKILL.md` step 2.6 wires this from the plan loop's returned session into
+  `code-review-pass.workflow.mjs`'s `seedFromSession` argument on that PR's first pass.
+  Once that new mode's own session exists, resume IT with `--session` for every
+  further pass in that mode, per the paragraph above — `--seed-from-session` is only
+  for the one-time handoff into a new mode, never for continuing within one.
+
+  **The `chatgpt-review.mjs pr` CLI itself hard-rejects a 4th call tied to one
+  `pr`-mode session (`"PR review sessions permit at most three total passes"`,
+  `status: invalid_request`, exit before any prompt reaches ChatGPT) — this is
+  enforced by the tool, not just the workflow script's loop bound, so re-invoking the
+  workflow with that session's handle past pass 3 will fail outright, not silently
+  succeed.** Once a session's 3 formal `pr`-mode passes are spent, continue the SAME
+  conversation by driving the existing tab directly instead of the capped CLI: read
+  the DOM, submit a revision/advisory/final-verdict message via
   `document.execCommand('insertText', ...)` + a real click on the send button (same
   technique as the Chrome-crash recovery path in `SKILL.md` step 2.2), ask explicitly
   for the standard `VERDICT: SHIP`/`VERDICT: REVISE` protocol if you need a formal
   certification out of it, and post the result as a PR comment yourself (`gh pr
-  comment`) since no CLI publish step ran. A fresh session is correct only when
-  starting a genuinely new unit that has never had one.
+  comment`) since no CLI publish step ran. A fresh conversation (no `--session` and no
+  `--seed-from-session`) is correct only when starting a genuinely new unit that has
+  never had one.
 
 ## Default plan loop — `plan-review-loop.workflow.mjs`
 

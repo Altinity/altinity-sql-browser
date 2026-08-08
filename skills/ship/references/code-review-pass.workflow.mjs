@@ -9,14 +9,20 @@ export const meta = {
   ],
 }
 
-// args: { prUrl, questionFile, session, pass, integrationBranch, issueRef }
+// args: { prUrl, questionFile, session, pass, integrationBranch, issueRef, seedFromSession }
 // The coordinator MUST have the integration branch checked out in the main tree before invoking.
+// seedFromSession (only meaningful when session is null, i.e. pass 1): the chatgpt-review
+// session handle from this SAME unit's plan-authoring/plan-review loop. Passing it threads
+// that existing ChatGPT conversation into this brand-new pr-mode session (--seed-from-session)
+// instead of opening a fresh chat, so the whole unit — planning through code review — stays
+// one conversation. Omit it only when no prior session exists for this unit (should not happen
+// in normal /ship operation) or the coordinator has a specific reason not to thread it.
 // The workflow runtime has been observed delivering `args` JSON-encoded as a string rather
 // than parsed, even when the caller passes a real object — normalize defensively so a
 // well-formed argument is never rejected.
 const runArgs = typeof args === 'string' ? JSON.parse(args) : args
 if (!runArgs || !runArgs.prUrl || !runArgs.questionFile || !runArgs.pass || !runArgs.integrationBranch) {
-  throw new Error('args {prUrl, questionFile, session|null, pass, integrationBranch, issueRef} required')
+  throw new Error('args {prUrl, questionFile, session|null, pass, integrationBranch, issueRef, seedFromSession} required')
 }
 
 const PASS_SCHEMA = {
@@ -69,13 +75,23 @@ const FIX_SCHEMA = {
 const READ_ONLY = 'Strictly read-only beyond your stated deliverable: no Edit or Write, no git or gh mutations, no task or memory writes, no chatgpt-review invocations beyond the one command given.'
 
 log(`Code review pass ${runArgs.pass}/3 — ${runArgs.prUrl}`)
-const sessionFlag = runArgs.session ? ` --session ${runArgs.session}` : ''
+const sessionFlag = runArgs.session
+  ? ` --session ${runArgs.session}`
+  : runArgs.seedFromSession ? ` --seed-from-session ${runArgs.seedFromSession}` : ''
+// A generic output filename (e.g. the old literal example chatgpt-review-pr.json) is reused
+// across every PR and every pass for an ENTIRE /ship run that can span many hours — observed
+// live on #630 phase 6: a review-runner agent's structured-output step reported a stale file's
+// content (a different PR's old, already-resolved review) as if it were this pass's real
+// result, even though the real command for THIS pr/pass had already run and posted correctly.
+// Naming the file after this exact PR+pass makes that class of stale-read impossible to miss.
+const prNumberMatch = /\/pull\/(\d+)/.exec(runArgs.prUrl)
+const outputFile = `$TMPDIR/chatgpt-review-pr-${prNumberMatch ? prNumberMatch[1] : 'unknown'}-pass${runArgs.pass}.json`
 const review = await agent(
   'A repo-grounded ChatGPT review pass commonly takes 10-25 minutes. Two things you MUST NOT do: (1) run_in_background — a background wait inside this kind of agent call has been observed getting force-terminated (structured-output-enforce) under two minutes in, before any response can exist, regardless of effort; (2) omit --timeout — the script defaults to a 1800s internal wait, but the Bash tool itself hard-kills any FOREGROUND command at 10 minutes with no output flushed, so an uncapped call dies with nothing to read.\n\n' +
-  'Instead, run this command with Bash IN THE FOREGROUND, with the Bash call\'s own timeout set to 580000 (its practical ceiling is 600000ms), redirecting stdout to a file under $TMPDIR (e.g. `> $TMPDIR/chatgpt-review-pr.json`) — it publishes a PR comment:\n\n' +
-  `node skills/chatgpt-review/scripts/chatgpt-review.mjs pr ${runArgs.prUrl} --question-file ${runArgs.questionFile} --timeout 540${sessionFlag}\n\n` +
+  `Instead, run this command with Bash IN THE FOREGROUND, with the Bash call's own timeout set to 580000 (its practical ceiling is 600000ms), redirecting stdout to EXACTLY this file — do not substitute a generic name. This filename is unique to this PR and pass on purpose: a long /ship run reuses the same $TMPDIR across many PRs and passes over many hours, and a generic filename risks a LATER pass silently reading a stale file left over from an EARLIER one instead of its own real result. It publishes a PR comment:\n\n` +
+  `node skills/chatgpt-review/scripts/chatgpt-review.mjs pr ${runArgs.prUrl} --question-file ${runArgs.questionFile} --timeout 540${sessionFlag} > ${outputFile}\n\n` +
   '--timeout 540 caps the script\'s OWN internal wait at 9 minutes — safely inside the Bash tool\'s 10-minute ceiling — so the process exits cleanly with valid JSON instead of being killed. A "status" of "timed_out" is EXPECTED and NORMAL here, not a failure: the script persists its session handle and conversation URL even on a timeout.\n' +
-  'Read the output file (it is JSON). FIRST check response_text regardless of "status": if it already ends with exactly one well-formed "VERDICT: SHIP" or "VERDICT: REVISE" line, ChatGPT had already finished generating — treat this as a complete result and stop retrying, even if "status" says "rate_limited"/"timed_out"/etc (a UI-level banner can appear over an already-finished answer; the literal status field is NOT authoritative about whether real content exists). Only if response_text has NO parseable verdict line do you need to retry: if "status" is "rate_limited", ChatGPT is throttling conversation access — hammering it immediately makes this WORSE, so wait first using a small-increment loop in ONE Bash call (a bare `sleep 90` prefix gets blocked as chaining), e.g. `end=$(( $(date +%s) + 90 )); while [ $(date +%s) -lt $end ]; do sleep 5; done; node ...`. For any other non-completed, no-verdict status, retry immediately. Either way, retry the SAME chatgpt-review command, adding/updating `--session <handle>` from the JSON (again foreground, again --timeout 540, again Bash timeout 580000) — this resumes the same conversation instead of resubmitting the prompt (it may already have published the comment). Repeat for up to 4 total attempts. After 4 attempts with still no parseable verdict line, stop and treat it as incomplete.\n' +
+  'Read the output file (it is JSON). FIRST check response_text regardless of "status": if it already ends with exactly one well-formed "VERDICT: SHIP" or "VERDICT: REVISE" line, ChatGPT had already finished generating — treat this as a complete result and stop retrying, even if "status" says "rate_limited"/"timed_out"/etc (a UI-level banner can appear over an already-finished answer; the literal status field is NOT authoritative about whether real content exists). Only if response_text has NO parseable verdict line do you need to retry: if "status" is "rate_limited", ChatGPT is throttling conversation access — hammering it immediately makes this WORSE, so wait first using a small-increment loop in ONE Bash call (a bare `sleep 90` prefix gets blocked as chaining), e.g. `end=$(( $(date +%s) + 90 )); while [ $(date +%s) -lt $end ]; do sleep 5; done; node ...`. For any other non-completed, no-verdict status, retry immediately. Either way, retry the SAME chatgpt-review command, but REPLACE whatever `--session`/`--seed-from-session` flag it had with `--session <handle>` using the "session" field from the JSON (never keep --seed-from-session, and never pass both flags — the CLI rejects that) (again foreground, again --timeout 540, again Bash timeout 580000) — this resumes the same conversation instead of resubmitting the prompt (it may already have published the comment). Repeat for up to 4 total attempts. After 4 attempts with still no parseable verdict line, stop and treat it as incomplete.\n' +
   'Then map the final JSON to the output schema:\n' +
   '- completed: true if response_text contains a real, parseable, single well-formed trailing VERDICT line — regardless of the literal "status" field; false only if no such line exists after all attempts;\n' +
   '- verdict: the trailing "VERDICT: <word>" line of response_text — SHIP only for a single well-formed "VERDICT: SHIP"; anything absent, duplicated, or malformed is REVISE (fail-closed);\n' +

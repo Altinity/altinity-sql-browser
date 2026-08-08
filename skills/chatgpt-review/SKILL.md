@@ -27,6 +27,8 @@ Leave ChatGPT's predefined model and effort unchanged; the script must not open 
 
 For a PR fix review, retain the returned `session` handle and invoke the same PR with `--session <handle>`. The script reuses that conversation and permits at most three total passes. Ask it only after accepted findings have been fixed and pushed.
 
+To keep one whole unit of work (e.g. plan authoring, then its PR's code review) in a single ChatGPT conversation across DIFFERENT modes, pass `--seed-from-session <handle>` — naming a session from any earlier mode/target — the FIRST time the new mode starts, instead of `--session`. This creates that mode's own new session (its own pass counter) but reopens the same browser tab/conversation rather than starting a fresh chat. `--session` and `--seed-from-session` are mutually exclusive; once the new mode's own session exists, resume it with `--session` like any other, never re-seed.
+
 If a run ends after submission with an incomplete typed status, retry with its returned `session` handle. The script resumes an active or already-finished uncollected response instead of sending the prompt twice.
 
 For `plan-author`, use the canonical issue URL and keep the absolute output path
