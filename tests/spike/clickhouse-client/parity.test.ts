@@ -396,7 +396,7 @@ describe('cancellation lease — the REAL production killQueryWithLease uses the
     const rotatedAuthorization = `Basic ${btoa('rotated-user:rotated-pass')}`;
     expect(rotatedAuthorization).not.toBe(frozenAuthorization); // sanity: the two really differ
 
-    await killQueryWithLease(lease, qid('ordinary-query'), (s) => `'${String(s)}'`);
+    await killQueryWithLease(lease, qid('ordinary-query'));
 
     expect(lastAuth()).toBe(frozenAuthorization);
   });
@@ -406,8 +406,8 @@ describe('cancellation lease — the REAL production killQueryWithLease uses the
     const lease: AuthenticatedCancellationLease = {
       epoch: 1, origin: fault.baseUrl, authorization: 'Basic irrelevant', fetch: capturing,
     };
-    await killQueryWithLease(lease, null, (s) => `'${String(s)}'`);
-    await killQueryWithLease(lease, undefined, (s) => `'${String(s)}'`);
+    await killQueryWithLease(lease, null);
+    await killQueryWithLease(lease, undefined);
     expect(lastAuth()).toBeNull();
   });
 });

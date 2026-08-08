@@ -707,12 +707,28 @@ const CONTRACT_OWNER = 'src/net/clickhouse-transport.types.ts';
 const STREAM_OWNER = 'src/core/stream.ts';
 
 describe('Phase 3 legacy-owner rule — the moved stream/exception primitives cannot regain their former owners', () => {
-  for (const file of PHASE3_LEGACY_OWNER_FILES) {
-    it(`the real ${file} carries none of its former declarations`, () => {
-      const text = readFileSync(join(repoRoot, file), 'utf8');
-      expect(findLegacyOwnerViolations(text, file)).toEqual([]);
-    });
-  }
+  // Issue #630 Phase 7 (plan §16/§2.6) — `PHASE3_LEGACY_OWNER_FILES` stays
+  // pinned to its historical three-file former-owner set UNCHANGED (asserted
+  // below, in the drift-bind describe block) even though two of those three
+  // files are now intentionally deleted: the constant describes former
+  // owners, not necessarily currently-existing files. Blindly `readFileSync`-
+  // ing all three (the pre-Phase-7 shape) would ENOENT the moment the first
+  // deleted file is read — replaced with explicit absence assertions for the
+  // two retired production files, plus a real read+clean-scan of the one
+  // survivor, `src/core/stream.ts`. Never "fixed" by reintroducing either
+  // deleted file (plan §29 rollback rule).
+  it(`${TRANSPORT_OWNER} is absent (issue #630 Phase 7 — deleted; the local compatibility transport moved wholly onto @altinity/clickhouse-http)`, () => {
+    expect(existsSync(join(repoRoot, TRANSPORT_OWNER))).toBe(false);
+  });
+
+  it(`${CONTRACT_OWNER} is absent (issue #630 Phase 7 — deleted alongside its implementation)`, () => {
+    expect(existsSync(join(repoRoot, CONTRACT_OWNER))).toBe(false);
+  });
+
+  it(`the real ${STREAM_OWNER} carries none of its former declarations`, () => {
+    const text = readFileSync(join(repoRoot, STREAM_OWNER), 'utf8');
+    expect(findLegacyOwnerViolations(text, STREAM_OWNER)).toEqual([]);
+  });
 
   it('flags a re-added streamLines forwarding-property wrapper in the transport adapter (sabotage probe, not written to disk)', () => {
     const probe = `
