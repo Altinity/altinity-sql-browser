@@ -1104,6 +1104,41 @@ Rejected verdict). Standalone package build/declaration/npm-pack
 stabilization and any external-repository extraction are out of this
 phase's scope, tracked separately by the issue's Phase 8.
 
+### #630 Phase 4 extraction addendum (2026-08-08)
+
+**This addendum, like the Phase 2 addendum above, does not reopen or
+otherwise touch the Rejected decision above.** `@clickhouse/client-web`
+remains rejected for production adoption for exactly the reasons the "Phase
+2 cancellation-incompatibility addendum" records; nothing here revisits
+that evidence, and nothing here is the "Phases 2–4" official-client
+implementation/cutover/deletion sequence this ADR's own numbering refers to
+elsewhere — issue #630's own phase numbering is independent of, and
+unrelated to, this ADR's Phase 1–4 numbering (a naming coincidence noted
+here to avoid confusion between the two).
+
+Issue #630 Phase 4 adds purely additive first-party response/query
+consumption layers on top of the package's own unchanged `request()` —
+`ensureClickHouseSuccess`, `consumeJsonResponse`/`consumeTextResponse`/
+`consumeProgressResponse`, a minimal `ClickHouseError`, convenience
+`queryJson`/`queryText`/`queryProgress` client methods, and a stateless
+wire-level `killQuery`. As with Phase 2/3, no third-party HTTP client is
+introduced and no cancellation semantics change: `queryProgress` still
+resolves through the caller's own `AbortSignal` driving the real `fetch()`
+for the response's whole lifetime, exactly the property whose absence from
+`@clickhouse/client-web@1.23.1` is this ADR's own rejection reason — proven
+again, directly against the new API, by a real-browser Chromium/WebKit
+scenario extending the existing native cancellation harness
+(`tests/e2e/clickhouse-http-transport.{html,spec.js}`).
+
+No SQL Browser production file under `src/**` changed in this phase: root
+`queryJson`/`runQuery`/`exportQuery`/ordinary `killQuery`/
+`killQueryWithLease` all continue to reach `src/net/ch-client.ts`'s existing
+`authedFetch` auth/epoch/retry policy exactly as before, and none of them
+adopt the new package APIs yet — that consuming-side cutover is deferred to
+a later #630 phase, tracked alongside the SQL quoting/type-grammar
+extraction (#630 Phase 5) and authenticated composition (#630 Phase 6) this
+ADR's Phase 2 addendum already named as deferred.
+
 
 
 ```sh

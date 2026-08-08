@@ -183,6 +183,24 @@ test.describe('#630 Phase 1 — native Fetch/Response/cancellation characterizat
     expect(result.chunksAfter).toBe(result.chunksBefore);
   });
 
+  test('Scenario 9 (#630 Phase 4) — package client.queryProgress() emits no callbacks after observable cancellation, one Fetch', async ({ page }, testInfo) => {
+    test.setTimeout(30_000);
+    const queryId = qid('post-header-abort-hold', testInfo.project.name);
+    const result = await page.evaluate(
+      ({ baseUrl, queryId, holdMs }) => window.__scenario9(baseUrl, queryId, holdMs),
+      { baseUrl: fault.baseUrl, queryId, holdMs: POST_HEADER_ABORT_HOLD_MS },
+    );
+    expect(result.rejectedName).toBe('AbortError');
+    expect(result.chunksAtRejection).toBeGreaterThanOrEqual(1);
+    expect(result.countAtRejection).toBe(1);
+    // One real Fetch throughout — no retry, before or after the wait.
+    expect(result.countAfterWait).toBe(1);
+    // Nothing changed across the wait spanning the fixture's held second
+    // write — the abort truly stopped the loop, not merely delayed it.
+    expect(result.linesAfterWait).toBe(result.linesAtRejection);
+    expect(result.chunksAfterWait).toBe(result.chunksAtRejection);
+  });
+
   test('Extra — invalid UTF-8 raw bytes remain byte-identical at the native boundary', async ({ page }, testInfo) => {
     const queryId = qid('invalid-utf8-raw', testInfo.project.name);
     const result = await page.evaluate(

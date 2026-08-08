@@ -10,6 +10,49 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#630 Phase 4: add consuming query APIs, a minimal ClickHouse HTTP error,
+  and a stateless `KILL QUERY` to `@altinity/clickhouse-http`.** Purely
+  additive — no SQL Browser production file under `src/**` changed, and no
+  `src/**` caller consumes any of this yet (that cutover is a later phase).
+  `packages/clickhouse-http` now also owns: `ensureClickHouseSuccess`
+  (`response.ts`, new) — classifies a resolved `Response` without ever
+  consuming a successful body (returns it by strict identity, `bodyUsed`
+  stays `false`; a non-2xx response reads its error text exactly once and
+  throws the new minimal `ClickHouseError` — `status`, exact `responseText`,
+  a `message` derived from the existing `parseExceptionText`, never
+  `findExceptionFrame`); `consumeJsonResponse`/`consumeTextResponse`/
+  `consumeProgressResponse` (`response.ts`), each composing that classifier
+  with exactly one further native operation (`.json()`/`.text()`/the
+  existing `streamLines()`) — no retry, no extra try/catch, so native
+  network/abort/body-reader errors propagate unwrapped and a successful
+  in-band `{"exception": ...}` progress line remains ordinary `onLine`
+  callback data; `queryJson`/`queryText`/`queryProgress` convenience methods
+  on `ClickHouseHttpClient` (`client.ts`), each exactly one `client.request()`
+  call plus one matching consumer (one Fetch per call) — only `queryJson`
+  defaults its `defaultFormat` (via `??`, to `'JSON'`, only when omitted);
+  `queryText`/`queryProgress` require an explicit wire format and apply no
+  SQL Browser Table/KPI/TSV mapping; and a stateless wire-level `killQuery`
+  (`KILL QUERY WHERE query_id = <quoted> ASYNC`, built from one `queryText()`
+  call) — no credential lookup, refresh, epoch, lifecycle callback, retry, or
+  query registry of its own, and it never writes its SQL target into the HTTP
+  request's own `params.query_id`. Its private, unexported
+  `quoteKillQueryId` reproduces only `src/core/format.ts`'s `sqlString()`
+  backslash-then-quote escaping convention as a narrow Phase-4 stopgap — Phase
+  5 replaces it with the package's own shared public string-literal quoting
+  API. The existing package-policy architecture rules (package→root `src/**`
+  ban, zero bare-specifier imports, root→package deep-import ban, bare-import
+  location restricted to `src/net/**`) automatically cover the new
+  `response.ts` module; no new architecture rule or hand-rolled scanner was
+  added. `tests/e2e/clickhouse-http-transport.{html,spec.js}` gained a new,
+  additive Scenario 9 proving the new `client.queryProgress()` preserves the
+  identical native post-header-cancellation semantics (one real Fetch, the
+  caller's own `AbortSignal` driving cancellation for the response's whole
+  lifetime, no callbacks after rejection) already proven for the production
+  compatibility path by the unchanged Scenario 6/8. This is phase 4 of 8
+  (issue #630); SQL quoting/type-grammar extraction, authentication
+  composition, and SQL Browser query/export/cancellation cutover + legacy
+  deletion remain later phases.
+
 - **#630 Phase 3: move the progress-stream read loop and HTTP exception
   parsing/late-exception framing into `@altinity/clickhouse-http`.**
   `packages/clickhouse-http` now owns the progress-bearing JSON-lines read
