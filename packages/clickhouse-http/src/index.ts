@@ -27,8 +27,12 @@
 // (`build/check-boundaries.mjs`) allows their real SQL Browser consumers to
 // import them directly outside `src/net/**`, while the transport/protocol
 // surface above (`createClickHouseHttpClient`, `chUrl`, `streamLines`, the
-// response consumers, `ClickHouseError`, and their types) remains
-// `src/net/**`-only, exactly as before.
+// response consumers, `ClickHouseError`) remains `src/net/**`-only, exactly
+// as before. The check is value-import-only: a type-only reference to a
+// transport/protocol name (`import type`/`export type`, or an individual
+// `import { type X }` specifier) is never flagged, matching
+// `docs/ARCHITECTURE.md` and `build/lib/check-legacy-owners.mjs`'s own
+// erasure-based rationale.
 
 export { chUrl } from './url.js';
 export { createClickHouseHttpClient } from './client.js';

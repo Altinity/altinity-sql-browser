@@ -84,12 +84,14 @@ function collectFiles(dir) {
 // `extractSpecifiers` (static import/export-from, bare side-effect import,
 // dynamic import) — independently implemented, not imported (importing the
 // production script would run its whole top-level check-and-exit routine
-// inside this test process).
+// inside this test process). The dynamic-import pattern also accepts a
+// backtick no-substitution template literal, matching the production
+// scanner (only a dynamic `import(...)` call can syntactically take one).
 const SPECIFIER_PATTERNS = [
   /\bimport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bexport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bimport\s*['"]([^'"]+)['"]/g,
-  /\bimport\s*\(\s*['"]([^'"]+)['"]/g,
+  /\bimport\s*\(\s*[`'"]([^`'"]+)[`'"]/g,
 ];
 
 function extractSpecifiers(source) {
@@ -308,6 +310,18 @@ describe('Rule D, deep-import half — the deep-import subpath form is forbidden
     expect(found.some((line) => line.includes('__boundary_probe_630_deepbare__'))).toBe(true);
   });
 
+  // Regression for a real escape found in review: the quote-only version of
+  // this scanner's dynamic-import pattern matched only `['"]`, so a
+  // no-substitution TEMPLATE LITERAL deep import (backtick-delimited)
+  // reached no branch of the scan at all and silently escaped the rule.
+  it('flags a deep-import subpath spelled through a backtick template-literal dynamic import (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_deeptemplate__.ts',
+        'export async function f() { await import(`@altinity/clickhouse-http/src/client`); }\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deeptemplate__'))).toBe(true);
+  });
+
   it('flags a deep-import subpath even under src/net/** (deep imports stay forbidden everywhere, not just outside net)', () => {
     const found = deepImportViolations(join(repoRoot, 'src'), [
       ['src/net/__boundary_probe_630_deepnet__.ts',
@@ -374,6 +388,50 @@ describe('Rule D, revised bare-specifier half (issue #630 Phase 5) — outside s
         "export async function f() { await import('@altinity/clickhouse-http'); }\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_dynamic__'))).toBe(true);
+  });
+
+  // Regression for a real escape found in review: `findPackageImportUsages`'s
+  // `isTargetSpecifier` matched only `SyntaxKind.StringLiteral`, so a dynamic
+  // `import(...)` spelled with a no-substitution TEMPLATE LITERAL (backtick)
+  // parsed to `SyntaxKind.NoSubstitutionTemplateLiteral` and never matched —
+  // the bare-specifier half of Rule D silently let it through.
+  it('flags a backtick-template-literal dynamic import of the package outside src/net/** (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_dynamic_template__.ts',
+        'export async function f() { await import(`@altinity/clickhouse-http`); }\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_dynamic_template__'))).toBe(true);
+  });
+
+  // The check is deliberately value-import-only (erasure rationale documented
+  // on `findPackageImportUsages` and in `docs/ARCHITECTURE.md`/`CLAUDE.md`):
+  // a type-only reference to a transport/protocol name carries no runtime
+  // package access, so none of these three type-only forms is flagged, even
+  // though `createClickHouseHttpClient`/`ClickHouseError` are transport
+  // names, not approved pure-language exports. These pin today's actual,
+  // reviewed behavior as an explicit contract rather than leaving it latent.
+  it('passes a whole `import type` clause naming a transport export outside src/net/** (type-only, erased before bundling)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_importtype__.ts',
+        "import type { createClickHouseHttpClient } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_importtype__'))).toBe(false);
+  });
+
+  it('passes an individual `import { type X }` specifier naming a transport export outside src/net/** (type-only, erased before bundling)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_typespecifier__.ts',
+        "import { type createClickHouseHttpClient } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_typespecifier__'))).toBe(false);
+  });
+
+  it('passes an `export type { X } from` re-export naming a transport export outside src/net/** (type-only, erased before bundling)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_exporttype__.ts',
+        "export type { ClickHouseError } from '@altinity/clickhouse-http';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_exporttype__'))).toBe(false);
   });
 
   it('flags a package re-export gateway outside src/net/** (sabotage probe, not written to disk)', () => {

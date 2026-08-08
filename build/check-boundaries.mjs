@@ -184,11 +184,21 @@ function collectFiles(target) {
 // identifier/brace/comma/whitespace characters between the keyword and
 // `from`, so it can't skip past a from-less import into a later statement's
 // clause, and `\b` keeps it off the word "import" inside an identifier.
+//
+// Only the dynamic-import pattern also accepts a backtick-delimited
+// no-substitution template literal (`` import(`pkg`) ``): a static
+// import/export declaration's module specifier and a bare side-effect
+// import's specifier must be a plain string literal per grammar — only a
+// dynamic `import(...)` call can take a template literal argument — so
+// widening the other three patterns to backticks would only ever match
+// syntax that can't occur. Without this, a deep-import subpath spelled
+// through a template literal (`` import(`@altinity/clickhouse-http/src/
+// client`) ``) silently escaped Rule D's deep-import half.
 const SPECIFIER_PATTERNS = [
   /\bimport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bexport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bimport\s*['"]([^'"]+)['"]/g,
-  /\bimport\s*\(\s*['"]([^'"]+)['"]/g,
+  /\bimport\s*\(\s*[`'"]([^`'"]+)[`'"]/g,
 ];
 
 function extractSpecifiers(source) {

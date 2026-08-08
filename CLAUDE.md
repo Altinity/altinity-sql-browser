@@ -40,13 +40,18 @@ all bundled — see hard rule 4). Quality is held by tests.
    its public `.` export is consumable. Bare-specifier package access
    splits into two categories: TRANSPORT/PROTOCOL APIs
    (`createClickHouseHttpClient`, `chUrl`, `streamLines`, the response
-   consumers, `ClickHouseError`, and their types) remain importable only
-   under `src/net/**`, exactly as Phase 2 established, alongside
-   OAuth/Basic credential acquisition, refresh, epochs, lifecycle callbacks,
-   retries, and SQL Browser's own product operations/result modes; the
-   Phase-4 consuming query APIs (`queryJson`/`queryText`/`queryProgress`)
-   remain additive and not yet consumed by any `src/**` caller (that cutover
-   is Phase 7). Pure LANGUAGE APIs (`sqlString`/`quoteIdent`/`qualifyIdent`,
+   consumers, `ClickHouseError`) remain importable only under `src/net/**`,
+   exactly as Phase 2 established, alongside OAuth/Basic credential
+   acquisition, refresh, epochs, lifecycle callbacks, retries, and SQL
+   Browser's own product operations/result modes; the Phase-4 consuming
+   query APIs (`queryJson`/`queryText`/`queryProgress`) remain additive and
+   not yet consumed by any `src/**` caller (that cutover is Phase 7). The
+   name/shape check is value-import-only: `import type`/`export type` and
+   individual `import { type X }` specifiers of a transport/protocol name
+   are never flagged (erased before bundling, so they carry no runtime
+   package access — the same rationale `build/lib/check-legacy-owners.mjs`
+   documents), matching `docs/ARCHITECTURE.md`. Pure LANGUAGE APIs
+   (`sqlString`/`quoteIdent`/`qualifyIdent`,
    `scanSpans`/`Span`/`SpanKind`, and the generic type-grammar exports —
    `parseClickHouseType`, `analyzeTypeModifiers`, `canonicalType`,
    `enumMembers`/`enumValues`, and the rest of the wrapper/structural-query

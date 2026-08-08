@@ -50,9 +50,9 @@ import { scanDelimited } from './quoted-span.js';
 // The exported discriminated union every consumer (param-type.ts, kpi.js)
 // reads: a `TypeArg` is either a nested `TypeNode` (`kind: 'type'`) or a
 // `LiteralArg` (`kind: 'string' | 'number'`) — never anything else.
-// `param-type.ts` pins an identical local copy of this shape over the
-// (previously unconverted) module; keep that pinned shape and this one in sync
-// if either changes.
+// `param-type.ts` type-imports `TypeArg`/`TypeNode` directly from the
+// package's public export now — it no longer pins a local copy of this
+// shape, so there is nothing to keep in sync by hand.
 
 /** A non-type argument (`Decimal`'s precision/scale, `FixedString`'s length,
  *  `DateTime`'s timezone) — never a fake type node. */

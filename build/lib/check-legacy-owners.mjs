@@ -263,6 +263,15 @@ export function findKillStopgapOwnerViolations(source, filename) {
  * bundled artifact (see `build/e2e-serve.mjs`'s type-stripping, and esbuild's
  * own `import type` elision), so they carry no real package access.
  *
+ * The module specifier itself may be a plain string literal OR a
+ * no-substitution template literal (`` import(`pkg`) ``) — only a dynamic
+ * `import(...)` call can syntactically take the latter (a static
+ * import/export declaration's module specifier must be a StringLiteral per
+ * grammar), but matching both kinds here, like the sibling
+ * `findNamedIdentifierViolations` already does for property/member names,
+ * keeps this one check from being the only AST matcher in the file that
+ * still assumes quotes.
+ *
  * @param {string} source
  * @param {string} filename repo-relative, forward-slash separated (used only
  *   for the virtual-file basename/grammar selection — this function is not
@@ -274,7 +283,9 @@ export function findPackageImportUsages(source, filename, packageSpecifier) {
   return withParsedSource(source, filename, (sourceFile) => {
     const found = [];
     const isTargetSpecifier = (node) =>
-      !!node && node.kind === SyntaxKind.StringLiteral && node.text === packageSpecifier;
+      !!node
+      && (node.kind === SyntaxKind.StringLiteral || node.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
+      && node.text === packageSpecifier;
     const walk = (node) => {
       if (is.isImportDeclaration(node) && isTargetSpecifier(node.moduleSpecifier)) {
         const clause = node.importClause;
