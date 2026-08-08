@@ -55,8 +55,13 @@ export interface ClickHouseHttpRequest {
 
 /** `queryJson`'s request shape: identical to `ClickHouseHttpRequest` except
  *  `defaultFormat` is OPTIONAL — omitting it (leaving it `undefined`) means
- *  "default to JSON"; an explicit value, including `''`, is transmitted
- *  unchanged (`queryJson` defaults with `??`, never `||`). */
+ *  "default to JSON"; an explicit value, including `''`, is passed through
+ *  unchanged into the composed `ClickHouseHttpRequest` (`queryJson` defaults
+ *  with `??`, never `||`). This guarantee ends at `request()`'s own
+ *  boundary: `chUrl` (package-owned, Phase 1/2) separately falls back on ANY
+ *  falsy `format` — including `''` — to its own default when it serializes
+ *  the final URL, so a `''` value still reaches the wire as `chUrl`'s
+ *  default, not as `''`. */
 export type ClickHouseJsonRequest = Omit<ClickHouseHttpRequest, 'defaultFormat'> & {
   defaultFormat?: string;
 };
@@ -87,7 +92,11 @@ export interface ClickHouseHttpClient {
 
   /** One `request()` + `consumeJsonResponse()`. `defaultFormat` defaults to
    *  `'JSON'` only when omitted (`undefined`) — an explicit format,
-   *  including `''`, is preserved. Throws `ClickHouseError` on a resolved
+   *  including `''`, is preserved into the `ClickHouseHttpRequest` this
+   *  method composes and passes to `request()`. It is NOT a wire-level
+   *  guarantee: `chUrl` still applies its own falsy fallback when it builds
+   *  the final URL, so an explicit `''` reaches ClickHouse as `chUrl`'s
+   *  default format, never as `''`. Throws `ClickHouseError` on a resolved
    *  non-2xx response; native network/abort/body errors propagate
    *  unchanged. */
   queryJson<T>(request: ClickHouseJsonRequest): Promise<T>;

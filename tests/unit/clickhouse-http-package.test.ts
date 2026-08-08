@@ -168,19 +168,27 @@ describe('createClickHouseHttpClient().queryJson', () => {
     expect(url).toContain('default_format=JSONCompact');
   });
 
-  it('an explicit empty-string defaultFormat is preserved — defaulting uses ?? (omission), never || (falsy)', async () => {
-    // Asserts what `queryJson` itself passes to `request()`, not the final
-    // URL: `chUrl` (Phase 1/2, out of this phase's scope) separately falls
-    // back on ANY falsy `format` — including `''` — to its own default, so
-    // the URL alone can't distinguish "queryJson defaulted" from "chUrl
-    // defaulted". Spying on `client.request` observes the exact
+  it('an explicit empty-string defaultFormat reaches request() as \'\' (?? defaulting, never ||) but chUrl still falls back on the wire', async () => {
+    // Two layers, asserted separately so neither can mask a regression in
+    // the other. queryJson's own defaulting (`??`, never `||`) is proven by
+    // spying on `client.request` and observing the exact
     // `ClickHouseHttpRequest` object queryJson composed, before chUrl ever
-    // sees it.
-    const { deps: d } = deps(() => new Response('{"a":1}'));
+    // sees it — an explicit `''` must reach request() as `''`, not silently
+    // become the JSON default.
+    const { fetchMock, deps: d } = deps(() => new Response('{"a":1}'));
     const client = createClickHouseHttpClient(d);
     const requestSpy = vi.spyOn(client, 'request');
     await client.queryJson({ sql: 'SELECT 1', authorization: 'Bearer t', defaultFormat: '' });
     expect(requestSpy.mock.calls[0][0].defaultFormat).toBe('');
+
+    // But that per-request guarantee is NOT a wire-level one: `chUrl`
+    // (package-owned, Phase 1/2, unchanged here) separately falls back on
+    // ANY falsy `format` — including `''` — to its own default when it
+    // serializes the final URL. Pin that actual, current end-to-end
+    // behavior directly on the URL so a future chUrl change (in either
+    // direction) is caught here rather than only in url.ts's own suite.
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('default_format=JSONStringsEachRowWithProgress');
   });
 
   it('exact SQL/settings/params/Authorization/signal reach the one Fetch; the response is consumed once as JSON', async () => {
