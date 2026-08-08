@@ -291,11 +291,13 @@
     //    cancellation (bullet 12) — single call: the abort is scheduled from
     //    inside the first onChunk callback, then the scenario itself waits
     //    out the fixture's hold before returning, so the Node side never
-    //    needs its own timing loop. Requests through the production
+    //    needs its own timing loop. Requests through the
     //    `createHttpTransport().send()` adapter, then streams the resulting
-    //    native `resp.body` through the package's own `streamLines` — the
-    //    exact call path `ch-client.ts`'s `runQuery` uses in production
-    //    since Phase 3. ───────────────────────────────────────────────────
+    //    native `resp.body` through the package's own `streamLines` — this
+    //    is lower-layer package/transport regression coverage, NOT a claim
+    //    about `runQuery()`'s current production path (see the file-level
+    //    comment above; that path has been `authenticatedRequest()` /
+    //    `authenticatedProgress()` since Phase 6). ─────────────────────────
     window.__scenario6 = async function (baseUrl, queryId, holdMs) {
       const { transport } = makeTransport(baseUrl);
       const controller = new AbortController();
@@ -358,8 +360,10 @@
     };
 
     // ── Scenario 8 — abort after full completion has no effect (bullet 14) ─
-    //    Also uses the package's own `streamLines` (#630 Phase 3) — see
-    //    Scenario 6's comment above.
+    //    Also uses the package's own `streamLines` (#630 Phase 3) — same
+    //    lower-layer package/transport regression coverage as Scenario 6
+    //    above, not a claim about the current production path (see the
+    //    file-level comment above).
     window.__scenario8 = async function (baseUrl, queryId) {
       const { transport } = makeTransport(baseUrl);
       const controller = new AbortController();
