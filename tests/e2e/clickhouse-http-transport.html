@@ -26,9 +26,10 @@
        #630 Phase 3 — Scenario 6 and Scenario 8 below no longer call
        `transport.streamLines()` (the transport adapter no longer has a
        stream member at all): they import the package's own `streamLines`
-       directly, exercising the SAME real production call path
-       `ch-client.ts`'s `runQuery` uses — no additional import-map entry is
-       needed, since the specifier is already mapped above.
+       directly, exercising the same call path `ch-client.ts`'s `runQuery`
+       used through #630 Phase 5 (superseded by the authenticated path since
+       Phase 6 — see below) — no additional import-map entry is needed,
+       since the specifier is already mapped above.
 
        #630 Phase 4 — Scenario 9 (new, additive) exercises the package's own
        `createClickHouseHttpClient(...).queryProgress()` convenience method
@@ -391,8 +392,8 @@
 
     // ── Scenario 9 (#630 Phase 4, new/additive) — the package's own
     //    `queryProgress()` proves the SAME native post-header cancellation
-    //    semantics Scenario 6 already proves for the production compatibility
-    //    path, but through the NEW Phase-4 convenience API directly: one
+    //    semantics Scenario 6 already proves for the lower-layer
+    //    compatibility/package path, but through the NEW Phase-4 convenience API directly: one
     //    package client, one `queryProgress()` call, the original
     //    `AbortController.signal` passed straight through, abort scheduled
     //    from inside the first `onChunk` callback (proving headers have
