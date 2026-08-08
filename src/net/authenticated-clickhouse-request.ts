@@ -31,6 +31,7 @@
 import {
   createClickHouseHttpClient, chUrl, parseExceptionText,
   consumeJsonResponse, consumeTextResponse, consumeProgressResponse,
+  ensureClickHouseSuccess,
 } from '@altinity/clickhouse-http';
 import type { ClickHouseHttpRequest, StreamCallbacks } from '@altinity/clickhouse-http';
 import { isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
@@ -206,6 +207,26 @@ export async function authenticatedRequest(
     }
     return resp;
   }
+}
+
+/** One `authenticatedRequest()` + the package's `ensureClickHouseSuccess()` —
+ *  the authenticated counterpart of the package's own response classifier,
+ *  for callers (raw byte-stream export) that must own body consumption
+ *  themselves rather than going through one of the three consumer wrappers
+ *  below. `authenticatedRequest` remains the sole owner of token/epoch/
+ *  refresh/offline-classification/lifecycle callbacks; this adds exactly
+ *  ONE package HTTP success/error classification after settlement, with no
+ *  retry and no additional Fetch. On success, resolves to the exact same
+ *  native `Response` by identity — never cloned, never body-read, so
+ *  `bodyUsed` stays `false` for the caller's own consumption. On a resolved
+ *  non-2xx status, throws the package's `ClickHouseError`. A native
+ *  abort/network/body failure from `authenticatedRequest` itself propagates
+ *  unmodified, by identity — never wrapped as `ClickHouseError`. */
+export async function authenticatedResponse(
+  ctx: AuthenticatedRequestCtx,
+  request: AuthenticatedClickHouseRequest,
+): Promise<Response> {
+  return ensureClickHouseSuccess(await authenticatedRequest(ctx, request));
 }
 
 /** One `authenticatedRequest()` + the package's `consumeJsonResponse()`.

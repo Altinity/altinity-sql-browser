@@ -61,6 +61,10 @@ import {
   findPackageImportUsages,
   PHASE5_PACKAGE_LANGUAGE_EXPORTS,
   mightReferencePackage,
+  findRetiredTopLevelApiViolations,
+  PHASE7_RETIRED_TOP_LEVEL_NAMES,
+  PHASE7_DELETED_TRANSPORT_FILES,
+  mightReferenceRetiredTopLevelApi,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -260,6 +264,38 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
   return found;
 }
 
+// Issue #630 Phase 7 — retired top-level runQuery/exportQuery/ordinary-
+// killQuery resurrection guard. Calls the SAME real-parser helper the
+// production `check:arch` gate calls (`findRetiredTopLevelApiViolations`) —
+// not independently reimplemented, same reason as the Phase 3/5 rules and
+// Rule D above. Same memoization rationale as `deepImportViolations`/
+// `packageNameShapeViolations` above.
+const realTreeRetiredApiCache = new Map();
+function retiredApiViolations(dir, virtualFiles = []) {
+  let cached = realTreeRetiredApiCache.get(dir);
+  if (!cached) {
+    cached = [];
+    for (const file of collectFiles(dir)) {
+      const relFile = relative(repoRoot, file).split(sep).join('/');
+      const text = readFileSync(file, 'utf8');
+      if (!mightReferenceRetiredTopLevelApi(text, PHASE7_RETIRED_TOP_LEVEL_NAMES)) continue;
+      for (const name of findRetiredTopLevelApiViolations(text, relFile, PHASE7_RETIRED_TOP_LEVEL_NAMES)) {
+        cached.push(`${relFile} → ${name}`);
+      }
+    }
+    realTreeRetiredApiCache.set(dir, cached);
+  }
+  const found = [...cached];
+  for (const [rel, source] of virtualFiles) {
+    const relFile = relative(repoRoot, join(repoRoot, rel)).split(sep).join('/');
+    if (!mightReferenceRetiredTopLevelApi(source, PHASE7_RETIRED_TOP_LEVEL_NAMES)) continue;
+    for (const name of findRetiredTopLevelApiViolations(source, relFile, PHASE7_RETIRED_TOP_LEVEL_NAMES)) {
+      found.push(`${relFile} → ${name}`);
+    }
+  }
+  return found;
+}
+
 describe('root workspace/manifest declares the clickhouse-http package (issue #630 Phase 2)', () => {
   const rootPkg = readJson(join(repoRoot, 'package.json'));
   const pkgPkg = readJson(join(PACKAGE_DIR, 'package.json'));
@@ -360,11 +396,11 @@ describe('Rule C — SQL Browser source does not deep-import the package\'s own 
   });
 });
 
-// Pre-warm both real-tree caches once, in `beforeAll`, rather than letting
-// whichever test happens to run first inside the two Rule D describe blocks
-// below pay for it under the DEFAULT per-test timeout: the cache-filling
-// pass spawns the real TypeScript-parser child process once per real file
-// that matches the widened `mightReferencePackage` filter, and that one-time
+// Pre-warm all three real-tree caches once, in `beforeAll`, rather than
+// letting whichever test happens to run first inside the Rule D / Phase 7
+// describe blocks below pay for it under the DEFAULT per-test timeout: the
+// cache-filling pass spawns the real TypeScript-parser child process once per
+// real file that matches each check's own pre-filter, and that one-time
 // cost — comfortably under a few seconds on a normal dev machine — has
 // exceeded vitest's 5000ms per-test default under CI's more constrained
 // scheduling. Explicit longer timeout here, attributed to setup rather than
@@ -372,6 +408,7 @@ describe('Rule C — SQL Browser source does not deep-import the package\'s own 
 beforeAll(() => {
   deepImportViolations(join(repoRoot, 'src'));
   packageNameShapeViolations(join(repoRoot, 'src'));
+  retiredApiViolations(join(repoRoot, 'src'));
 }, 30000);
 
 describe('Rule D, deep-import half — the deep-import subpath form is forbidden everywhere under src/**', () => {
@@ -707,12 +744,28 @@ const CONTRACT_OWNER = 'src/net/clickhouse-transport.types.ts';
 const STREAM_OWNER = 'src/core/stream.ts';
 
 describe('Phase 3 legacy-owner rule — the moved stream/exception primitives cannot regain their former owners', () => {
-  for (const file of PHASE3_LEGACY_OWNER_FILES) {
-    it(`the real ${file} carries none of its former declarations`, () => {
-      const text = readFileSync(join(repoRoot, file), 'utf8');
-      expect(findLegacyOwnerViolations(text, file)).toEqual([]);
-    });
-  }
+  // Issue #630 Phase 7 (plan §16/§2.6) — `PHASE3_LEGACY_OWNER_FILES` stays
+  // pinned to its historical three-file former-owner set UNCHANGED (asserted
+  // below, in the drift-bind describe block) even though two of those three
+  // files are now intentionally deleted: the constant describes former
+  // owners, not necessarily currently-existing files. Blindly `readFileSync`-
+  // ing all three (the pre-Phase-7 shape) would ENOENT the moment the first
+  // deleted file is read — replaced with explicit absence assertions for the
+  // two retired production files, plus a real read+clean-scan of the one
+  // survivor, `src/core/stream.ts`. Never "fixed" by reintroducing either
+  // deleted file (plan §29 rollback rule).
+  it(`${TRANSPORT_OWNER} is absent (issue #630 Phase 7 — deleted; the local compatibility transport moved wholly onto @altinity/clickhouse-http)`, () => {
+    expect(existsSync(join(repoRoot, TRANSPORT_OWNER))).toBe(false);
+  });
+
+  it(`${CONTRACT_OWNER} is absent (issue #630 Phase 7 — deleted alongside its implementation)`, () => {
+    expect(existsSync(join(repoRoot, CONTRACT_OWNER))).toBe(false);
+  });
+
+  it(`the real ${STREAM_OWNER} carries none of its former declarations`, () => {
+    const text = readFileSync(join(repoRoot, STREAM_OWNER), 'utf8');
+    expect(findLegacyOwnerViolations(text, STREAM_OWNER)).toEqual([]);
+  });
 
   it('flags a re-added streamLines forwarding-property wrapper in the transport adapter (sabotage probe, not written to disk)', () => {
     const probe = `
@@ -1025,6 +1078,36 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
     expect(checkerSource).toMatch(/src\/core\/sql-spans\.ts/);
     expect(checkerSource).toMatch(/src\/core\/quoted-span\.ts/);
   });
+
+  // Issue #630 Phase 7 (Finding 2) — the checker must still wire the two
+  // deleted-transport-path guards and the top-level retired-API-name guard
+  // through the shared helper, not a reintroduced hand-rolled scanner.
+  it('declares the Phase 7 deleted-transport-path existence check for both retired files', () => {
+    expect(checkerSource).toMatch(/PHASE7_DELETED_TRANSPORT_FILES/);
+    expect(checkerSource).toMatch(/for \(const relFile of PHASE7_DELETED_TRANSPORT_FILES\)/);
+  });
+
+  it('delegates the Phase 7 retired-top-level-API rule to build/lib/check-legacy-owners.mjs', () => {
+    expect(checkerSource).toMatch(/from '\.\/lib\/check-legacy-owners\.mjs'/);
+    expect(checkerSource).toMatch(/findRetiredTopLevelApiViolations\(/);
+    expect(checkerSource).toMatch(/mightReferenceRetiredTopLevelApi\(/);
+    expect(checkerSource).toMatch(/PHASE7_RETIRED_TOP_LEVEL_NAMES/);
+  });
+
+  it('the shared helper still names the exact Phase 7 retired top-level API names and deleted transport files', () => {
+    expect([...PHASE7_RETIRED_TOP_LEVEL_NAMES]).toEqual([
+      'runQuery',
+      'RunQueryOptions',
+      'RunQueryResult',
+      'exportQuery',
+      'ExportQueryOptions',
+      'killQuery',
+    ]);
+    expect([...PHASE7_DELETED_TRANSPORT_FILES]).toEqual([
+      'src/net/clickhouse-http-transport.ts',
+      'src/net/clickhouse-transport.types.ts',
+    ]);
+  });
 });
 
 // Issue #630 Phase 5 — the moved implementation files must remain absent
@@ -1094,5 +1177,122 @@ describe('Phase 5 killQuery-stopgap former-owner rule — packages/clickhouse-ht
   it('does not flag the sanctioned sqlString import/use (a different identifier)', () => {
     const probe = "import { sqlString } from './sql-quote.js';\nconst x = sqlString('a');\n";
     expect(findKillStopgapOwnerViolations(probe, 'packages/clickhouse-http/src/client.ts')).toEqual([]);
+  });
+});
+
+// Issue #630 Phase 7 (Finding 2) — the two local compatibility transport
+// files must remain absent; same path-existence mechanism as the Phase 5
+// deleted-implementation-file check above.
+describe('the retired local compatibility transport files no longer exist under SQL Browser src/** (issue #630 Phase 7)', () => {
+  it.each([...PHASE7_DELETED_TRANSPORT_FILES])('%s does not exist', (relFile) => {
+    expect(existsSync(join(repoRoot, relFile))).toBe(false);
+  });
+});
+
+// Issue #630 Phase 7 (Finding 2) — top-level resurrection guard for the
+// retired generic runQuery/exportQuery/ordinary-killQuery APIs and their
+// request/result types. Exercised through the SAME shared helper the
+// production `check:arch` gate calls (`findRetiredTopLevelApiViolations`), a
+// real TypeScript parse scoped to `sourceFile.statements` only (never a
+// blanket identifier walk) — see that function's own doc comment in
+// `build/lib/check-legacy-owners.mjs` for why this structurally cannot
+// reject the frozen-lease cancellation path's legitimate
+// `client.killQuery(...)` member call.
+describe('Phase 7 retired-top-level-API rule — runQuery/exportQuery/ordinary killQuery cannot be resurrected', () => {
+  it('the real src/** tree declares none of the retired top-level names', () => {
+    expect(retiredApiViolations(join(repoRoot, 'src'))).toEqual([]);
+  });
+
+  it('the real src/net/ch-client.ts (killQueryWithLease\'s home) carries none of the retired declarations', () => {
+    const text = readFileSync(join(repoRoot, 'src/net/ch-client.ts'), 'utf8');
+    expect(findRetiredTopLevelApiViolations(text, 'src/net/ch-client.ts')).toEqual([]);
+  });
+
+  it('flags a top-level function declaration named runQuery (sabotage probe, not written to disk)', () => {
+    const found = retiredApiViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p7_runquery__.ts',
+        'export async function runQuery(ctx, req) { return null; }\n'],
+    ]);
+    expect(found).toContain('src/net/__boundary_probe_630p7_runquery__.ts → runQuery');
+  });
+
+  it('flags a top-level function declaration named exportQuery (sabotage probe, not written to disk)', () => {
+    const found = retiredApiViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p7_exportquery__.ts', 'export function exportQuery() { return null; }\n'],
+    ]);
+    expect(found).toContain('src/net/__boundary_probe_630p7_exportquery__.ts → exportQuery');
+  });
+
+  it('flags a top-level function declaration named killQuery — the ordinary mutable-context signature (sabotage probe, not written to disk)', () => {
+    const found = retiredApiViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p7_killquery__.ts',
+        'export async function killQuery(ctx, queryId, sqlStringFn) { return; }\n'],
+    ]);
+    expect(found).toContain('src/net/__boundary_probe_630p7_killquery__.ts → killQuery');
+  });
+
+  it('flags top-level RunQueryOptions/RunQueryResult/ExportQueryOptions type declarations (sabotage probe, not written to disk)', () => {
+    const probe = [
+      'export interface RunQueryOptions { sql: string; }',
+      'export interface RunQueryResult { rows: unknown[]; }',
+      'export interface ExportQueryOptions { sql: string; }',
+    ].join('\n');
+    const found = retiredApiViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p7_types__.ts', probe],
+    ]);
+    expect(found).toEqual([
+      'src/net/__boundary_probe_630p7_types__.ts → RunQueryOptions',
+      'src/net/__boundary_probe_630p7_types__.ts → RunQueryResult',
+      'src/net/__boundary_probe_630p7_types__.ts → ExportQueryOptions',
+    ]);
+  });
+
+  it('flags a top-level const runQuery binding (sabotage probe, not written to disk)', () => {
+    const found = retiredApiViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630p7_const__.ts', 'export const runQuery = async (ctx, req) => null;\n'],
+    ]);
+    expect(found).toContain('src/net/__boundary_probe_630p7_const__.ts → runQuery');
+  });
+
+  it('flags a forwarding re-export alias (export { foo as runQuery }) (sabotage probe, not written to disk)', () => {
+    const probe = 'function foo() { return null; }\nexport { foo as runQuery };\n';
+    expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual(['runQuery']);
+  });
+
+  it('flags a forwarding import alias (import { foo as exportQuery }) (sabotage probe, not written to disk)', () => {
+    const probe = "import { foo as exportQuery } from './somewhere.js';\n";
+    expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual(['exportQuery']);
+  });
+
+  // The exact carve-out the plan requires: a member-access call on the
+  // package's own stateless client (`client.killQuery(...)`, the frozen-lease
+  // cancellation path's real implementation) is a PropertyAccessExpression
+  // nested inside a function body — never a top-level statement — so it
+  // structurally cannot trip this check. No name-based exception needed.
+  it('does NOT flag the legitimate client.killQuery(...) member call inside frozen-lease cancellation', () => {
+    const probe = `
+      export async function killQueryWithLease(lease, queryId) {
+        if (!queryId) return;
+        const client = createClickHouseHttpClient({ fetch: () => lease.fetch, origin: () => lease.origin });
+        await client.killQuery({ queryId, authorization: lease.authorization });
+      }
+    `;
+    expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual([]);
+  });
+
+  it('does not flag a comment merely narrating the deletion (comments are parser trivia, never AST nodes)', () => {
+    const probe = '// runQuery/exportQuery/killQuery were all deleted this phase.\nexport function foo() {}\n';
+    expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual([]);
+  });
+
+  it('does not flag a nested local function/variable named runQuery inside a function body (declaration-scoped, not a blanket identifier walk)', () => {
+    const probe = `
+      export function outer() {
+        function runQuery() { return null; }
+        const exportQuery = () => null;
+        return runQuery() ?? exportQuery();
+      }
+    `;
+    expect(findRetiredTopLevelApiViolations(probe, 'src/net/ch-client.ts')).toEqual([]);
   });
 });

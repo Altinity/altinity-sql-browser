@@ -13,33 +13,30 @@ import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-gra
 // `clickhouse-http-transport.ts`; re-exported here (with its `ChUrlOpts`
 // parameter type) so every existing importer — including
 // `tests/spike/clickhouse-client/current-adapter.ts` — keeps resolving. The
-// generic request-construction/fetch mechanics live in `createHttpTransport`;
+// generic request-construction/fetch mechanics lived in `createHttpTransport`;
 // at the time this module kept every auth/epoch/retry policy, product
 // operation, and `ChCtx` exactly as before, delegating through the transport
 // instead of calling `chUrl`/`ctx.fetch` directly (the auth/epoch/retry
-// policy itself later moved out — see the Phase 6 note below).
+// policy itself later moved out — see the Phase 6 note below; the transport
+// itself is deleted — see the Phase 7 note below).
 //
 // Issue #630 Phase 2 — `chUrl` now comes from `@altinity/clickhouse-http`
 // (the package is the ONE serializer implementation, contract A5); this
 // module's re-export below keeps every existing importer (including the
 // historical official-client spike, `tests/spike/clickhouse-client/current-
-// adapter.ts`) resolving unchanged. `createHttpTransport` stays imported
-// from the local compatibility adapter — its composition graph is untouched.
+// adapter.ts`) resolving unchanged.
 //
 // Issue #630 Phase 3 — the progress-stream read loop and the HTTP
 // exception-text/late-exception-frame parser are also package-owned now
 // (`streamLines`/`parseExceptionText`/`findExceptionFrame`, plus the
-// canonical `StreamLine`/`StreamCallbacks` wire types). `runQuery` calls
-// package `streamLines` directly (it is itself under `src/net/**`, so no
-// seam violation) instead of going through a ChCtx-based transport for the
-// stream half. `parseExceptionText`/`findExceptionFrame`/`StreamLine`/
-// `StreamCallbacks` are re-exported below as zero-logic migration plumbing:
-// `src/application/**` cannot import the package directly (Rule D — its
-// language-export allowlist is for the SQL Browser layers that consume
-// generic ClickHouse quoting/type-grammar directly, not a general escape
-// hatch), so `export-service.ts`'s `findExceptionFrame` use and this
-// module's own callers of the removed root `core/stream.js` exports resolve
-// through this one gateway instead.
+// canonical `StreamLine`/`StreamCallbacks` wire types).
+// `parseExceptionText`/`findExceptionFrame`/`StreamLine`/`StreamCallbacks`
+// are re-exported below as zero-logic migration plumbing: `src/application/**`
+// cannot import the package directly (Rule D — its language-export allowlist
+// is for the SQL Browser layers that consume generic ClickHouse
+// quoting/type-grammar directly, not a general escape hatch), so
+// `export-service.ts`'s `findExceptionFrame` use resolves through this one
+// gateway instead.
 //
 // Issue #630 Phase 5 — `sqlString` now comes from the package too (the ONE
 // quoting implementation, `sql-quote.ts`); this module is itself under
@@ -55,25 +52,37 @@ import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-gra
 // alias, no second retry loop, and no second Authorization constructor.
 // `queryJson` below now delegates to that module's `authenticatedJson()`
 // (the first real production consumer of the package's response-consumer
-// layer); `runQuery`/`exportQuery` call its raw `authenticatedRequest()`
-// entrypoint directly, keeping their own result/error/body handling exactly
-// as before (that further cutover is Phase 7). `ChCtx` extends the new
-// module's narrower `AuthenticatedRequestCtx` rather than duplicating its
-// fields — `dataLakeCatalogSettingUnsupported` is the one field genuinely
-// specific to this product client, so it stays declared here, not there.
-// `killQueryWithLease`'s frozen-lease bypass is UNTOUCHED and does not
-// route through the new module — it never read mutable `ChCtx` auth state
-// even before this move (see its own doc comment below).
+// layer). `ChCtx` extends the new module's narrower `AuthenticatedRequestCtx`
+// rather than duplicating its fields — `dataLakeCatalogSettingUnsupported`
+// is the one field genuinely specific to this product client, so it stays
+// declared here, not there.
+//
+// Issue #630 Phase 7 — the generic, format-agnostic `runQuery`/`exportQuery`
+// and the ordinary mutable-context `killQuery` are DELETED, not superseded
+// by a forwarding wrapper: their SQL Browser policy (Table/KPI/TSV/raw
+// mapping, ordinary row caps, script over-fetch caps, retry/result mapping,
+// export UX/streaming/late-exception handling) now lives in
+// `src/application/query-execution-service.ts` and
+// `src/application/export-service.ts`, driving
+// `authenticated-clickhouse-request.ts`'s `authenticatedProgress`/
+// `authenticatedText`/`authenticatedResponse` directly (Checkpoints 2A/2B).
+// `killQueryWithLease` (below) is REWRITTEN onto the package's own stateless
+// `createClickHouseHttpClient(...).killQuery(...)` instead of the retired
+// local transport adapter — the package now owns the KILL QUERY SQL and its
+// quoting, so this function no longer takes a `sqlString` argument. The
+// local compatibility transport (`clickhouse-http-transport.ts`/
+// `clickhouse-transport.types.ts`) is deleted in the same change — with
+// `killQueryWithLease` off it, this module's last caller is gone, and there
+// is exactly one generic ClickHouse HTTP transport implementation left in
+// the repository (the package's).
 import {
-  chUrl, streamLines, parseExceptionText, findExceptionFrame, sqlString, ClickHouseError,
+  chUrl, parseExceptionText, findExceptionFrame, sqlString, ClickHouseError,
+  createClickHouseHttpClient,
 } from '@altinity/clickhouse-http';
-import type { StreamLine } from '@altinity/clickhouse-http';
-import { createHttpTransport } from './clickhouse-http-transport.js';
-import { authenticatedJson, authenticatedRequest } from './authenticated-clickhouse-request.js';
+import { authenticatedJson } from './authenticated-clickhouse-request.js';
 import type { AuthenticatedRequestCtx } from './authenticated-clickhouse-request.js';
 export { chUrl, parseExceptionText, findExceptionFrame };
 export type { ChUrlOpts, StreamLine, StreamCallbacks } from '@altinity/clickhouse-http';
-export type { ClickHouseTransport, TransportDeps, TransportRequest } from './clickhouse-transport.types.js';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────
 
@@ -249,39 +258,28 @@ async function loadDataLakeCatalogTableNames(ctx: ChCtx, db: string, signal?: Ab
   }
 }
 
-/**
- * Best-effort `KILL QUERY` for the given query_id (the client also aborts the
- * stream; this stops the server-side work). Swallows errors — cancellation must
- * never throw at the call site, and the user lacking the privilege is non-fatal.
- */
-export async function killQuery(ctx: ChCtx, queryId: string | null | undefined, sqlString: SqlStringFn): Promise<void> {
-  if (!queryId) return;
-  try {
-    await queryJson(ctx, 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC');
-  } catch { /* best-effort */ }
-}
-
 /** Best-effort server cancellation through a frozen execution-scope lease.
- * Unlike `killQuery`, this deliberately bypasses `authenticatedRequest`
+ * This deliberately bypasses `authenticatedRequest`
  * (`authenticated-clickhouse-request.ts`): no token read, refresh, retry,
  * lifecycle callback, or mutable auth-scheme lookup is allowed while a dead
- * scope is closing. */
+ * scope is closing. #630 Phase 7 — routes through the package's own
+ * stateless `createClickHouseHttpClient(...).killQuery(...)` instead of the
+ * retired local transport adapter; the package now owns the KILL QUERY SQL
+ * and its quoting (`sqlString`, applied internally), so this function no
+ * longer takes a `sqlString` parameter — the ordinary mutable-context
+ * `killQuery` this module used to export (which did take one) is deleted
+ * outright, not superseded by a forwarding wrapper. */
 export async function killQueryWithLease(
   lease: AuthenticatedCancellationLease,
   queryId: string | null | undefined,
-  sqlString: SqlStringFn,
 ): Promise<void> {
   if (!queryId) return;
   try {
-    // A one-shot transport built directly from the frozen lease — never the
+    // A one-shot client built directly from the frozen lease — never the
     // mutable-`ChCtx` `authenticatedRequest` — so cleanup reads no mutable
     // auth, token, or refresh state (hard invariant 8/13).
-    const transport = createHttpTransport({ fetch: () => lease.fetch, origin: () => lease.origin });
-    await transport.send({
-      sql: 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC',
-      defaultFormat: 'JSON',
-      authorization: lease.authorization,
-    });
+    const client = createClickHouseHttpClient({ fetch: () => lease.fetch, origin: () => lease.origin });
+    await client.killQuery({ queryId, authorization: lease.authorization });
   } catch { /* best-effort */ }
 }
 
@@ -886,142 +884,4 @@ export function loadFunctionsDocColumns(ctx: ChCtx, signal?: AbortSignal): Promi
  *  reason as `loadFunctionsDocColumns` above. */
 export function loadFunctionDocRow(ctx: ChCtx, sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[] | null> {
   return loadDocRow(ctx, sql, signal);
-}
-
-/** `exportQuery`'s options. */
-export interface ExportQueryOptions {
-  queryId?: string;
-  signal?: AbortSignal;
-  format?: string;
-  params?: Record<string, string | number>;
-}
-
-/**
- * Issue an uncapped export query and return the raw streaming Response so the
- * caller can pipe `resp.body` straight to disk (issue #87). `format` (from
- * `prepareExportSql` — the query's own FORMAT, or TSV) is set as
- * `default_format`; the SQL's own FORMAT clause wins when present, so this only
- * matters when the caller appended one. `queryId` tags the request so cancel
- * can KILL QUERY it. No `wait_end_of_query`: that buffers the whole response
- * server-side and would defeat the point of streaming to disk (see the comment
- * on `runQuery`'s `extra` above) — a failure *after* headers is instead
- * detected by the caller from the response body (findExceptionFrame) plus the
- * `X-ClickHouse-Exception-Tag` header. A failure *before* headers throws the
- * parsed CH exception, same as `queryJson`. `params` rides alongside query_id
- * (the caller passes the tab's `sessionParamsFor` so an export that depends on
- * an earlier `CREATE TEMPORARY TABLE` / session `SET` in the same tab sees it —
- * same as `runQuery`).
- */
-export async function exportQuery(ctx: ChCtx, sql: string, opts: ExportQueryOptions = {}): Promise<Response> {
-  const { queryId, signal, format, params } = opts;
-  // #630 Phase 6 — routes through the new module's raw `authenticatedRequest`
-  // entrypoint (was `authedFetch`); its own non-2xx parsing and successful
-  // raw-`Response` ownership below are unchanged (Phase 7 concern).
-  const resp = await authenticatedRequest(ctx, {
-    sql,
-    defaultFormat: format || 'TabSeparatedWithNames',
-    params: { ...(queryId ? { query_id: queryId } : {}), ...(params || {}) },
-    signal,
-  });
-  if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
-  return resp;
-}
-
-/** `runQuery`'s options.
- * @param format  output format (default 'Table')
- * @param signal  aborts the request
- * @param resultRowLimit  caps a normal result server-side (max_result_rows +
- *   result_overflow_mode); 0/absent = uncapped
- * @param queryId  tags the request so Cancel can KILL QUERY it
- * @param params  extra query-string options that ride alongside query_id
- *   (e.g. multiquery SELECTs pass their own cap + session_id)
- * @param onLine  called per parsed stream object in streaming mode
- * @param onChunk  called once per read chunk in streaming mode
- */
-export interface RunQueryOptions {
-  format?: string;
-  signal?: AbortSignal;
-  resultRowLimit?: number;
-  queryId?: string;
-  params?: Record<string, string | number>;
-  onLine?: (line: StreamLine) => void;
-  onChunk?: () => void;
-}
-
-/** `runQuery`'s result: a query error, a raw-mode body, or a completed stream. */
-export interface RunQueryResult {
-  error?: string;
-  raw?: string;
-  streamed?: boolean;
-}
-
-/**
- * Run a query in streaming mode (JSONStringsEachRowWithProgress) or raw mode
- * (TSV/JSON). `onLine(parsedObj)` is called per stream object in streaming
- * mode. Returns { error } or { raw } shape via
- * the result object the caller passes in `apply`.
- *
- * @param ctx
- * @param sql
- * @param o  { format, signal, resultRowLimit, params, onLine(json), onChunk() }
- *           `resultRowLimit` caps a normal result server-side (max_result_rows +
- *           result_overflow_mode); `params` are extra query-string options that ride
- *           alongside query_id (e.g. multiquery SELECTs pass their own cap + session_id).
- */
-export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {}): Promise<RunQueryResult> {
-  const fmt = o.format || 'Table';
-  // #447 removed the `Filter` transport arm along with the Filter role — nothing
-  // can request that format any more.
-  const isStreaming = fmt === 'Table' || fmt === 'KPI';
-  // Streaming gets the progress-bearing JSON; raw mode sends the requested format
-  // verbatim as default_format (a real ClickHouse format name from a FORMAT clause
-  // or an implicit EXPLAIN). 'TSV' keeps its with-names-and-types expansion.
-  const fmtParam = isStreaming
-    ? (fmt === 'KPI' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
-    : fmt === 'TSV'
-      ? 'TabSeparatedWithNamesAndTypes'
-      : fmt;
-  // Cap a normal result query server-side: max_result_rows stops the read at N
-  // and result_overflow_mode='break' makes ClickHouse stop cleanly at a block
-  // boundary (no error, no further data pulled) rather than throwing. The caller
-  // decides scope — it passes resultRowLimit for normal SELECTs (Table + explicit
-  // FORMAT) and 0 for EXPLAIN/PIPELINE/ESTIMATE (which also run as 'Table', so the
-  // exemption can't be told apart by format here). `break` can overshoot by up to
-  // a block on the streaming path, which the applyStreamLine guard trims.
-  const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0
-    ? { max_result_rows: o.resultRowLimit!, result_overflow_mode: 'break' }
-    : {};
-  // #630 Phase 6 — routes through the new module's raw `authenticatedRequest`
-  // entrypoint (was `authedFetch`); the Table/KPI/raw format mapping, row-cap
-  // settings, non-2xx parsing, and streaming below are unchanged (Phase 7
-  // concern).
-  const resp = await authenticatedRequest(ctx, {
-    sql,
-    defaultFormat: fmtParam,
-    // wait_end_of_query buffers the whole response server-side so the HTTP
-    // status reflects errors — but it defeats progressive streaming (first rows
-    // wait for the query to finish: ~16s vs ~0.5s on a 1.3M-row scan). Keep it
-    // only for raw modes (read whole anyway); the streaming Table path drops it
-    // and surfaces mid-stream errors via the in-band `exception` line instead.
-    settings: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), ...cap, add_http_cors_header: 1 },
-    // Tagging the request with a query_id lets Cancel issue KILL QUERY for it.
-    // Caller-supplied params (o.params) ride alongside — e.g. multiquery SELECTs
-    // add max_result_rows / result_overflow_mode to cap the result server-side.
-    params: { ...(o.queryId ? { query_id: o.queryId } : {}), ...(o.params || {}) },
-    signal: o.signal,
-  });
-
-  if (!resp.ok) {
-    return { error: parseExceptionText(await resp.text()) };
-  }
-  if (!isStreaming) {
-    return { raw: await resp.text() };
-  }
-  // Issue #630 Phase 3 — calls the package's `streamLines` directly rather
-  // than through a ChCtx-based transport's own stream member (retired that
-  // phase): this module is itself under `src/net/**` (the one layer allowed
-  // to import the package by bare specifier), and there is exactly one
-  // production stream implementation now — the package's.
-  await streamLines(resp.body!, { onLine: o.onLine, onChunk: o.onChunk });
-  return { streamed: true };
 }

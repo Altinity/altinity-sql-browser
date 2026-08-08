@@ -46,7 +46,7 @@ import {
   officialAuthFor,
   runOfficial,
   runOfficialRefreshThenRetry,
-  makeOfficialRunQueryShim,
+  makeOfficialQueryExecutionAdapter,
 } from './official-adapter.js';
 
 declare global {
@@ -65,5 +65,5 @@ globalThis.__ASB_SPIKE_CANDIDATE_CLIENT_WEB__ = {
   officialAuthFor,
   runOfficial,
   runOfficialRefreshThenRetry,
-  makeOfficialRunQueryShim,
+  makeOfficialQueryExecutionAdapter,
 };

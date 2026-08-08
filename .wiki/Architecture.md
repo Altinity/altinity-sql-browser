@@ -51,17 +51,26 @@ module mocking.
 ## Query path
 
 1. The editor/controller prepares SQL and typed parameters.
-2. `src/net/ch-client.js`'s exported `queryJson`/`runQuery`/`exportQuery` send the
-   HTTP request through `src/net/authenticated-clickhouse-request.js` (#630
-   Phase 6), which owns auth/epoch/retry/lifecycle policy (moved out of
-   `ch-client.js`'s former `authedFetch`/`transportFor(ctx)`, deleted outright)
-   and builds the `@altinity/clickhouse-http` package client directly, composing
-   it with the package's response consumers; the callers keep their own
-   product-level result/error handling. The narrow transport contract
-   (`src/net/clickhouse-transport.types.js` + `src/net/clickhouse-http-transport.js`,
-   #585 Phase 1) is no longer the ordinary path — it now remains only as the
-   frozen-lease `killQueryWithLease` bypass's compatibility route, through
-   Phase 6; Phase 7 is expected to retire it.
+2. `src/application/query-execution-service.js` (normal/script reads) and
+   `src/application/export-service.js` (exports) send their HTTP requests
+   through `src/net/authenticated-clickhouse-request.js`'s
+   `authenticatedProgress`/`authenticatedText`/`authenticatedResponse`
+   entrypoints (#630 Phases 6-7); `src/net/ch-client.js`'s `queryJson` (its
+   one remaining schema/catalog/reference caller) goes through that same
+   module's `authenticatedJson`. That module owns auth/epoch/retry/
+   lifecycle policy (moved out of `ch-client.js`'s former `authedFetch`/
+   `transportFor(ctx)`, deleted outright) and builds the
+   `@altinity/clickhouse-http` package client directly, composing it with
+   the package's response consumers. Query-execution's own Table/KPI/TSV/
+   explicit-format mapping and row-cap policy now live in
+   `query-execution-service.js` itself (#630 Phase 7, moved off the deleted
+   `net/ch-client.js` `runQuery`/`exportQuery`). The narrow transport
+   contract (`src/net/clickhouse-transport.types.js` +
+   `src/net/clickhouse-http-transport.js`, #585 Phase 1) is deleted
+   outright in #630 Phase 7 — `killQueryWithLease`'s frozen-lease bypass
+   now calls the package's own stateless `killQuery` directly, and there
+   is exactly one generic ClickHouse HTTP transport implementation left in
+   the repository.
 3. `JSONStringsEachRowWithProgress` is folded line by line by pure stream logic.
 4. Results resolve through the panel registry to table, chart, logs, KPI, filter,
    text, or graph-oriented renderers.

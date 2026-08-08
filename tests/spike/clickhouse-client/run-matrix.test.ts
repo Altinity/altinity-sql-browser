@@ -12,6 +12,9 @@
 // requirement — it is regression coverage for two review findings, per
 // CLAUDE.md hard rule 1 ("add tests in the same change as the code").
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
   selectEarliestPassingVersion,
   collectBrowserFailureDetail as collectBrowserFailureDetailUntyped,
@@ -22,6 +25,29 @@ import {
   computeGates as computeGatesUntyped,
   deriveDecision as deriveDecisionUntyped,
 } from './run-matrix.mjs';
+
+// Same repoRoot derivation run-matrix.mjs itself uses (three levels up from
+// tests/spike/clickhouse-client/), built from only `dirname`/`join` — the
+// repo's ambient `node:path` shim (tests/types/node-fs-url.d.ts) declares no
+// `resolve`, and `join(...)` normalizes its own `..` segments exactly like
+// `resolve` would for an already-absolute base. Needed only for the
+// real-tree "adapter file absent" regression below, which asserts against
+// the actual repo tree rather than a fixture.
+const repoRootForTest = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+// `existsSync` isn't in the repo's ambient `node:fs` shim either (only
+// `readFileSync`/`readdirSync` are) — reusing `readFileSync` under a
+// try/catch keeps this real-tree regression inside this sub-task's declared
+// file scope (run-matrix.mjs/run-matrix.test.ts only) instead of also
+// touching the shared ambient-types file for one call site.
+function fileExists(path: string): boolean {
+  try {
+    readFileSync(path, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const computeGates = computeGatesUntyped as (r: unknown) => Record<string, string>;
 const deriveDecision = deriveDecisionUntyped as (gates: Record<string, string>) => { status: string; rationale: string[] };
@@ -665,28 +691,37 @@ describe('computeDeletionEstimate (P3 review finding: the whole-formula regressi
     expect(d.acceptedBridgeGuardLoc).toBe(d.bridgeLoc.physical + d.guardLoc.physical);
   });
 
-  it('classifies src/net/clickhouse-http-transport.ts on its own (issue #585 Phase 1, PR #621 moved chUrl/streamLines/createHttpTransport there) and combines its delete-after-cutover bucket into currentGenericLocEligibleForDeletion alongside ch-client.ts\'s own', async () => {
+  // Issue #630 Phase 7 Checkpoint 2D deleted src/net/clickhouse-http-transport.ts
+  // outright (killQueryWithLease's rewrite onto the package's own stateless
+  // killQuery() removed that file's last caller) — the real-tree regression
+  // this sub-task's definition of done requires: computeDeletionEstimate()
+  // must genuinely work with the adapter file absent, not merely stop
+  // referencing it in source.
+  it('src/net/clickhouse-http-transport.ts is absent from the tree, and computeDeletionEstimate() works without it — the real-tree regression for issue #630 Phase 7 Checkpoint 2D\'s deletion', async () => {
+    const transportPath = join(repoRootForTest, 'src/net/clickhouse-http-transport.ts');
+    expect(fileExists(transportPath)).toBe(false);
+    const typesPath = join(repoRootForTest, 'src/net/clickhouse-transport.types.ts');
+    expect(fileExists(typesPath)).toBe(false);
+
     const d = await computeDeletionEstimate();
-    // The transport file gets its OWN manifest entry, distinct from
-    // ch-client.ts's — per-file transparency is preserved even though the
-    // two are summed for the headline figure.
-    // `computeDeletionEstimate`'s return value comes from the untyped .mjs
-    // orchestrator (same interop limitation `classifyFunctionRangesFromSource`
-    // is cast for above) — the manifest's per-file bucket objects need the
-    // same explicit local type for indexing.
-    const httpTransportBuckets = d.manifest['clickhouse-http-transport.ts'] as Record<string, number>;
+    // No second file's bucket to classify/measure/combine any more — the
+    // manifest carries ch-client.ts's own entry only. `d.manifest`'s inferred
+    // shape (from the untyped .mjs orchestrator) has no
+    // `'clickhouse-http-transport.ts'` property at all any more, which is
+    // itself a compile-time proof of removal; a plain runtime index (cast to
+    // a wide manifest type) still confirms it's absent at runtime too.
+    const manifest = d.manifest as Record<string, unknown>;
+    expect(manifest['clickhouse-http-transport.ts']).toBeUndefined();
+    // The manifest's per-file bucket object needs the same explicit local
+    // type for indexing `classifyFunctionRangesFromSource` is cast for above.
     const chClientBuckets = d.manifest['ch-client.ts'] as Record<string, number>;
-    expect(httpTransportBuckets).toBeDefined();
-    expect(Object.keys(httpTransportBuckets)).toEqual(['delete-after-cutover']);
-    expect(httpTransportBuckets['delete-after-cutover']).toBeGreaterThan(0);
-    // currentGenericLocEligibleForDeletion is the SUM of both files' own
-    // delete-after-cutover buckets, not either one alone.
-    const expectedCombined = (chClientBuckets['delete-after-cutover'] || 0)
-      + httpTransportBuckets['delete-after-cutover'];
-    expect(d.currentGenericLocEligibleForDeletion).toBe(expectedCombined);
+    expect(chClientBuckets['delete-after-cutover']).toBeGreaterThan(0);
+    // currentGenericLocEligibleForDeletion is ch-client.ts's OWN bucket
+    // alone now — never a sum with a second (deleted) file's bucket.
+    expect(d.currentGenericLocEligibleForDeletion).toBe(chClientBuckets['delete-after-cutover']);
   });
 
-  it('does not throw for the real ch-client.ts / clickhouse-http-transport.ts / official-adapter.ts files under the broadened boundary regex and the new symmetric drift guard — the real-file proof that CH_CLIENT_CLASSIFICATION and HTTP_TRANSPORT_CLASSIFICATION stay exhaustive in both directions', async () => {
+  it('does not throw for the real ch-client.ts / official-adapter.ts files under the broadened boundary regex and the symmetric drift guard — the real-file proof that CH_CLIENT_CLASSIFICATION and OFFICIAL_ADAPTER_CORE_CLASSIFICATION stay exhaustive in both directions post-Phase-7', async () => {
     await expect(computeDeletionEstimate()).resolves.toBeDefined();
   });
 });

@@ -1,0 +1,337 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>#630 Phase 7 — export post-header cancellation harness</title>
+</head>
+<body>
+  <!-- #630 Phase 7 (pre-PR review Finding 1) — Plan §18/Checkpoint 3/A15's
+       Definition of Done require a dedicated EXPORT-shaped real-browser
+       fixture proving native post-header cancellation semantics survive
+       through the ACTUAL export path: settle headers -> first chunk past the
+       32 KiB hold-back -> hold the next read -> abort mid-read -> assert
+       progress/write/writer-cleanup/.partial/owner-epoch remote-cancel/
+       no-offline/no-refresh/no-.text()-dependency. The existing
+       `clickhouse-http-transport.{html,spec.js}` harness only ever proved
+       this for query/progress (`streamLines`/`queryProgress`); commit
+       `ac52df2` on this branch retargeted that harness off the deleted local
+       transport adapter but explicitly did NOT add export coverage — this is
+       a separate, dedicated fixture for that gap.
+
+       Drives the REAL production pieces: `createExportService`
+       (`/src/application/export-service.js`), `authenticatedResponse`
+       (`/src/net/authenticated-clickhouse-request.js`), the real
+       `createAuthenticatedExecutionScope`
+       (`/src/application/authenticated-execution-scope.js`), the package's
+       real `createClickHouseHttpClient(...).killQuery(...)` (the frozen-lease
+       cancellation path's own mechanism, #630 Phase 7 §10) for the
+       owner-scoped remote KILL, one real, native, counting `window.fetch`
+       wrapper per HTTP "connection" (mirroring
+       `clickhouse-http-transport.html`'s own `makeWrapper`), and a REAL
+       `window.AbortController`. Only the File System Access API is faked (an
+       in-memory `FileHandleLike`/`WritableFileStreamLike` pair) — neither
+       Chromium nor WebKit exposes a real, gesture-free picker to automate,
+       and the plan explicitly sanctions "an in-page fake file handle/writable
+       only for the filesystem API so both Chromium and WebKit can execute the
+       production export logic." Every other seam (auth ctx, execution scope,
+       cancellation, network) is the real production implementation. -->
+  <script type="importmap">
+    { "imports": {
+      "@altinity/clickhouse-http": "/packages/clickhouse-http/src/index.js",
+      "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+    } }
+  </script>
+  <script type="module">
+    import { createClickHouseHttpClient } from '@altinity/clickhouse-http';
+    import { authenticatedResponse } from '/src/net/authenticated-clickhouse-request.js';
+    import { createExportService } from '/src/application/export-service.js';
+    import { createAuthenticatedExecutionScope } from '/src/application/authenticated-execution-scope.js';
+
+    // Same counting wrapper shape as clickhouse-http-transport.html's own
+    // `makeWrapper` — delegates to the real, native `window.fetch` exactly
+    // once per call, never wraps/clones/consumes the Response, never retries.
+    function makeWrapper() {
+      const calls = [];
+      async function wrapped(url, init) {
+        calls.push({
+          url: String(url),
+          method: init && init.method,
+          body: init && init.body,
+          authorization: init && init.headers && init.headers.Authorization,
+        });
+        return window.fetch(url, init);
+      }
+      return { fn: wrapped, calls, get count() { return calls.length; } };
+    }
+
+    // A real production-shaped `AuthenticatedRequestCtx` (mirrors
+    // clickhouse-http-transport.html's own `makeAuthCtx`) — synthetic test
+    // credentials only, one deterministic epoch, `refresh()` disabled
+    // (recorded if ever called; this scenario's fixture never returns
+    // 401/403, so it never should be), and every lifecycle callback captured
+    // so the scenario can assert none of the wrong ones fired after abort.
+    function makeAuthCtx(baseUrl) {
+      const wrapper = makeWrapper();
+      const onSignedOutCalls = [];
+      const onTransportConnectedCalls = [];
+      const onTransportOfflineCalls = [];
+      const refreshCalls = [];
+      const ctx = {
+        fetch: wrapper.fn,
+        origin: baseUrl,
+        getToken: async () => 'export-e2e-test-token',
+        refresh: async () => { refreshCalls.push(true); return false; },
+        onSignedOut: (detail, expectedEpoch) => { onSignedOutCalls.push({ detail, expectedEpoch }); },
+        currentEpoch: () => 1,
+        onTransportConnected: () => { onTransportConnectedCalls.push(true); },
+        onTransportOffline: (error) => { onTransportOfflineCalls.push(String(error && error.message || error)); },
+      };
+      return { ctx, wrapper, onSignedOutCalls, onTransportConnectedCalls, onTransportOfflineCalls, refreshCalls };
+    }
+
+    // The injected File System Access seam (`ExportSink`/`FileHandleLike`/
+    // `WritableFileStreamLike`, `export-service.ts`) — an in-memory fake, the
+    // ONE piece of this harness that isn't the real production implementation
+    // (neither Chromium nor WebKit expose a real, gesture-free picker to
+    // automate). Records every write, close/abort, and `.partial` rename so
+    // the scenario can assert writer-cleanup and partial-file semantics.
+    function makeFakeFile(name) {
+      const writes = [];
+      let closed = false;
+      let aborted = false;
+      let movedTo = null;
+      const handle = {
+        name,
+        async createWritable() {
+          return {
+            async write(chunk) { writes.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)); },
+            async close() { closed = true; },
+            async abort() { aborted = true; },
+          };
+        },
+        async move(newName) { movedTo = newName; },
+      };
+      return {
+        handle,
+        writes,
+        isClosed: () => closed,
+        isAborted: () => aborted,
+        movedTo: () => movedTo,
+        totalBytes: () => writes.reduce((n, w) => n + w.length, 0),
+      };
+    }
+
+    // ── The export-shaped post-header-abort-hold scenario ───────────────────
+    window.__exportPostHeaderCancel = async function (baseUrl) {
+      const authCtx = makeAuthCtx(baseUrl);
+      // A real disposable authenticated-execution-scope epoch (#630 Phase 7
+      // §9) — distinct, recognizable value so the scenario can assert the
+      // EXACT owner epoch reaches the cancellation callback, never a
+      // coincidental default like 0/1. `cancelRemote` here is the scope's own
+      // auth-loss-triggered path (unused by this scenario's explicit Cancel,
+      // which goes through ExportServiceDeps.cancel directly, #630 Phase 7
+      // §9.5) — a no-op is correct.
+      const OWNER_EPOCH = 4242;
+      const scope = createAuthenticatedExecutionScope({ epoch: OWNER_EPOCH, cancelRemote: () => {} });
+
+      const fakeFile = makeFakeFile('export.tsv');
+      const toastMessages = [];
+      const progressEvents = [];
+      const cancelCalls = [];
+      const killWrapper = makeWrapper();
+      let textCalledOnSuccessfulResponse = false;
+      // Snapshotted synchronously, from INSIDE the first `update()` call
+      // below (never via a wall-clock wait) — the same deterministic,
+      // load-independent technique `clickhouse-http-transport.spec.js`'s own
+      // Scenario 6/7/9 already use ("abort scheduled from inside the first
+      // onChunk callback"). `cancelExport()` itself is deferred one
+      // microtask (`queueMicrotask`, see `update()` below): `streamToFile`'s
+      // `for (;;)` loop calls `onProgress()` synchronously and then keeps
+      // running synchronously (no `await` in between) until it reaches the
+      // NEXT `await reader.read()`, which issues that read (a real fetch
+      // stream pull) before suspending. A microtask queued from inside
+      // `onProgress()` cannot run until that enclosing synchronous stretch
+      // finishes, so by construction it fires strictly after the next read
+      // has been issued and is genuinely pending — calling `cancelExport()`
+      // synchronously inside `onProgress()` instead would abort BEFORE that
+      // next `reader.read()` is ever issued, which is not the "pending read"
+      // scenario this fixture claims. A fixed post-hoc wall-clock delay was
+      // tried first and found genuinely flaky under parallel Chromium+WebKit
+      // load (the whole fixture's 3000ms server-side hold could occasionally
+      // elapse before a delayed JS timer fired, letting the export race to
+      // normal EOF completion instead of being cancelled); one microtask hop
+      // is deterministic and load-independent like the synchronous version,
+      // while still landing after the next read is issued.
+      let progressCountBeforeCancel = 0;
+      let writesBeforeCancelCount = 0;
+      let bytesBeforeCancel = 0;
+
+      // Wraps the real counting fetch wrapper: on a successful (2xx) response
+      // ONLY, shadow `.text()` with a throwing instance property — a real,
+      // native `Response`'s `text` method is a configurable/writable
+      // WebIDL-vended prototype method, so a plain instance assignment
+      // shadows it for exactly this Response, in both Chromium and WebKit.
+      // `authenticatedRequest` only ever calls `.clone().text()` on a
+      // NON-2xx/non-401/403 response (peeking for an auth-expired body) —
+      // this fixture always answers 200, so that path is never taken; the
+      // trap exists purely to prove the raw export byte-stream path itself
+      // (`streamToFile`, `src/application/export-service.ts`) never calls
+      // `.text()` on the successful Response it owns.
+      async function fetchWithTextTrap(url, init) {
+        const resp = await authCtx.wrapper.fn(url, init);
+        if (resp.ok) {
+          resp.text = () => { textCalledOnSuccessfulResponse = true; throw new Error('response.text() must never be called on a successful raw export response'); };
+        }
+        return resp;
+      }
+      const trappedCtx = { ...authCtx.ctx, fetch: fetchWithTextTrap };
+
+      const exportService = createExportService({
+        exportResponse: (request) => authenticatedResponse(trappedCtx, request),
+        runEffectText: async () => { throw new Error('runEffectText must not be called by exportDirect (single-statement export)'); },
+        cancel: async (ownerEpoch, queryId) => {
+          cancelCalls.push({ ownerEpoch, queryId });
+          if (ownerEpoch == null || !queryId) return;
+          // Mirrors app.ts's own owner-scoped `cancelOwnedQuery` shape (#630
+          // Phase 7 §9.2): only the CURRENT owner epoch may reach a live
+          // connection's remote KILL. The real package stateless
+          // `client.killQuery(...)` — the exact mechanism
+          // `killQueryWithLease` itself calls through, #630 Phase 7 §10 — so
+          // this is a real network KILL QUERY request, not a recorded no-op.
+          if (ownerEpoch !== scope.epoch) return;
+          const killClient = createClickHouseHttpClient({ fetch: () => killWrapper.fn, origin: () => baseUrl });
+          try {
+            await killClient.killQuery({
+              queryId,
+              authorization: 'Bearer export-e2e-kill-token',
+              // Routes this SEPARATE HTTP request to the shared fault
+              // server's 'no-output' fixture (200, empty body) — the KILL
+              // QUERY *target* id travels in the SQL body itself
+              // (`KILL QUERY WHERE query_id = '<queryId>' ASYNC`), a
+              // deliberately independent value from this request's OWN
+              // `query_id` HTTP param (see `ClickHouseKillQueryRequest`'s own
+              // doc comment, `packages/clickhouse-http/src/client.ts`).
+              params: { query_id: 'no-output__kill-for-' + queryId },
+            });
+          } catch { /* best-effort, mirrors killQueryWithLease's own swallow */ }
+        },
+        ctx: () => ({ onSignedOut: () => authCtx.onSignedOutCalls.push({ detail: 'export-ctx', expectedEpoch: undefined }) }),
+        ensureConfig: async () => {},
+        getToken: authCtx.ctx.getToken,
+        now: () => performance.now(),
+        wallNow: () => Date.now(),
+        // Deterministic query-id shape so the fault server's `<fixture>__<id>`
+        // routing convention resolves to the 'export-post-header-abort-hold'
+        // fixture: exportDirect builds `waveQueryId = 'export-' + uid('')`.
+        uid: () => 'post-header-abort-hold__' + Math.random().toString(36).slice(2),
+        executionScope: () => scope,
+        canExport: () => true,
+        canExportScript: () => false,
+        sink: {
+          pickFile: async () => fakeFile.handle,
+          pickDirectory: async () => { throw new Error('pickDirectory must not be called by exportDirect'); },
+        },
+        state: { exporting: { value: false }, resultSort: { col: null, dir: 'asc' } },
+        activeTab: () => ({ editorMode: 'sql', name: 'export-e2e-tab', sqlDraft: 'SELECT 1' }),
+        params: {
+          prepareTabSource: (sql) => ({ id: 'w', statements: [{ sql, args: {}, boundParams: [] }], missing: [], invalid: [], errors: [], runnable: true }),
+          varGateBlocked: () => false,
+          execStatementSql: (sql) => sql,
+        },
+        sessionParamsFor: () => ({}),
+        hooks: {
+          renderResults: () => {},
+          showExportProgress: () => ({
+            update(bytes) {
+              progressEvents.push(bytes);
+              // Fires exactly once, the FIRST time a real write has been
+              // committed past the 32 KiB hold-back. This callback itself
+              // runs SYNCHRONOUSLY inside `streamToFile`'s current
+              // `reader.read()` continuation — snapshot the "before cancel"
+              // counters right here, synchronously, so they reflect exactly
+              // this write and no more. `cancelExport()` is deferred with
+              // `queueMicrotask()` (see the file-level comment above): the
+              // loop's synchronous continuation keeps running after this
+              // callback returns and reaches its NEXT `await reader.read()`,
+              // issuing that read against the fixture's still-in-progress
+              // POST_HEADER_ABORT_HOLD_MS server-side hold — only THEN does
+              // the queued microtask run and call `cancelExport()`, aborting
+              // that now-genuinely-pending read. Calling `cancelExport()`
+              // synchronously here instead would abort before the next read
+              // is ever issued, and a later wall-clock delay was tried and
+              // found flaky under parallel Chromium+WebKit load.
+              if (progressCountBeforeCancel === 0) {
+                progressCountBeforeCancel = progressEvents.length;
+                writesBeforeCancelCount = fakeFile.writes.length;
+                bytesBeforeCancel = fakeFile.totalBytes();
+                queueMicrotask(() => exportService.cancelExport());
+              }
+            },
+            remove() {},
+          }),
+          toast: (message) => toastMessages.push(message),
+          loadSchema: () => {},
+        },
+      });
+
+      const donePromise = exportService.exportDirect('SELECT 1', Date.now());
+      await donePromise; // exportDirect swallows AbortError internally and resolves normally
+
+      // `cancelExport()` fires the owner-scoped remote KILL fire-and-forget
+      // (never awaited by production code, #630 Phase 7 §9.5) — poll for its
+      // arrival rather than a fixed sleep, matching this suite's own
+      // `waitForServerRequest` convention (`clickhouse-http-transport.spec.js`)
+      // one layer up, for exactly the same reason: a fixed delay is either
+      // flaky under load or needlessly slow otherwise.
+      const killDeadline = Date.now() + 5000;
+      while (killWrapper.count === 0 && Date.now() < killDeadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // One extra task turn for any deferred network activity (the fault
+      // server's held second write, now writing to a torn-down socket) to
+      // surface before this scenario inspects final state.
+      await new Promise((r) => setTimeout(r, 50));
+
+      const directRequest = authCtx.wrapper.calls.find((c) => c.method === 'POST');
+      const directQueryId = directRequest ? new URL(directRequest.url).searchParams.get('query_id') : null;
+      const killRequest = killWrapper.calls.find((c) => c.method === 'POST');
+
+      return {
+        // Headers/first-chunk fidelity.
+        directRequestCount: authCtx.wrapper.count,
+        directRequestOk: !!directRequest,
+        // Progress/write semantics — committed BEFORE the held tail released.
+        progressCountBeforeCancel,
+        writesBeforeCancelCount,
+        bytesBeforeCancel,
+        totalWrittenBytes: fakeFile.totalBytes(),
+        // No later write/progress after cancellation.
+        progressCountFinal: progressEvents.length,
+        writesFinalCount: fakeFile.writes.length,
+        // Writer cleanup / .partial semantics.
+        writerClosed: fakeFile.isClosed(),
+        writerAborted: fakeFile.isAborted(),
+        movedToPartial: fakeFile.movedTo(),
+        // Owner-epoch/query-id remote cancellation.
+        cancelCallCount: cancelCalls.length,
+        cancelOwnerEpoch: cancelCalls[0] ? cancelCalls[0].ownerEpoch : null,
+        cancelQueryId: cancelCalls[0] ? cancelCalls[0].queryId : null,
+        directQueryId,
+        killRequestCount: killWrapper.count,
+        killRequestSqlContainsQueryId: !!(killRequest && directQueryId && killRequest.body.includes(directQueryId)),
+        killRequestSqlContainsKillQuery: !!(killRequest && killRequest.body.includes('KILL QUERY WHERE query_id')),
+        // No offline/sign-out classification; no refresh.
+        onTransportOfflineCalls: authCtx.onTransportOfflineCalls.length,
+        onSignedOutCalls: authCtx.onSignedOutCalls.length,
+        refreshCalls: authCtx.refreshCalls.length,
+        // No dependency on a successful response's .text().
+        textCalledOnSuccessfulResponse,
+        // exportDirect's own settle/state bookkeeping and toast surface.
+        toastMessages,
+      };
+    };
+
+    window.__ready = true;
+  </script>
+</body>
+</html>

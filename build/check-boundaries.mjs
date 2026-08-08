@@ -44,6 +44,10 @@ import {
   findPackageImportUsages,
   PHASE5_PACKAGE_LANGUAGE_EXPORTS,
   mightReferencePackage,
+  findRetiredTopLevelApiViolations,
+  PHASE7_RETIRED_TOP_LEVEL_NAMES,
+  PHASE7_DELETED_TRANSPORT_FILES,
+  mightReferenceRetiredTopLevelApi,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -490,6 +494,39 @@ for (const relFile of PHASE5_DELETED_ROOT_FILES) {
   checkedFiles += 1;
   if (fs.existsSync(path.join(repoRoot, relFile))) {
     violations.push(`${relFile} → recreated (issue #630 Phase 5: this implementation moved to @altinity/clickhouse-http and must not be recreated under SQL Browser src/**)`);
+  }
+}
+
+// Issue #630 Phase 7 — the local SQL Browser compatibility transport seam is
+// retired: `killQueryWithLease`'s own rewrite (plan §10) onto the package's
+// stateless `killQuery` left it with no remaining production caller, so
+// there is exactly one generic ClickHouse HTTP transport implementation left
+// in the repository (the package's). A path-existence check, same mechanism
+// as `PHASE5_DELETED_ROOT_FILES` just above — even an empty or
+// differently-implemented file at either path must fail, regardless of its
+// contents (plan §29 rollback rule: never "fix" this by reintroducing either
+// deleted file).
+for (const relFile of PHASE7_DELETED_TRANSPORT_FILES) {
+  checkedFiles += 1;
+  if (fs.existsSync(path.join(repoRoot, relFile))) {
+    violations.push(`${relFile} → recreated (issue #630 Phase 7: the local compatibility transport seam is retired onto @altinity/clickhouse-http and must not be recreated)`);
+  }
+}
+
+// Issue #630 Phase 7 — ban top-level resurrection of the retired generic
+// runQuery/exportQuery/ordinary-killQuery APIs and their request/result
+// types, anywhere under SQL Browser src/**. `findRetiredTopLevelApiViolations`
+// is declaration-scoped (see its own doc comment in check-legacy-owners.mjs),
+// not a blanket identifier walk, so the frozen-lease cancellation path's own
+// `client.killQuery(...)` member call (the package's stateless kill) can
+// never trip it — no name-based exception needed.
+for (const file of collectFiles(path.join(repoRoot, 'src'))) {
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  checkedFiles += 1;
+  const source = fs.readFileSync(file, 'utf8');
+  if (!mightReferenceRetiredTopLevelApi(source, PHASE7_RETIRED_TOP_LEVEL_NAMES)) continue;
+  for (const name of findRetiredTopLevelApiViolations(source, relFile, PHASE7_RETIRED_TOP_LEVEL_NAMES)) {
+    violations.push(`${relFile} → top-level ${name} (issue #630 Phase 7: the generic runQuery/exportQuery/ordinary-killQuery APIs are deleted and must not be resurrected)`);
   }
 }
 

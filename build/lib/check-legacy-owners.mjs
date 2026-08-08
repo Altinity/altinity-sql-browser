@@ -243,6 +243,130 @@ export function findKillStopgapOwnerViolations(source, filename) {
   return findNamedIdentifierViolations(source, filename, PHASE5_KILL_STOPGAP_OWNER_FILES, PHASE5_KILL_STOPGAP_MOVED_NAMES);
 }
 
+// ── Phase 7 — retired top-level API resurrection guard ──────────────────────
+//
+// Issue #630 Phase 7 deletes the generic, format-agnostic `runQuery`/
+// `exportQuery` functions and their request/result types, plus the ordinary
+// mutable-context `killQuery` (distinct from the frozen-lease
+// `killQueryWithLease` that survives, and from the package's OWN stateless
+// `client.killQuery(...)` member method `killQueryWithLease` now calls
+// through — plan §10/§21). Unlike the Phase 3/5 rules above
+// (`findNamedIdentifierViolations`, a blanket identifier walk scoped to a
+// short former-owner allowlist), this rule cannot be a blanket identifier
+// walk: `client.killQuery(...)` is a legitimate, surviving production call
+// (inside `killQueryWithLease` itself) whose right-hand side is ALSO a plain
+// `killQuery` Identifier node to the parser — a blanket walk would reject the
+// exact call the plan requires to keep working. `findRetiredTopLevelApiViolations`
+// below instead inspects only `sourceFile.statements` (the module's OWN
+// top-level declarations/import-bindings/export-bindings) — a
+// PropertyAccessExpression like `client.killQuery` is never a top-level
+// statement itself (it's an expression nested inside one), so it structurally
+// cannot trip this check; no name-based exception is needed to carve it out.
+
+/** The exact top-level API surface Phase 7 retires. `killQuery` here means
+ *  the ORDINARY mutable-context function (`killQuery(ctx, queryId, ...)`)
+ *  `ch-client.ts` used to export — never `killQueryWithLease` (a different
+ *  identifier) and never the package's own `client.killQuery(...)` member
+ *  (never a top-level declaration in SQL Browser source at all). */
+export const PHASE7_RETIRED_TOP_LEVEL_NAMES = Object.freeze([
+  'runQuery',
+  'RunQueryOptions',
+  'RunQueryResult',
+  'exportQuery',
+  'ExportQueryOptions',
+  'killQuery',
+]);
+
+/** Issue #630 Phase 7 — the two local compatibility transport files this
+ *  phase deletes outright (plan §14/§22): `killQueryWithLease`'s own rewrite
+ *  onto the package's stateless `killQuery` (plan §10) leaves this transport
+ *  with no remaining production caller, so there is exactly one generic
+ *  ClickHouse HTTP transport implementation left in the repository (the
+ *  package's) and neither path may return, in any form (even empty, even
+ *  differently implemented) — a path-existence check, not a content scan. */
+export const PHASE7_DELETED_TRANSPORT_FILES = Object.freeze([
+  'src/net/clickhouse-http-transport.ts',
+  'src/net/clickhouse-transport.types.ts',
+]);
+
+/**
+ * Cheap textual pre-filter, same accepted-risk convention as
+ * `mightReferencePackage` above: a plain substring test against each
+ * candidate name. Unlike the package-specifier pre-filter, this deliberately
+ * does NOT widen for backslash-escaped spellings — an identifier spelled
+ * through a Unicode identifier escape (`runQuery`) is exotic enough,
+ * and absent from every real caller in this codebase today, that it stays
+ * outside this check's threat model (matching this module's own stated scope
+ * — "intentionally obfuscated constructs...are outside this check's threat
+ * model"). Gates whether a file is even worth handing to the real parser.
+ *
+ * @param {string} source
+ * @param {readonly string[]} [names]
+ * @returns {boolean} true if `source` might declare/bind one of `names`
+ */
+export function mightReferenceRetiredTopLevelApi(source, names = PHASE7_RETIRED_TOP_LEVEL_NAMES) {
+  return names.some((name) => source.includes(name));
+}
+
+/**
+ * Find every TOP-LEVEL (module-scope) declaration or import/export binding
+ * in `source` whose name is one of `names` — a real TypeScript parse that
+ * inspects only `sourceFile.statements` (never descending into function/
+ * class/block bodies), so this is deliberately narrower than
+ * `findNamedIdentifierViolations`'s blanket identifier walk. Covers:
+ *   - a top-level function/class/interface/type-alias declaration
+ *     (`export function runQuery(...)`, `export interface RunQueryOptions`);
+ *   - a top-level const/let/var binding (`export const runQuery = ...`);
+ *   - a named import whose LOCAL binding takes one of these names — a
+ *     forwarding-alias vector (`import { foo as runQuery } from './x.js'`);
+ *   - a named export specifier binding one of these names — a
+ *     forwarding-re-export vector (`export { runQuery }` / `export { foo as
+ *     runQuery }`, including the `export { x } from 'pkg'` gateway form).
+ * A nested reference — a call expression, a property/member access such as
+ * `client.killQuery(...)`, a local variable inside a function body — is never
+ * a top-level statement and therefore never inspected; this is precisely how
+ * the plan's carve-out ("the killQuery guard must not reject
+ * client.killQuery(...) inside frozen cancellation") is satisfied, with no
+ * separate name-based exception required. Comments/strings/template literals
+ * are parser trivia, never AST nodes, so prose narrating the deletion can
+ * never false-positive.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @param {readonly string[]} [names]
+ * @returns {string[]} the forbidden names found, in `names` order, deduplicated
+ */
+export function findRetiredTopLevelApiViolations(source, filename, names = PHASE7_RETIRED_TOP_LEVEL_NAMES) {
+  const banned = new Set(names);
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = new Set();
+    const note = (name) => { if (name && banned.has(name)) found.add(name); };
+    for (const stmt of sourceFile.statements) {
+      if (
+        is.isFunctionDeclaration(stmt) || is.isClassDeclaration(stmt)
+        || is.isInterfaceDeclaration(stmt) || is.isTypeAliasDeclaration(stmt)
+      ) {
+        note(stmt.name && stmt.name.text);
+      } else if (is.isVariableStatement(stmt)) {
+        for (const decl of stmt.declarationList.declarations) {
+          if (decl.name && decl.name.kind === SyntaxKind.Identifier) note(decl.name.text);
+        }
+      } else if (is.isImportDeclaration(stmt)) {
+        const bindings = stmt.importClause && stmt.importClause.namedBindings;
+        if (bindings && is.isNamedImports(bindings)) {
+          for (const el of bindings.elements) note(el.name.text);
+        }
+      } else if (is.isExportDeclaration(stmt)) {
+        const clause = stmt.exportClause;
+        if (clause && is.isNamedExports(clause)) {
+          for (const el of clause.elements) note(el.name.text);
+        }
+      }
+    }
+    return names.filter((name) => found.has(name));
+  });
+}
+
 // ── Shared cheap pre-filter (review pass 2 hardening) ───────────────────────
 
 /**

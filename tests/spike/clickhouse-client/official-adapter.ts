@@ -369,62 +369,75 @@ export async function runOfficialRefreshThenRetry(
   }
 }
 
-// ── QueryExecutionService shim ──────────────────────────────────────────────
-// Plan §23 "Overlap two requests in one session and feed official-spike
-// outcomes through existing QueryExecutionService" / invariant map's "Retry
-// safety remains unchanged — official outcomes feed existing execution
-// policy". This shim satisfies `typeof runQuery` from `src/net/ch-client.ts`
-// exactly (same signature, same `RunQueryResult` shape) so the REAL,
-// unmodified `createQueryExecutionService` (src/application/
-// query-execution-service.ts) can run its real retry/classification logic
-// against the official client — never a reimplementation of that policy.
+// ── QueryExecutionService adapter (post-#630 Phase 7) ───────────────────────
+// Plan §19/§2.4 (Checkpoint 2C's spike portion) — replaces the retired
+// `makeOfficialRunQueryShim`, which satisfied `typeof runQuery` from
+// `src/net/ch-client.ts` (`RunQueryOptions`/`RunQueryResult` — both retiring,
+// #630 Phase 7). This adapter instead satisfies `QueryExecutionService`'s OWN
+// narrow `QueryExecutionDeps['runProgress' | 'runText']` shape
+// (`src/application/query-execution-service.ts`) directly — never a
+// reimplementation of that service's retry/classification policy, which
+// still runs, real and unmodified, against whichever client (current or
+// official) is injected (plan §23 "official outcomes feed existing execution
+// policy").
+//
+// `runProgress` mirrors the retired shim's 'Table'/'KPI' branches
+// (exec()+bridgeNdjsonProgress / query()+stream reading respectively),
+// dispatching on `request.defaultFormat` (QES's own wire-format names)
+// instead of a SQL-Browser format string. An in-band `{"exception"}` line is
+// delivered through `callbacks.onLine`, exactly like the real authenticated
+// progress path (`core/stream.ts`'s `applyStreamLine` turns it into
+// `result.error`) — never a thrown/returned `{error}` shape: only a
+// pre-header rejection (a `ClickHouseError` thrown by `exec()`/`query()`
+// itself) or a mid-stream network failure throws, matching the new "package
+// consumers throw" contract `QueryExecutionDeps.runProgress`'s own doc
+// requires (#630 Phase 7 §6.5).
+//
+// `runText` mirrors the retired shim's ELSE/raw branch exactly: EVERY
+// `executeScript` statement this spike suite ever drives through it (row-
+// returning or effect alike) used that branch — `serviceFor()`'s
+// `QueryExecutionRequest.defaultFormat` is always 'JSONCompact' or
+// 'TabSeparatedWithNamesAndTypes', neither of which is 'Table'/'KPI' — so
+// `runText` keeps using `command()` verbatim on `request.sql` UNCHANGED (no
+// FORMAT clause appended: installed 1.23.1 hard SYNTAX_ERRORs on `SET .../
+// INSERT ... VALUES (...)` with one appended — see `live-sessions.test.ts`'s
+// own `runOfficialCommand` docstring for the same finding), per plan §7 "use
+// command() only when discarding output is intentional", always resolving
+// `''`. No spike test routed through `runText` has ever needed the real row/
+// effect body text back (only attempt-count/status/message classification) —
+// this is a mechanical reshape of the retired shim's existing behavior, not a
+// redesign of the vendor side (plan §19 "do not redesign the vendor side
+// beyond compilation and existing test intent").
+import type { QueryExecutionRequest, QueryProgressCallbacks } from '../../../src/application/query-execution-service.js';
 
-import type { ChCtx, RunQueryOptions, RunQueryResult } from '../../../src/net/ch-client.js';
+export interface OfficialQueryExecutionAdapter {
+  runProgress(request: QueryExecutionRequest, callbacks: QueryProgressCallbacks): Promise<void>;
+  runText(request: QueryExecutionRequest): Promise<string>;
+}
 
-/** Faithfully mirrors `runQuery`'s own throw/return contract (plan's "Retry
- * safety remains unchanged" invariant needs this EXACTLY, not an
- * approximation): a ClickHouse-level query error (non-2xx with a parseable
- * exception, or an in-band `{"exception"}` line) RETURNS `{ error }`; a
- * network-level failure (rejected fetch, mid-stream reset) THROWS, exactly
- * like production's `runQuery` does when its authenticated request (since
- * #630 Phase 6, `authenticated-clickhouse-request.ts`'s
- * `authenticatedRequest`; formerly `authedFetch`)/the streaming read
- * loop rejects — so `QueryExecutionService`'s real `attemptStatement`
- * (`e instanceof TypeError` -> `transient`) classifies it identically
- * regardless of which client produced the exception. */
-export function makeOfficialRunQueryShim(conn: OfficialConnection, credentialFor: (ctx: ChCtx) => SpikeCredential) {
-  return async function officialRunQueryShim(ctx: ChCtx, sql: string, o: RunQueryOptions = {}): Promise<RunQueryResult> {
-    const fmt = o.format || 'Table';
-    const auth = officialAuthFor(credentialFor(ctx));
-    const common = { query_id: o.queryId, abort_signal: o.signal, auth, query_params: o.params };
+/** Build a `QueryExecutionDeps`-shaped `{runProgress, runText}` pair bound to
+ * one official-client connection and credential — the direct replacement for
+ * the retired `makeOfficialRunQueryShim`. `credentialFor` takes no `ChCtx`
+ * argument (that type is retiring too): every existing call site already
+ * ignored it (`() => BASIC_USER_A`), so dropping it is a mechanical signature
+ * narrowing, not a behavior change. */
+export function makeOfficialQueryExecutionAdapter(
+  conn: OfficialConnection,
+  credentialFor: () => SpikeCredential,
+): OfficialQueryExecutionAdapter {
+  async function runProgress(request: QueryExecutionRequest, callbacks: QueryProgressCallbacks): Promise<void> {
+    const { query_id: queryId, ...nativeParams } = request.params || {};
+    const auth = officialAuthFor(credentialFor());
+    const common = {
+      query_id: queryId != null ? String(queryId) : undefined,
+      abort_signal: request.signal,
+      auth,
+      clickhouse_settings: request.settings,
+      query_params: nativeParams,
+    };
 
-    if (fmt === 'Table') {
-      const fullSql = `${sql}\nFORMAT JSONStringsEachRowWithProgress`;
-      let res;
-      try {
-        res = await conn.client.exec({ query: fullSql, ...common });
-      } catch (e) {
-        if (e instanceof ClickHouseError) return { error: e.message };
-        throw e; // network-level — propagate for attemptStatement's own classification
-      }
-      let sawException: string | null = null;
-      await bridgeNdjsonProgress(res.stream, (line) => {
-        if (line.exception) sawException = line.exception;
-        o.onLine?.(line);
-      });
-      if (sawException) return { error: sawException };
-      return { streamed: true };
-    }
-
-    if (fmt === 'KPI') {
-      let rs;
-      try {
-        rs = await conn.client.query({ query: sql, format: 'JSONEachRowWithProgress', ...common });
-      } catch (e) {
-        if (e instanceof ClickHouseError) return { error: e.message };
-        throw e;
-      }
-      let sawException: string | null = null;
+    if (request.defaultFormat === 'JSONEachRowWithProgress') {
+      const rs = await conn.client.query({ query: request.sql, format: 'JSONEachRowWithProgress', ...common });
       const stream = rs.stream<Record<string, unknown>>();
       const reader = stream.getReader();
       for (;;) {
@@ -433,29 +446,41 @@ export function makeOfficialRunQueryShim(conn: OfficialConnection, credentialFor
         for (const wrapped of value) {
           const row = wrapped.json() as unknown;
           if (row && typeof row === 'object' && 'exception' in (row as object)) {
-            sawException = String((row as { exception: unknown }).exception);
+            callbacks.onLine?.({ exception: String((row as { exception: unknown }).exception) });
           } else if (isRow<Record<string, unknown>>(row)) {
-            o.onLine?.({ row: row.row });
+            callbacks.onLine?.({ row: row.row });
           } else if (isProgressRow(row)) {
-            o.onLine?.({ progress: { read_rows: row.progress.read_rows, read_bytes: row.progress.read_bytes, total_rows_to_read: row.progress.total_rows_to_read, elapsed_ns: row.progress.elapsed_ns } });
+            callbacks.onLine?.({ progress: { read_rows: row.progress.read_rows, read_bytes: row.progress.read_bytes, total_rows_to_read: row.progress.total_rows_to_read, elapsed_ns: row.progress.elapsed_ns } });
           }
+          callbacks.onChunk?.();
         }
       }
-      if (sawException) return { error: sawException };
-      return { streamed: true };
+      return;
     }
 
-    // Raw/explicit-format, no-output-of-interest (INSERT/DDL/command) path —
-    // `command()` per plan §7 "use command() only when discarding output is
-    // intentional".
-    try {
-      await conn.client.command({ query: sql, ...common });
-      return { raw: '' };
-    } catch (e) {
-      if (e instanceof ClickHouseError) return { error: e.message };
-      throw e;
-    }
-  };
+    // Table streaming (QES's `defaultFormat: 'JSONStringsEachRowWithProgress'`).
+    const fullSql = `${request.sql}\nFORMAT ${request.defaultFormat}`;
+    const res = await conn.client.exec({ query: fullSql, ...common });
+    await bridgeNdjsonProgress(res.stream, (line) => {
+      callbacks.onLine?.(line);
+      callbacks.onChunk?.();
+    });
+  }
+
+  async function runText(request: QueryExecutionRequest): Promise<string> {
+    const { query_id: queryId, ...nativeParams } = request.params || {};
+    await conn.client.command({
+      query: request.sql,
+      query_id: queryId != null ? String(queryId) : undefined,
+      abort_signal: request.signal,
+      auth: officialAuthFor(credentialFor()),
+      clickhouse_settings: request.settings,
+      query_params: nativeParams,
+    });
+    return '';
+  }
+
+  return { runProgress, runText };
 }
 
 function flattenHeaders(h: Record<string, string | string[] | undefined> | undefined): Record<string, string> {

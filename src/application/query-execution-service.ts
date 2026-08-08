@@ -13,9 +13,30 @@
 // it; `kill()` here is a stateless, one-shot best-effort `KILL QUERY` —
 // deliberately NOT a `cancel(operationId)` registry (see the issue #276
 // discussion on why the service itself never tracks in-flight operations).
+//
+// Issue #630 Phase 7 — this service no longer depends on generic `runQuery`/
+// mutable-context `killQuery`, and no longer takes a `ctx()` auth-context
+// provider at all: it is injected exactly THREE narrow authenticated
+// primitives instead — `runProgress` (streaming Table/KPI reads),
+// `runText` (whole-body TSV/explicit-format reads, plus every script
+// statement — both effect and row-returning), and `cancel` (owner-scoped
+// best-effort KILL QUERY, delegating to app.ts's `cancelOwnedQuery`, #630
+// Phase 7 §9.2-9.4). This service now OWNS the SQL Browser format/settings
+// mapping (Table/KPI/TSV/explicit-raw — §6.1-6.4) and the ordinary positive
+// row-cap policy (§2.5: applies to every one of those four branches, never
+// only Table/KPI) that used to live inside `net/ch-client.ts`'s `runQuery`;
+// it never imports the package's transport/protocol surface directly (Rule
+// D) — `runProgress`/`runText`/`cancel` are the only side effects, and their
+// request/callback shapes below are this service's OWN narrow types, not a
+// re-export of any package or `net/ch-client.ts` name, so this file carries
+// zero coupling to `@altinity/clickhouse-http`'s exports. A package
+// `ClickHouseError` thrown by the injected primitives is never imported or
+// special-cased here: it is a plain `Error` subclass whose `.message` is
+// already the safe, parsed exception text, so the EXISTING generic
+// `String((e instanceof Error && e.message) || e)` fallback below classifies
+// it correctly with no name check — no package error TYPE ever leaks into
+// this service's own result contracts (§6.5).
 
-import type { ChCtx, RunQueryOptions, RunQueryResult } from '../net/ch-client.js';
-import type { runQuery, killQuery } from '../net/ch-client.js';
 import { applyStreamLine } from '../core/stream.js';
 import type { StreamResult } from '../core/stream.js';
 import { isRowReturning } from '../core/sql-split.js';
@@ -24,19 +45,48 @@ import type { ScriptEntry } from '../core/script-result.js';
 
 // ── Injected dependency seam ─────────────────────────────────────────────────
 
+/** One authenticated ClickHouse HTTP request, exactly as this service builds
+ *  it — this service's OWN shape (never a re-export of a `net/**`/package
+ *  type): opaque SQL text, the exact wire format name, HTTP query-string
+ *  settings/params, and the caller's own `AbortSignal`. */
+export interface QueryExecutionRequest {
+  sql: string;
+  defaultFormat: string;
+  settings?: Record<string, string | number>;
+  params?: Record<string, string | number>;
+  signal?: AbortSignal;
+}
+
+/** Callbacks `runProgress` drives while streaming — `onLine`'s parameter is
+ *  intentionally the generic shape `applyStreamLine` already accepts
+ *  (`Record<string, unknown>`), not a named `StreamLine` type, so this file
+ *  never needs to reference the package's own progress-stream wire type. */
+export interface QueryProgressCallbacks {
+  onLine?: (line: Record<string, unknown>) => void;
+  onChunk?: () => void;
+}
+
 /** Every side effect this service needs, injected as a narrow bag — production
- *  wires the real `net/ch-client.js` functions + browser clock/crypto/timer;
- *  tests inject plain stubs. Mirrors `ch-client.ts`'s own `ChCtx` seam. */
+ *  wires thin closures over `authenticatedProgress`/`authenticatedText`
+ *  (`net/authenticated-clickhouse-request.ts`) and app.ts's own
+ *  `cancelOwnedQuery`; tests inject plain stubs. */
 export interface QueryExecutionDeps {
-  /** Runs one statement and returns its parsed/streamed outcome. */
-  runQuery: typeof runQuery;
-  /** Best-effort `KILL QUERY` for a query_id. */
-  killQuery: typeof killQuery;
-  /** The live ClickHouse auth context — a *provider*, not a value: the caller
-   *  may rebuild it (e.g. after a token refresh) between calls, so the
-   *  service always reads the current one rather than closing over a stale
-   *  snapshot. */
-  ctx: () => ChCtx;
+  /** Runs one authenticated request in progress-streaming mode (Table/KPI):
+   *  drives `request`'s body through `callbacks` until the stream settles.
+   *  Throws on a non-2xx response, an aborted signal, or a network failure —
+   *  never returns a generic `{error}` shape (package consumers throw now,
+   *  §6.5). */
+  runProgress(request: QueryExecutionRequest, callbacks: QueryProgressCallbacks): Promise<void>;
+  /** Runs one authenticated request in whole-body text mode (TSV/explicit
+   *  format, and every script statement — effect or row-returning alike),
+   *  resolving with the complete response text. Throws under the same
+   *  conditions as `runProgress`. */
+  runText(request: QueryExecutionRequest): Promise<string>;
+  /** Best-effort owner-scoped `KILL QUERY` — delegates to app.ts's
+   *  `cancelOwnedQuery(ownerEpoch, queryId)` (#630 Phase 7 §9.2/9.4): a
+   *  replacement (non-owner) epoch never reaches a live connection's frozen
+   *  kill. */
+  cancel(ownerEpoch: number | null | undefined, queryId: string | null | undefined): Promise<void>;
   /** Perf clock for per-statement elapsed ms. Deliberately NOT the wall clock
    *  (`wallNow`) the #173 parameter pipeline uses for epoch-relative values —
    *  that F6 invariant (one wall-clock snapshot per run wave, resolved before
@@ -49,10 +99,6 @@ export interface QueryExecutionDeps {
   retryMs: number;
   /** Injected timer — `sleep(retryMs)` before a retry attempt. */
   sleep: (ms: number) => Promise<void>;
-  /** SQL-string-quoting function `killQuery` needs to build its
-   *  `KILL QUERY WHERE query_id = …` literal (matches `core/format.js`'s
-   *  `sqlString`). */
-  sqlString: (s: unknown) => string;
 }
 
 // ── executeRead ──────────────────────────────────────────────────────────────
@@ -120,10 +166,13 @@ export interface ScriptExecutionResult {
   aborted: boolean;
 }
 
-/** `attemptStatement`'s outcome — `ch.runQuery`'s own `RunQueryResult`
- *  (`streamed` unused here), plus the two classified failures the retry
- *  logic branches on. */
-export interface AttemptResult extends RunQueryResult {
+/** `attemptStatement`'s outcome — the successful raw text body (unused for a
+ *  non-row-returning statement), plus the two classified failures the retry
+ *  logic branches on. This service's own local shape (never a `net/**`/
+ *  package result type — §6.5). */
+export interface AttemptResult {
+  error?: string;
+  raw?: string;
   aborted?: boolean;
   transient?: boolean;
 }
@@ -136,7 +185,10 @@ const SESSION_BUSY = /SESSION_IS_LOCKED|session .* is locked|locked by a concurr
 export interface QueryExecutionService {
   executeRead(result: StreamResult, request: ExecuteReadRequest): Promise<StreamResult>;
   executeScript(request: ScriptExecutionRequest): Promise<ScriptExecutionResult>;
-  kill(queryId: string | null | undefined): Promise<void>;
+  /** Best-effort owner-scoped `KILL QUERY` (#630 Phase 7 §9.4) — `ownerEpoch`
+   *  is the operation's authenticated-execution-scope epoch, captured by the
+   *  caller at registration/start time, never re-read at cancel time. */
+  kill(ownerEpoch: number | null | undefined, queryId: string | null | undefined): Promise<void>;
 }
 
 /** Build a `QueryExecutionService` bound to `deps`. Trivial constructor — no
@@ -145,16 +197,17 @@ export interface QueryExecutionService {
 export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExecutionService {
   // Run one script statement, classifying the outcome for the retry logic: a
   // Cancel → { aborted }; a connection-level fetch failure → { error:'Network
-  // error', transient } (retryable); any other throw → { error }. Otherwise the
-  // runQuery result itself ({ raw } | { error }).
+  // error', transient } (retryable); any other throw (including the package's
+  // ClickHouseError, whose `.message` is already the safe parsed text) →
+  // { error: e.message }. Otherwise the successful raw text body ({ raw }).
   async function attemptStatement(
-    stmt: string,
-    opts: RunQueryOptions,
+    request: QueryExecutionRequest,
     isCurrent: () => boolean,
   ): Promise<AttemptResult> {
     if (!isCurrent()) return { aborted: true };
     try {
-      return await deps.runQuery(deps.ctx(), stmt, opts);
+      const raw = await deps.runText(request);
+      return { raw };
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return { aborted: true };
       return { error: e instanceof TypeError ? 'Network error' : String((e instanceof Error && e.message) || e), transient: e instanceof TypeError };
@@ -171,6 +224,15 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
   // query_id, parameter preparation, session_id, and any recent-value recording.
   // `onChunk` is the per-read repaint hook (the workbench repaints its pane; a
   // tile/detached view repaints its own surface). Returns the mutated `result`.
+  //
+  // Format/settings mapping (#630 Phase 7 §6.1-6.4, moved here from
+  // `net/ch-client.ts`'s `runQuery`): Table/KPI stream the progress-bearing
+  // JSON wire formats with no `wait_end_of_query`; TSV and an explicit/raw
+  // caller format read the whole body as text with `wait_end_of_query=1`.
+  // Every branch gets `add_http_cors_header=1`, and — independently of which
+  // branch it is (§2.5) — a positive `rowLimit` adds the SAME
+  // `max_result_rows`/`result_overflow_mode` cap to `settings`. Only a caller
+  // that deliberately passes 0 (EXPLAIN/PIPELINE/ESTIMATE) stays uncapped.
   async function executeRead(
     result: StreamResult,
     {
@@ -178,25 +240,37 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
     }: ExecuteReadRequest,
   ): Promise<StreamResult> {
     if (!isCurrent()) return result;
+    const isStreaming = format === 'Table' || format === 'KPI';
+    const defaultFormat = isStreaming
+      ? (format === 'KPI' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
+      : format === 'TSV' ? 'TabSeparatedWithNamesAndTypes' : format;
+    const cap: Record<string, string | number> = rowLimit > 0
+      ? { max_result_rows: rowLimit, result_overflow_mode: 'break' }
+      : {};
+    const request: QueryExecutionRequest = {
+      sql,
+      defaultFormat,
+      settings: {
+        ...(isStreaming ? {} : { wait_end_of_query: 1 }),
+        ...cap,
+        add_http_cors_header: 1,
+      },
+      params: { ...(queryId ? { query_id: queryId } : {}), ...(params || {}) },
+      signal,
+    };
     try {
-      const out = await deps.runQuery(deps.ctx(), sql, {
-        format,
-        resultRowLimit: rowLimit,
-        queryId,
-        signal,
-        params,
-        onLine: (json) => {
-          if (isCurrent()) applyStreamLine(json, result);
-        },
-        onChunk: onChunk
-          ? () => { if (isCurrent()) onChunk(); }
-          : undefined,
-      });
-      if (!isCurrent()) return result;
-      if (out.error != null) result.error = out.error;
-      else if (out.raw != null) {
-        result.rawText = out.raw;
-        result.progress.bytes = out.raw.length;
+      if (isStreaming) {
+        await deps.runProgress(request, {
+          onLine: (json) => { if (isCurrent()) applyStreamLine(json, result); },
+          onChunk: onChunk
+            ? () => { if (isCurrent()) onChunk(); }
+            : undefined,
+        });
+      } else {
+        const raw = await deps.runText(request);
+        if (!isCurrent()) return result;
+        result.rawText = raw;
+        result.progress.bytes = raw.length;
       }
     } catch (e) {
       if (!isCurrent()) return result;
@@ -213,6 +287,13 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
   // request), stopping on the first failure. Row-returning statements
   // (SELECT/WITH/SHOW/…) are fetched as JSONCompact capped at
   // SELECT_ROW_CAP; everything else runs for effect and reports OK.
+  //
+  // Script over-fetch cap placement (#630 Phase 7 §8): the row-returning cap
+  // lives in `params`, spread AFTER `stmt.params`, so it always wins a
+  // collision with a caller-supplied `max_result_rows`/`result_overflow_mode`
+  // — and it is NEVER also placed in `settings` (§2.3): `settings` here only
+  // ever carries `wait_end_of_query`/`add_http_cors_header`, the same for
+  // every script statement regardless of row-returning-ness.
   async function executeScript(req: ScriptExecutionRequest): Promise<ScriptExecutionResult> {
     const {
       statements, signal, onStatementStart, onStatementResult,
@@ -226,10 +307,14 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
       const rowReturning = isRowReturning(stmt.sql);
       // Over-fetch SELECTs by one past the display cap so a truncated result is
       // detectable (at exactly the cap it isn't).
-      const opts: RunQueryOptions = {
-        format: rowReturning ? 'JSONCompact' : 'TSV',
-        signal,
-        params: { ...stmt.params, ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
+      const defaultFormat = rowReturning ? 'JSONCompact' : 'TabSeparatedWithNamesAndTypes';
+      const settings = { wait_end_of_query: 1, add_http_cors_header: 1 };
+      const buildRequest = (queryId: string): QueryExecutionRequest => {
+        const baseParams = { query_id: queryId, ...stmt.params };
+        const params = rowReturning
+          ? { ...baseParams, max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' }
+          : baseParams;
+        return { sql: stmt.execSql, defaultFormat, settings, params, signal };
       };
       const s0 = deps.now(); // this statement's own wall-clock (grid Time column)
       // Fresh query_id per attempt, published before the request so Cancel
@@ -237,7 +322,7 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
       let queryId = deps.uid('q');
       if (!isCurrent()) { aborted = true; break; }
       onStatementStart(i, { queryId, attempt: 1 });
-      let out = await attemptStatement(stmt.execSql, { ...opts, queryId }, isCurrent);
+      let out = await attemptStatement(buildRequest(queryId), isCurrent);
       if (!isCurrent()) { aborted = true; break; }
       // Retry ONLY when it's safe. SESSION_IS_LOCKED means the statement was
       // rejected before running → safe to retry (any statement). A connection
@@ -250,7 +335,7 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
         if (!isCurrent()) { aborted = true; break; }
         queryId = deps.uid('q');
         onStatementStart(i, { queryId, attempt: 2 });
-        out = await attemptStatement(stmt.execSql, { ...opts, queryId }, isCurrent);
+        out = await attemptStatement(buildRequest(queryId), isCurrent);
         if (!isCurrent()) { aborted = true; break; }
       }
       if (out.aborted) { aborted = true; break; }
@@ -279,11 +364,13 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
     return { entries, aborted };
   }
 
-  // Stop an in-flight query: best-effort KILL QUERY for `queryId` (mirrors
-  // app.ts's cancel(), minus the AbortController.abort() the caller performs
-  // itself — cancellation stays caller-owned; see the module doc above).
-  function kill(queryId: string | null | undefined): Promise<void> {
-    return deps.killQuery(deps.ctx(), queryId, deps.sqlString);
+  // Stop an in-flight query: best-effort owner-scoped KILL QUERY for
+  // `queryId` (mirrors app.ts's cancel(), minus the AbortController.abort()
+  // the caller performs itself — cancellation stays caller-owned; see the
+  // module doc above). `ownerEpoch` fences a replacement-epoch caller from
+  // reaching a live connection's frozen kill (#630 Phase 7 §9.2/9.4).
+  function kill(ownerEpoch: number | null | undefined, queryId: string | null | undefined): Promise<void> {
+    return deps.cancel(ownerEpoch, queryId);
   }
 
   return { executeRead, executeScript, kill };

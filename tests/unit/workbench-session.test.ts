@@ -426,7 +426,9 @@ describe('createWorkbenchSession: run()', () => {
     expect(h.hooks.tickElapsed).toHaveBeenCalledTimes(ticksBefore + 1);
     session.cancel();
     expect(freshReq.signal?.aborted).toBe(true);
-    expect(h.execFakes.kill).toHaveBeenLastCalledWith('q-2');
+    // The fresh wave registered under `newScope` (epoch 2) — #630 Phase 7
+    // §9.3/9.4: the owner epoch captured at that wave's registration time.
+    expect(h.execFakes.kill).toHaveBeenLastCalledWith(2, 'q-2');
 
     newGate.resolve({} as StreamResult);
     await fresh;
@@ -811,7 +813,9 @@ describe('createWorkbenchSession: runScript()', () => {
     const p = session.runScript(['SELECT 1'], 'SELECT 1');
     await flush();
     session.cancel();
-    expect(h.execFakes.kill).toHaveBeenCalledWith('q-live');
+    // No executionScope supplied by this harness (defaults to null) — the
+    // owner epoch captured at registration is null.
+    expect(h.execFakes.kill).toHaveBeenCalledWith(null, 'q-live');
     expect(capturedSignal?.aborted).toBe(true);
     gate.resolve({ entries: [], aborted: true });
     await p;
@@ -1598,7 +1602,9 @@ describe('createWorkbenchSession: cancel()', () => {
 
     expect(h.state.running.value).toBe(true);
     session.cancel();
-    expect(h.execFakes.kill).toHaveBeenCalledWith(null);
+    // No executionScope (owner epoch null) and no query_id minted yet
+    // (cancel fires before preflight resolves).
+    expect(h.execFakes.kill).toHaveBeenCalledWith(null, null);
     configGate.resolve(undefined);
     await pending;
 
@@ -1637,7 +1643,7 @@ describe('createWorkbenchSession: cancel()', () => {
     const req = h.execFakes.executeRead.mock.calls[0][1] as ExecuteReadRequest;
     session.cancel();
     expect(req.signal?.aborted).toBe(true);
-    expect(h.execFakes.kill).toHaveBeenCalledWith('q-1');
+    expect(h.execFakes.kill).toHaveBeenCalledWith(null, 'q-1');
     gate.resolve({ ...req } as unknown as StreamResult);
     await p;
   });
@@ -1797,7 +1803,7 @@ describe('createWorkbenchSession: destroy()', () => {
     session.destroy();
     expect(clearSpy.mock.calls.length).toBeGreaterThan(callsBefore);
     expect(req.signal?.aborted).toBe(true);
-    expect(h.execFakes.kill).toHaveBeenCalledWith('q-1');
+    expect(h.execFakes.kill).toHaveBeenCalledWith(null, 'q-1');
     gate.resolve({} as StreamResult);
     await p;
     clearSpy.mockRestore();

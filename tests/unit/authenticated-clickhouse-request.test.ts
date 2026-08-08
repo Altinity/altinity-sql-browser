@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  authenticatedRequest, authenticatedJson, authenticatedText, authenticatedProgress,
+  authenticatedRequest, authenticatedResponse, authenticatedJson, authenticatedText, authenticatedProgress,
 } from '../../src/net/authenticated-clickhouse-request.js';
 import type { AuthenticatedRequestCtx } from '../../src/net/authenticated-clickhouse-request.js';
 import { ClickHouseError } from '@altinity/clickhouse-http';
@@ -533,6 +533,55 @@ describe('authenticatedRequest — live origin authority across retry (Adaptatio
     expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
     expect(ctx.fetchMock.mock.calls[0][0]).toContain('https://ch.example');
     expect(ctx.fetchMock.mock.calls[1][0]).toContain('https://new-cluster.example');
+  });
+});
+
+// Issue #630 Phase 7 §5/§23 — `authenticatedResponse` composes
+// `authenticatedRequest` with exactly the package's `ensureClickHouseSuccess`
+// classifier (no consumer, unlike `authenticatedJson`/`authenticatedText`/
+// `authenticatedProgress` below): it hands the caller back the exact
+// successful native `Response`, untouched, so a caller that must own its own
+// byte-stream consumption (raw export) can read the body itself. Only ONE
+// package classification happens after settlement; `authenticatedRequest`
+// remains the sole owner of auth/epoch/refresh/lifecycle, and this adds no
+// retry and no second Fetch.
+describe('authenticatedResponse — package classification composition', () => {
+  it('resolves the exact successful native Response by identity, with its body left completely unread', async () => {
+    const textSpy = vi.fn(async () => 'unused');
+    const response: FakeResponse = { ok: true, status: 200, text: textSpy, clone() { return response; } };
+    const ctx = ctxWith(async () => response);
+    const resp = await authenticatedResponse(ctx, { sql: 'SELECT 1', defaultFormat: 'TSV' });
+    expect(resp).toBe(response);
+    expect(textSpy).not.toHaveBeenCalled();
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('throws the package ClickHouseError on a resolved non-2xx response, performing no second Fetch for classification', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 999. DB::Exception: boom', false, 500), { authConfirmed: true });
+    const err: unknown = await authenticatedResponse(ctx, { sql: 'bad', defaultFormat: 'TSV' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ClickHouseError);
+    expect((err as ClickHouseError).message).toBe('Code: 999. DB::Exception: boom');
+    expect((err as ClickHouseError).status).toBe(500);
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('never starts non-2xx classification when the request itself was superseded (abort), and never wraps that rejection', async () => {
+    const abortError = Object.assign(new Error('cancelled request'), { name: 'AbortError' });
+    const ctx = ctxWith(async () => { throw abortError; });
+    await expect(authenticatedResponse(ctx, { sql: 'SELECT 1', defaultFormat: 'TSV' })).rejects.toBe(abortError);
+  });
+  it('propagates a native fetch network TypeError rejection by identity, never wrapped as ClickHouseError', async () => {
+    const networkError = new TypeError('Failed to fetch');
+    const ctx = ctxWith(async () => { throw networkError; });
+    await expect(authenticatedResponse(ctx, { sql: 'SELECT 1', defaultFormat: 'TSV' })).rejects.toBe(networkError);
+  });
+  it('still refreshes exactly once on 401 before classifying the retried response — unchanged refresh bounds', async () => {
+    let n = 0;
+    const ctx = ctxWith(async () => (n++ === 0 ? jsonResp({}, false, 401) : jsonResp({ ok: 1 })), {
+      refresh: vi.fn(async () => true),
+    });
+    const resp = await authenticatedResponse(ctx, { sql: 'SELECT 1', defaultFormat: 'JSON' });
+    expect(resp.ok).toBe(true);
+    expect(ctx.refresh).toHaveBeenCalledTimes(1);
+    expect(ctx.fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

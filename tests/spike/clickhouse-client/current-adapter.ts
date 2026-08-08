@@ -1,20 +1,36 @@
 // Phase 0 / issue #585 — the "current-side adapter" (plan §7): a thin
 // SPIKE-OWNED wrapper around the REAL production functions from
-// `src/net/ch-client.ts`. It does not reimplement request construction,
-// streaming, or error classification — it only translates the test-owned
-// `SpikeRequest`/`SpikeOutcome` vocabulary at the boundary, exactly as the
-// plan requires ("Do not reimplement current behavior in a test helper and
-// compare that replica with the official client").
-
-// Issue #630 Phase 3 — `parseExceptionText` is package-owned now
-// (`@altinity/clickhouse-http`); obtained here through `ch-client.ts`'s own
-// zero-logic re-export (the same gateway `chUrl` already came through since
-// Phase 2), in the same import declaration. `applyStreamLine`/`newResult`
-// stay SQL-Browser-owned result policy, imported from `src/core/stream.js`
-// unchanged.
+// `src/net/authenticated-clickhouse-request.ts` (and `ch-client.ts`'s own
+// zero-logic re-exports of package protocol helpers). It does not reimplement
+// request construction, streaming, or error classification — it only
+// translates the test-owned `SpikeRequest`/`SpikeOutcome` vocabulary at the
+// boundary, exactly as the plan requires ("Do not reimplement current
+// behavior in a test helper and compare that replica with the official
+// client").
+//
+// Issue #630 Phase 7 (plan §19/§2.4, Checkpoint 2C's spike portion) — this
+// file no longer depends on `ch-client.ts`'s generic, now-retiring
+// `runQuery`/`exportQuery`/mutable-context `killQuery` or its `ChCtx` type:
+// it drives the SAME production request path those functions themselves now
+// delegate to — `authenticated-clickhouse-request.ts`'s `authenticatedProgress`
+// (Table/KPI streaming), `authenticatedText` (TSV/explicit-format whole-body
+// reads), and `authenticatedResponse` (the raw/export path) — plus the
+// package's own stateless `createClickHouseHttpClient(...).killQuery(...)`
+// for best-effort cancellation. The Table/KPI/TSV/explicit-format mapping and
+// the non-2xx/in-band-exception classification below are this file's OWN
+// mirror of that mapping (the same one `QueryExecutionService`
+// (`src/application/query-execution-service.ts`) now owns for production —
+// see its module doc), not a reimplementation of the transport itself.
+// `applyStreamLine`/`newResult` stay SQL-Browser-owned result policy,
+// imported from `src/core/stream.js` unchanged.
 import {
-  runQuery, exportQuery, killQuery, chUrl, parseExceptionText, type ChCtx,
+  chUrl, parseExceptionText,
 } from '../../../src/net/ch-client.js';
+import {
+  authenticatedResponse, authenticatedProgress, authenticatedText,
+} from '../../../src/net/authenticated-clickhouse-request.js';
+import type { AuthenticatedRequestCtx } from '../../../src/net/authenticated-clickhouse-request.js';
+import { createClickHouseHttpClient } from '@altinity/clickhouse-http';
 import { applyStreamLine, newResult } from '../../../src/core/stream.js';
 import type { AdapterRunResult, SpikeCredential, SpikeRequest, SpikeOutcome } from './types.js';
 import { emptyOutcome, IncrementalSha256 } from './normalize.js';
@@ -22,9 +38,9 @@ import { emptyOutcome, IncrementalSha256 } from './normalize.js';
 /** Build the `Authorization` header for a `SpikeCredential` — the harness's
  * own request-local credential concept, translated into exactly the header
  * production's authenticated request path would send for that credential
- * kind (at the time this spike was written, `ch-client.ts`'s `authedFetch`;
- * since #630 Phase 6, `authenticated-clickhouse-request.ts`'s
- * `authenticatedRequest`, unchanged in shape). */
+ * kind (`authenticated-clickhouse-request.ts`'s `authenticatedRequest`,
+ * since #630 Phase 6; formerly `ch-client.ts`'s `authedFetch`, unchanged in
+ * shape). */
 export function credentialAuthHeader(credential: SpikeCredential): string {
   // `btoa` (standard Web API, global in Node >=18 and every target browser)
   // rather than `Buffer` — see normalize.ts's `IncrementalSha256` docstring
@@ -38,7 +54,8 @@ export function credentialAuthHeader(credential: SpikeCredential): string {
       return 'Bearer ' + credential.token;
     case 'jwt-as-basic':
       // Matches the app's real JWT-as-Basic-password composition (username +
-      // the JWT used as the Basic password) — see ch-client.ts's authHeader seam.
+      // the JWT used as the Basic password) — see authenticated-clickhouse-
+      // request.ts's `authHeader` seam.
       return 'Basic ' + btoa(`${credential.username}:${credential.jwt}`);
     case 'invalid':
     default:
@@ -46,14 +63,12 @@ export function credentialAuthHeader(credential: SpikeCredential): string {
   }
 }
 
-/** Optional hooks `makeCurrentCtx` wires onto `ChCtx`'s own epoch/lifecycle
- * seam (plan §21's "stale before request" / "stale during refresh" /
- * "stale response" cases need REAL `ch-client.ts` epoch fencing exercised
- * through its real production request path — at the time this spike was
- * written, `authedFetch`; since #630 Phase 6, `authenticated-clickhouse-
- * request.ts`'s `authenticatedRequest`, reached the same way, through
- * `runQuery`/`exportQuery`/`killQuery` — not a harness reimplementation of
- * it). Every field
+/** Optional hooks `makeCurrentCtx` wires onto the real production
+ * `AuthenticatedRequestCtx`'s own epoch/lifecycle seam (plan §21's "stale
+ * before request" / "stale during refresh" / "stale response" cases need
+ * REAL `authenticated-clickhouse-request.ts` epoch fencing exercised through
+ * its real production request path, `authenticatedRequest` — not a harness
+ * reimplementation of it). Every field
  * is optional and defaults to the pre-existing no-op behavior, so no
  * existing call site needs to change. */
 export interface CurrentCtxHooks {
@@ -72,26 +87,24 @@ export interface CurrentCtxHooks {
   getToken?: () => Promise<string | null>;
   /** Fires the instant a delegate fetch RESOLVES — before `runCurrent`'s own
    *  `lastResponse` capture and before production's own post-fetch epoch
-   *  check runs (at the time this spike was written, `authedFetch`'s; since
-   *  #630 Phase 6, `authenticated-clickhouse-request.ts`'s
-   *  `authenticatedRequest`'s, unchanged in shape) (plan §21 "stale
-   *  response"). A test flips a shared epoch
+   *  check runs (`authenticated-clickhouse-request.ts`'s `authenticatedRequest`)
+   *  (plan §21 "stale response"). A test flips a shared epoch
    *  variable here to deterministically land the flip in that exact window,
    *  with no timing race. */
   onFetchResponse?: (resp: Response) => void;
 }
 
-/** Build a `ChCtx` bound to one `SpikeRequest`'s credential and origin, using
- * the real production `fetch` seam contract. `onFetch` is called once per
- * underlying fetch invocation (constructor/fetch-count invariants);
- * `onResponse` observes each settled `Response` (status/headers) — pure
- * instrumentation at the already-injected fetch boundary, not a second
- * request path: production's `RunQueryResult` doesn't surface headers to
- * `runQuery`'s caller, so this is how the harness reads them without
- * reimplementing `runQuery`'s own request/parsing logic. `hooks` (optional)
- * wires the real epoch/lifecycle seam (`CurrentCtxHooks`, above) — omitted
- * entirely preserves the exact previous behavior (no epoch hook, `refresh()`
- * always resolves false, `onSignedOut` a no-op). */
+/** Build an `AuthenticatedRequestCtx` bound to one `SpikeRequest`'s
+ * credential and origin, using the real production `fetch` seam contract.
+ * `onFetch` is called once per underlying fetch invocation
+ * (constructor/fetch-count invariants); `onResponse` observes each settled
+ * `Response` (status/headers) — pure instrumentation at the already-injected
+ * fetch boundary, not a second request path: production's authenticated
+ * response consumers don't surface headers to their caller, so this is how
+ * the harness reads them without reimplementing that request/parsing logic.
+ * `hooks` (optional) wires the real epoch/lifecycle seam (`CurrentCtxHooks`,
+ * above) — omitted entirely preserves the exact previous behavior (no epoch
+ * hook, `refresh()` always resolves false, `onSignedOut` a no-op). */
 export function makeCurrentCtx(
   request: SpikeRequest,
   baseUrl: string,
@@ -100,7 +113,7 @@ export function makeCurrentCtx(
   onResponse?: (resp: Response) => void,
   initialAuthConfirmed?: boolean,
   hooks?: CurrentCtxHooks,
-): ChCtx {
+): AuthenticatedRequestCtx {
   const authHeader = credentialAuthHeader(request.credential);
   return {
     origin: baseUrl,
@@ -129,10 +142,10 @@ export function makeCurrentCtx(
  * Restricted, on purpose, to exactly the shapes this spike's fixtures use
  * (digit-string / number scalars and arrays of them — no escaping of
  * tab/newline/quote/backslash, which the real vendor formatter also handles
- * but no spike fixture exercises) — `ch-client.ts`'s own `params` field has
- * no array-value concept at all, so the CURRENT adapter must pre-format an
- * array-valued native parameter into the exact wire string itself before
- * handing it to `runQuery`'s plain `Record<string, string|number>` params
+ * but no spike fixture exercises) — production's authenticated request path
+ * has no array-value concept at all, so the CURRENT adapter must pre-format
+ * an array-valued native parameter into the exact wire string itself before
+ * handing it to the request's plain `Record<string, string|number>` params
  * bag; the OFFICIAL adapter instead hands the array straight to
  * `query_params` and lets the vendor library's own formatter do this. A
  * match between the two proves this hand-written mirror is correct — see
@@ -145,15 +158,15 @@ export function formatNativeParamValue(value: string | number | (string | number
 }
 
 /** Fold a `SpikeRequest`'s settings/native-params/role/session into the flat
- * `Record<string, string|number>` bag `ch-client.ts`'s `runQuery`/
- * `exportQuery` accept — settings ride as bare keys (matching the official
+ * `Record<string, string|number>` bag the production authenticated request
+ * path accepts — settings ride as bare keys (matching the official
  * adapter's `clickhouse_settings`); native params are prefixed `param_`
  * here (the CURRENT side's own responsibility — see `formatNativeParamValue`'s
  * docstring for why the official side instead delegates this to the vendor
  * library); `role`/`sessionId` become the same `role`/`session_id` bare keys
  * the official client's own `toSearchParams` emits (array-valued `role` is
- * deliberately unsupported here — `ch-client.ts`'s params bag cannot repeat a
- * key, so every spike scenario exercising `role` uses a single string). */
+ * deliberately unsupported here — the params bag cannot repeat a key, so
+ * every spike scenario exercising `role` uses a single string). */
 function nativeParamsForCurrent(request: SpikeRequest): Record<string, string | number> {
   const out: Record<string, string | number> = { ...(request.settings || {}) };
   for (const [k, v] of Object.entries(request.params || {})) {
@@ -164,10 +177,13 @@ function nativeParamsForCurrent(request: SpikeRequest): Record<string, string | 
   return out;
 }
 
-/** Run one `SpikeRequest` through the real production `runQuery`/`exportQuery`
- * functions, folding the result into the normalized `SpikeOutcome` vocabulary.
- * `hooks` (optional) wires `ChCtx`'s real epoch/lifecycle seam — see
- * `CurrentCtxHooks`. */
+/** Run one `SpikeRequest` through the real production authenticated request
+ * functions — `authenticatedResponse` for the raw/export path,
+ * `authenticatedProgress`/`authenticatedText` for the rows path (mirroring
+ * the SAME Table/KPI/TSV/explicit-format mapping `QueryExecutionService` now
+ * owns in production, #630 Phase 7 §6.1-6.4) — folding the result into the
+ * normalized `SpikeOutcome` vocabulary. `hooks` (optional) wires the real
+ * epoch/lifecycle seam — see `CurrentCtxHooks`. */
 export async function runCurrent(
   request: SpikeRequest,
   baseUrl: string,
@@ -189,11 +205,11 @@ export async function runCurrent(
 
   if (request.consume === 'raw') {
     try {
-      const resp = await exportQuery(ctx, request.sql, {
-        queryId: request.queryId,
+      const resp = await authenticatedResponse(ctx, {
+        sql: request.sql,
+        defaultFormat: (request.format === 'Table' || request.format === 'KPI' ? undefined : request.format) || 'TabSeparatedWithNames',
+        params: { ...(request.queryId ? { query_id: request.queryId } : {}), ...nativeParamsForCurrent(request) },
         signal: request.signal,
-        format: request.format === 'Table' || request.format === 'KPI' ? undefined : request.format,
-        params: nativeParamsForCurrent(request),
       });
       outcome.httpStatus = resp.status;
       outcome.responseHeaders = Object.fromEntries(resp.headers.entries());
@@ -217,22 +233,36 @@ export async function runCurrent(
   const result = newResult(request.format);
   result.rowLimit = 0;
   let firstRow = false;
+  // Same format/settings mapping production's `QueryExecutionService` owns
+  // (#630 Phase 7 §6.1-6.4): Table/KPI stream the progress-bearing JSON wire
+  // formats with no `wait_end_of_query`; TSV/explicit formats read the whole
+  // body as text with `wait_end_of_query=1`. This spike never exercises a
+  // positive row cap (`runCurrent` always passes an uncapped read), so no
+  // `max_result_rows`/`result_overflow_mode` is added here.
+  const fmt = request.format || 'Table';
+  const isStreaming = fmt === 'Table' || fmt === 'KPI';
+  const defaultFormat = isStreaming
+    ? (fmt === 'KPI' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
+    : fmt === 'TSV' ? 'TabSeparatedWithNamesAndTypes' : fmt;
+  const settings: Record<string, string | number> = {
+    ...(isStreaming ? {} : { wait_end_of_query: 1 }),
+    add_http_cors_header: 1,
+  };
+  const params = { ...(request.queryId ? { query_id: request.queryId } : {}), ...nativeParamsForCurrent(request) };
   try {
-    const out = await runQuery(ctx, request.sql, {
-      format: request.format,
-      queryId: request.queryId,
-      signal: request.signal,
-      params: nativeParamsForCurrent(request),
-      onLine: (line) => {
-        applyStreamLine(line, result);
-        if (line.row && !firstRow) { firstRow = true; outcome.firstRowAtMs = Date.now() - t0; }
-        if (line.exception) outcome.chMessage = line.exception;
-      },
-    });
-    outcome.completedAtMs = Date.now() - t0;
-    if (out.error != null) outcome.error = out.error;
-    if (out.raw != null) {
-      outcome.rawByteCount = new TextEncoder().encode(out.raw).byteLength;
+    if (isStreaming) {
+      await authenticatedProgress(ctx, { sql: request.sql, defaultFormat, settings, params, signal: request.signal }, {
+        onLine: (line) => {
+          applyStreamLine(line, result);
+          if (line.row && !firstRow) { firstRow = true; outcome.firstRowAtMs = Date.now() - t0; }
+          if (line.exception) outcome.chMessage = line.exception;
+        },
+      });
+      outcome.completedAtMs = Date.now() - t0;
+    } else {
+      const raw = await authenticatedText(ctx, { sql: request.sql, defaultFormat, settings, params, signal: request.signal });
+      outcome.completedAtMs = Date.now() - t0;
+      outcome.rawByteCount = new TextEncoder().encode(raw).byteLength;
     }
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') outcome.cancelled = true;
@@ -255,10 +285,23 @@ export async function runCurrent(
   return { outcome, constructorCalls: 1, fetchCalls };
 }
 
-/** Best-effort server cancellation via the real `killQuery` (plan §22
- * "Server cancellation"). */
-export async function currentKillQuery(ctx: ChCtx, queryId: string | null | undefined): Promise<void> {
-  return killQuery(ctx, queryId, (s) => `'${String(s).replace(/'/g, "\\'")}'`);
+/** Best-effort server cancellation (plan §22 "Server cancellation") through
+ * the package's stateless `createClickHouseHttpClient(...).killQuery(...)` —
+ * #630 Phase 7 §19: no longer routes through `ch-client.ts`'s retiring
+ * mutable-context `killQuery`. Resolves the CURRENT Authorization from `ctx`
+ * itself (the same `getToken()`/`authHeader()` seam `makeCurrentCtx` wires
+ * up) and issues exactly one `KILL QUERY ... ASYNC`, swallowing every
+ * failure — matching the retired function's own best-effort contract. A
+ * missing token (never signed in) is a no-op, same as a missing `queryId`. */
+export async function currentKillQuery(ctx: AuthenticatedRequestCtx, queryId: string | null | undefined): Promise<void> {
+  if (!queryId) return;
+  try {
+    const token = await ctx.getToken();
+    if (!token) return;
+    const authHeader = ctx.authHeader || ((t: string) => 'Bearer ' + t);
+    const client = createClickHouseHttpClient({ fetch: () => ctx.fetch, origin: () => ctx.origin });
+    await client.killQuery({ queryId, authorization: authHeader(token) });
+  } catch { /* best-effort */ }
 }
 
 /** Re-exported so scenario/harness code has one place to build the

@@ -1,18 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { signal } from '@preact/signals-core';
-// Issue #630 Phase 5 — sqlString now has one implementation, owned by the
-// package; format.js no longer declares it.
-import { sqlString } from '@altinity/clickhouse-http';
 import { splitStatements } from '../../src/core/sql-split.js';
 import { createExportService } from '../../src/application/export-service.js';
 import type {
-  ExportServiceDeps, ExportStateSlice, ExportHooks, ExportSink,
+  ExportServiceDeps, ExportStateSlice, ExportHooks, ExportSink, ExportRequest, SignedOutCtx,
   FileHandleLike, DirectoryHandleLike, WritableFileStreamLike,
 } from '../../src/application/export-service.js';
 import { newTabObj } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
-import type { ChCtx, RunQueryResult } from '../../src/net/ch-client.js';
 import type { PreparedSource, PreparedStatement } from '../../src/core/param-pipeline.js';
 import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
 import {
@@ -60,7 +56,7 @@ function preparedSource(over: Partial<PreparedSource> = {}): PreparedSource {
 // ── Streaming-response / File System Access fakes (ported from
 // app.test.ts's own identically-named helpers — see that file's header
 // comment on why these aren't a shared tests/helpers/ module: this service's
-// tests mock `exportQuery`/`runQuery` directly rather than a `fetch` seam, so
+// tests mock `exportResponse`/`runEffectText` directly rather than a `fetch` seam, so
 // only the Response/file-handle SHAPES are shared, not the fetch-routing
 // machinery). ──────────────────────────────────────────────────────────────
 
@@ -81,7 +77,7 @@ interface FakeExportResponse { headers: { get(name: string): string | null }; bo
 function fakeExportResponse(opts: { body?: FakeBody | null; headers?: Record<string, string> } = {}): FakeExportResponse {
   return { body: opts.body, headers: { get: (name) => (opts.headers && opts.headers[name]) ?? null } };
 }
-// `ExportServiceDeps.exportQuery`'s real signature returns a genuine DOM
+// `ExportServiceDeps.exportResponse`'s real signature returns a genuine DOM
 // `Response`; a `{headers,body}`-only fake doesn't overlap enough of the real
 // interface for a direct `as Response` (same "object"-parameter bridge as
 // app.test.ts's own `asFetch`/`asWindow`).
@@ -168,11 +164,15 @@ void asWritableLike;
 
 // ── Fakes for the service's own injected deps ───────────────────────────────
 
-function makeCh(): { exportQuery: Mock; runQuery: Mock; killQuery: Mock } {
-  const exportQuery = vi.fn(async () => asResponse(fakeExportResponse({ body: streamBody([]) })));
-  const runQuery = vi.fn(async (): Promise<RunQueryResult> => ({}));
-  const killQuery = vi.fn(async () => {});
-  return { exportQuery, runQuery, killQuery };
+// #630 Phase 7 — `exportResponse`/`runEffectText` mirror
+// `authenticatedResponse`/`authenticatedText`: package consumers now THROW
+// instead of returning a generic `{error}` shape, so a failure fixture is
+// `mockRejectedValue(new Error(...))`, never `mockResolvedValue({error})`.
+function makeCh(): { exportResponse: Mock; runEffectText: Mock; cancel: Mock } {
+  const exportResponse = vi.fn(async () => asResponse(fakeExportResponse({ body: streamBody([]) })));
+  const runEffectText = vi.fn(async (): Promise<string> => '');
+  const cancel = vi.fn(async () => {});
+  return { exportResponse, runEffectText, cancel };
 }
 
 function makeState(over: Partial<ExportStateSlice> = {}): ExportStateSlice {
@@ -211,13 +211,20 @@ function makeSink(over: Partial<ExportSink> = {}): ExportSink {
   };
 }
 
+// #630 Phase 7 — `ctx()` survives only as the narrow signed-out notifier; a
+// couple of tests also read `.fetch`/`.origin` off it purely as convenient
+// FIXTURE VALUES for a frozen `AuthenticatedCancellationLease`'s own
+// `fetch`/`origin` fields (unrelated to transport — no export path reads
+// `ctx()` for a request any more).
+interface FakeCtx extends SignedOutCtx { fetch: typeof fetch; origin: string }
+
 interface Harness {
   deps: ExportServiceDeps;
   state: ExportStateSlice;
   hooks: ExportHooks;
   sink: ExportSink;
   ch: ReturnType<typeof makeCh>;
-  ctx: ChCtx;
+  ctx: FakeCtx;
   tab: QueryTab;
   params: ExportParamsDeps;
 }
@@ -241,18 +248,17 @@ function makeHarness(opts: {
   const ch = makeCh();
   const tab: QueryTab = { ...newTabObj('t1'), ...opts.tab };
   const params = makeParams(opts.params);
-  const ctx: ChCtx = {
+  const ctx: FakeCtx = {
     fetch: (undefined as unknown) as typeof fetch, origin: 'https://ch.example',
-    getToken: async () => null, refresh: async () => false, onSignedOut: vi.fn(),
+    onSignedOut: vi.fn(),
   };
   const uidSeq = { n: 0 };
   const deps: ExportServiceDeps = {
-    exportQuery: ch.exportQuery, runQuery: ch.runQuery, killQuery: ch.killQuery,
+    exportResponse: ch.exportResponse, runEffectText: ch.runEffectText, cancel: ch.cancel,
     ctx: () => ctx,
     executionScope: opts.executionScope || (() => null),
     ensureConfig: opts.ensureConfig || vi.fn(async () => undefined),
     getToken: opts.getToken || vi.fn(async () => 'tok'),
-    sqlString,
     now: () => { uidSeq.n += 10; return uidSeq.n; },
     wallNow: () => 1_700_000_000_000,
     uid: (prefix: string) => `${prefix}${++uidSeq.n}`,
@@ -266,6 +272,16 @@ function makeHarness(opts: {
     hooks,
   };
   return { deps, state, hooks, sink, ch, ctx, tab, params };
+}
+
+/** `h.ch.exportResponse`'s recorded request at call index `i` (default 0) —
+ *  a small accessor so assertions read almost like the pre-Phase-7
+ *  `mock.calls[i][2]` options-object shape did. */
+function exportCall(h: Harness, i = 0): ExportRequest {
+  return (h.ch.exportResponse as Mock).mock.calls[i][0] as ExportRequest;
+}
+function effectCall(h: Harness, i = 0): ExportRequest {
+  return (h.ch.runEffectText as Mock).mock.calls[i][0] as ExportRequest;
 }
 
 // ── exportEntry (dispatch) ──────────────────────────────────────────────────
@@ -390,7 +406,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(h.sink.pickFile).toHaveBeenCalledTimes(1);
     expect(h.ctx.onSignedOut).toHaveBeenCalledTimes(1);
-    expect(h.ch.exportQuery).not.toHaveBeenCalled();
+    expect(h.ch.exportResponse).not.toHaveBeenCalled();
     expect(h.state.exporting.value).toBe(false);
   });
 
@@ -403,7 +419,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
       },
       tab: { name: 'My Query!' },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['a'.repeat(100)]) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['a'.repeat(100)]) })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(pickerOpts!.suggestedName).toBe('My_Query.tsv');
     expect(pickerOpts!.types[0].accept).toEqual({ 'text/tab-separated-values': ['.tsv'] });
@@ -412,9 +428,9 @@ describe('createExportService: exportDirect (issue #87)', () => {
     expect(writable.abort).not.toHaveBeenCalled();
     expect(h.hooks.toast).toHaveBeenCalledWith('Export complete');
     expect(h.state.exporting.value).toBe(false);
-    const call = h.ch.exportQuery.mock.calls[0];
-    expect(call[1]).toBe('SELECT 1\nFORMAT TabSeparatedWithNames');
-    expect(call[2].format).toBe('TabSeparatedWithNames');
+    const call = exportCall(h);
+    expect(call.sql).toBe('SELECT 1\nFORMAT TabSeparatedWithNames');
+    expect(call.defaultFormat).toBe('TabSeparatedWithNames');
   });
 
   it('honors an explicit FORMAT in the query for the picker + the request', async () => {
@@ -424,12 +440,12 @@ describe('createExportService: exportDirect (issue #87)', () => {
       sink: { pickFile: vi.fn(async (opts) => { pickerOpts = opts; return asFileHandleLike(handle); }) },
       params: { execStatementSql: vi.fn((s: string) => s) },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['[]']) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['[]']) })));
     await createExportService(h.deps).exportDirect('SELECT 1 FORMAT JSON', 0);
     expect(pickerOpts!.suggestedName).toMatch(/\.json$/);
     expect(pickerOpts!.types[0].accept).toEqual({ 'application/json': ['.json'] });
-    const call = h.ch.exportQuery.mock.calls[0];
-    expect(call[2].format).toBe('JSON');
+    const call = exportCall(h);
+    expect(call.defaultFormat).toBe('JSON');
   });
 
   it('query variables (#134/#173): sends the wave-captured params merged with sessionParamsFor', async () => {
@@ -441,27 +457,53 @@ describe('createExportService: exportDirect (issue #87)', () => {
       },
       sessionParamsFor: vi.fn(() => ({ session_id: 'sess-1' })),
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['x']) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['x']) })));
     await createExportService(h.deps).exportDirect('SELECT {database:String}', 42);
     expect(h.params.prepareTabSource).toHaveBeenCalledWith('SELECT {database:String}\nFORMAT TabSeparatedWithNames', 42);
-    const call = h.ch.exportQuery.mock.calls[0];
-    expect(call[2].params).toEqual({ session_id: 'sess-1', param_database: 'default' });
+    const call = exportCall(h);
+    // `params` now also carries the wave's own `query_id` (#630 Phase 7 —
+    // this service builds the whole request object itself); `toMatchObject`
+    // ignores that extra key rather than pinning its exact generated value.
+    expect(call.params).toMatchObject({ session_id: 'sess-1', param_database: 'default' });
   });
 
-  it('a pre-header (non-OK) export failure toasts "Export failed" without ever opening the writable', async () => {
+  // #630 Phase 7 §23 — "non-2xx never starts streaming": `exportResponse`
+  // mirrors `authenticatedResponse`'s package classification, so a non-2xx
+  // status is a REJECTION this service receives before it ever holds a
+  // `Response` to stream from — `streamToFile`/the writable/the reader are
+  // never reached.
+  it('a pre-header (non-OK) export failure toasts "Export failed" without ever opening the writable — non-2xx never starts streaming', async () => {
     const { handle } = fakeFileHandle();
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockRejectedValue(new Error('DB::Exception: nope'));
+    h.ch.exportResponse.mockRejectedValue(new Error('DB::Exception: nope'));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(h.hooks.toast).toHaveBeenCalledWith('Export failed: DB::Exception: nope');
     expect(handle.createWritable).not.toHaveBeenCalled();
     expect(h.state.exporting.value).toBe(false);
   });
 
+  // #630 Phase 7 §12.3/§23 — the successful raw-export path must never call
+  // `.text()`/`.json()` on the successful `Response`: it stays untouched
+  // until `streamToFile`'s own `body.getReader()`. A `.text()` that would
+  // throw if ever invoked proves the byte-stream path really does bypass it.
+  it('a successful Response whose .text() throws still succeeds — the successful body is never read for classification', async () => {
+    const { handle, writable, chunks } = fakeFileHandle();
+    const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
+    const resp = {
+      ...fakeExportResponse({ body: streamBody(['clean data']) }),
+      text: () => { throw new Error('must not be called on a successful export response'); },
+    };
+    h.ch.exportResponse.mockResolvedValue(asResponse(resp));
+    await createExportService(h.deps).exportDirect('SELECT 1', 0);
+    expect(writtenText(chunks)).toBe('clean data');
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(h.hooks.toast).toHaveBeenCalledWith('Export complete');
+  });
+
   it('reports a non-Error export rejection', async () => {
     const { handle } = fakeFileHandle();
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockRejectedValue('transport unavailable');
+    h.ch.exportResponse.mockRejectedValue('transport unavailable');
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(h.hooks.toast).toHaveBeenCalledWith('Export failed: transport unavailable');
   });
@@ -469,7 +511,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
   it('suppresses the "Export failed" toast when the underlying error is "signed out"', async () => {
     const { handle } = fakeFileHandle();
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockRejectedValue(new Error('signed out'));
+    h.ch.exportResponse.mockRejectedValue(new Error('signed out'));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(h.hooks.toast).not.toHaveBeenCalled();
     expect(h.state.exporting.value).toBe(false);
@@ -479,7 +521,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
     const { handle, writable, chunks } = fakeFileHandle();
     const big = 'a'.repeat(40960); // > HOLDBACK (32 KiB) in a single chunk
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([big]) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([big]) })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     // mid-loop commit (8192 = 40960 - 32768 HOLDBACK) then the EOF flush of the held-back tail.
     expect((writable.write as Mock).mock.calls.map((c) => (c[0] as Uint8Array).length)).toEqual([8192, 32768]);
@@ -493,7 +535,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
     const clean = 'x'.repeat(40);
     const frame = exceptionFrame(TAG, 'DB::Exception: Memory limit (total) exceeded');
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(writtenText(chunks)).toBe(clean);
     expect(writable.close).toHaveBeenCalledTimes(1);
@@ -517,7 +559,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
     );
     const frameBytes = exceptionFrameBytes(TAG, 'DB::Exception: Memory limit (total) exceeded');
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({
       body: streamBodyBytes([cleanBytes, frameBytes]),
       headers: { 'X-ClickHouse-Exception-Tag': TAG },
     })));
@@ -539,7 +581,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
     const { handle, writable, chunks } = fakeFileHandle();
     const data = 'note\t__exception__ mentioned in this row, not a real frame\n';
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([data]) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([data]) })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(writtenText(chunks)).toBe(data);
     expect(writable.close).toHaveBeenCalledTimes(1);
@@ -560,7 +602,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
       }),
     };
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(writable.abort).not.toHaveBeenCalled();
     expect(writable.close).toHaveBeenCalledTimes(1);
@@ -583,7 +625,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
       }),
     };
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body })));
     service = createExportService(h.deps);
     await service.exportDirect('SELECT 1', 0);
     expect(writable.close).toHaveBeenCalled();
@@ -595,7 +637,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
     const { handle, writable } = fakeFileHandle();
     delete handle.move;
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: throwingBody('network drop') })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: throwingBody('network drop') })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(writable.abort).not.toHaveBeenCalled();
     expect(writable.close).toHaveBeenCalledTimes(1);
@@ -606,23 +648,23 @@ describe('createExportService: exportDirect (issue #87)', () => {
     const { handle, writable } = fakeFileHandle();
     handle.move = vi.fn(async () => { throw new Error('collision'); });
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: throwingBody('network drop') })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: throwingBody('network drop') })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(writable.abort).not.toHaveBeenCalled();
     expect(handle.move).toHaveBeenCalledTimes(1);
     expect(h.hooks.toast).toHaveBeenCalledWith('Export failed: network drop');
   });
 
-  it('exporting.value is true for the duration of the run; cancelExport aborts the signal + issues its own KILL QUERY', async () => {
+  it('exporting.value is true for the duration of the run; cancelExport aborts the signal + issues its own owner-scoped KILL QUERY', async () => {
     const { handle } = fakeFileHandle();
     const pending = deferred<Response>();
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
-    h.ch.exportQuery.mockImplementation(async () => pending.promise);
+    h.ch.exportResponse.mockImplementation(async () => pending.promise);
     const service = createExportService(h.deps);
     const run = service.exportDirect('SELECT 1', 0);
     await flush();
     expect(h.state.exporting.value).toBe(true);
-    const signalArg = h.ch.exportQuery.mock.calls[0][2].signal as AbortSignal;
+    const signalArg = exportCall(h).signal as AbortSignal;
     expect(signalArg.aborted).toBe(false);
 
     service.cancelExport();
@@ -632,7 +674,36 @@ describe('createExportService: exportDirect (issue #87)', () => {
 
     expect(h.state.exporting.value).toBe(false);
     expect(h.hooks.toast).not.toHaveBeenCalled(); // AbortError → silent
-    expect(h.ch.killQuery).toHaveBeenCalledWith(h.ctx, expect.stringMatching(/^export-/), sqlString);
+    // No executionScope supplied by this harness (defaults to `() => null`),
+    // so the owner epoch captured at wave start is null.
+    expect(h.ch.cancel).toHaveBeenCalledWith(null, expect.stringMatching(/^export-/));
+  });
+
+  // #630 Phase 7 §9.3/9.5/§23 "owner-epoch cancel matrix" — cancelExport
+  // must pass the operation-owner epoch (the scope's `.epoch` at wave
+  // start), never a hardcoded/omitted value, and local abort must happen
+  // BEFORE the remote cancel call.
+  it('cancelExport passes the wave-start execution scope epoch to deps.cancel, local abort before remote kill', async () => {
+    const { handle } = fakeFileHandle();
+    const pending = deferred<Response>();
+    const order: string[] = [];
+    const h = makeHarness({
+      executionScope: () => scopeWithChecks(Array(20).fill(true)),
+      sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
+    });
+    (h.ch.cancel as Mock).mockImplementation(async () => { order.push('remote'); });
+    h.ch.exportResponse.mockImplementation(async () => pending.promise);
+    const service = createExportService(h.deps);
+    const run = service.exportDirect('SELECT 1', 0);
+    await flush();
+    const signalArg = exportCall(h).signal as AbortSignal;
+    signalArg.addEventListener('abort', () => order.push('local-abort'));
+    service.cancelExport();
+    pending.reject(abortError());
+    await run;
+    // `scopeWithChecks`'s fixed epoch is 1 (see its own definition below).
+    expect(h.ch.cancel).toHaveBeenCalledWith(1, expect.stringMatching(/^export-/));
+    expect(order).toEqual(['local-abort', 'remote']);
   });
 
   it('a second click while the picker is still open is blocked (exporting flips true before the picker await)', async () => {
@@ -656,7 +727,7 @@ describe('createExportService: exportDirect (issue #87)', () => {
       sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
       hooks: { showExportProgress: vi.fn(() => progress) },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['a'.repeat(50)]) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['a'.repeat(50)]) })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(h.hooks.showExportProgress).toHaveBeenCalledTimes(1);
     expect(progress.update).toHaveBeenCalled();
@@ -725,12 +796,12 @@ describe('createExportService: authenticated execution scope', () => {
   it('fences stale direct-export progress and final completion independently', async () => {
     const many = 'x'.repeat(33 * 1024);
     const progress = makeHarness({ executionScope: () => scopeWithChecks([true, true, true, true, true, true, false, true]) });
-    progress.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([many]) })));
+    progress.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([many]) })));
     await createExportService(progress.deps).exportDirect('SELECT 1', 0);
     expect(progress.hooks.toast).not.toHaveBeenCalled();
 
     const final = makeHarness({ executionScope: () => scopeWithChecks([true, true, true, true, true, true, true, false]) });
-    final.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([many]) })));
+    final.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([many]) })));
     await createExportService(final.deps).exportDirect('SELECT 1', 0);
     expect(final.hooks.toast).not.toHaveBeenCalled();
   });
@@ -755,33 +826,33 @@ describe('createExportService: authenticated execution scope', () => {
       executionScope: () => scopeWithChecks([true, true, true, true, true, true, true, true, false]),
       tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
     });
-    failedEffect.ch.runQuery.mockRejectedValue(new Error('late failure'));
+    failedEffect.ch.runEffectText.mockRejectedValue(new Error('late failure'));
     await createExportService(failedEffect.deps).exportEntry();
     expect(failedEffect.hooks.renderResults).toHaveBeenCalled();
   });
 
   it('stops effect-script settlement and final bookkeeping when its owning scope closes', async () => {
-    const afterTransport = deferred<RunQueryResult>();
+    const afterTransport = deferred<string>();
     const transportScope = executionScope();
     const transport = makeHarness({
       executionScope: () => transportScope,
       tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
     });
-    transport.ch.runQuery.mockImplementation(() => afterTransport.promise);
+    transport.ch.runEffectText.mockImplementation(() => afterTransport.promise);
     const pending = createExportService(transport.deps).exportEntry();
     await flush();
     transportScope.close();
-    afterTransport.resolve({});
+    afterTransport.resolve('');
     await pending;
     expect(transport.hooks.loadSchema).not.toHaveBeenCalled();
 
-    const failedTransport = deferred<RunQueryResult>();
+    const failedTransport = deferred<string>();
     const failedScope = executionScope();
     const failed = makeHarness({
       executionScope: () => failedScope,
       tab: { sqlDraft: 'CREATE TABLE t (x Int8); SELECT 1' },
     });
-    failed.ch.runQuery.mockImplementation(() => failedTransport.promise);
+    failed.ch.runEffectText.mockImplementation(() => failedTransport.promise);
     const failedPending = createExportService(failed.deps).exportEntry();
     await flush();
     failedScope.close();
@@ -818,7 +889,7 @@ describe('createExportService: authenticated execution scope', () => {
       executionScope: () => scope,
       sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body })));
     await createExportService(h.deps).exportDirect('SELECT 1', 0);
     expect(writable.close).toHaveBeenCalled();
   });
@@ -838,7 +909,7 @@ describe('createExportService: authenticated execution scope', () => {
 
     expect(h.deps.ensureConfig).not.toHaveBeenCalled();
     expect(h.deps.getToken).not.toHaveBeenCalled();
-    expect(h.ch.exportQuery).not.toHaveBeenCalled();
+    expect(h.ch.exportResponse).not.toHaveBeenCalled();
     expect(h.hooks.toast).not.toHaveBeenCalled();
   });
 
@@ -853,10 +924,10 @@ describe('createExportService: authenticated execution scope', () => {
       sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
       hooks: { showExportProgress: vi.fn(() => progress) },
     });
-    h.ch.exportQuery.mockImplementation(async () => pending.promise);
+    h.ch.exportResponse.mockImplementation(async () => pending.promise);
     const run = createExportService(h.deps).exportDirect('SELECT 1', 0);
     await flush();
-    const queryId = h.ch.exportQuery.mock.calls[0][2].queryId as string;
+    const queryId = exportCall(h).params!.query_id as string;
 
     scope.close({ epoch: 1, origin: 'https://ch.example', authorization: 'Bearer old', fetch: h.ctx.fetch });
     expect(h.state.exporting.value).toBe(false);
@@ -881,7 +952,7 @@ describe('createExportService: authenticated execution scope', () => {
       executionScope: () => scope,
       sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['late']) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['late']) })));
     const run = createExportService(h.deps).exportDirect('SELECT 1', 0);
     await flush();
     scope.close();
@@ -908,8 +979,8 @@ describe('createExportService: authenticated execution scope', () => {
     const { handle } = fakeFileHandle();
     (h.sink.pickFile as Mock).mockResolvedValueOnce(asFileHandleLike(handle));
     await service.exportDirect('SELECT 2', 0);
-    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1);
-    expect(h.ch.exportQuery.mock.calls[0][1]).toContain('SELECT 2');
+    expect(h.ch.exportResponse).toHaveBeenCalledTimes(1);
+    expect(exportCall(h).sql).toContain('SELECT 2');
     expect(h.state.exporting.value).toBe(false);
   });
 
@@ -923,10 +994,10 @@ describe('createExportService: authenticated execution scope', () => {
       tab: { sqlDraft: 'SELECT 1; SELECT 2' },
       sink: { pickDirectory: vi.fn(async () => dir) },
     });
-    h.ch.exportQuery.mockImplementation(async () => pending.promise);
+    h.ch.exportResponse.mockImplementation(async () => pending.promise);
     const run = createExportService(h.deps).exportEntry();
     await flush();
-    const queryId = h.ch.exportQuery.mock.calls[0][2].queryId as string;
+    const queryId = exportCall(h).params!.query_id as string;
     const rendersBeforeClose = (h.hooks.renderResults as Mock).mock.calls.length;
 
     scope.close({ epoch: 1, origin: 'https://ch.example', authorization: 'Bearer old', fetch: h.ctx.fetch });
@@ -936,7 +1007,7 @@ describe('createExportService: authenticated execution scope', () => {
     await run;
 
     expect((h.hooks.renderResults as Mock).mock.calls.length).toBe(rendersBeforeClose);
-    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1);
+    expect(h.ch.exportResponse).toHaveBeenCalledTimes(1);
   });
 
   it('stops a script export in preflight and never lets the late directory picker start transport', async () => {
@@ -955,8 +1026,8 @@ describe('createExportService: authenticated execution scope', () => {
     await run;
 
     expect(h.deps.ensureConfig).not.toHaveBeenCalled();
-    expect(h.ch.exportQuery).not.toHaveBeenCalled();
-    expect(h.ch.runQuery).not.toHaveBeenCalled();
+    expect(h.ch.exportResponse).not.toHaveBeenCalled();
+    expect(h.ch.runEffectText).not.toHaveBeenCalled();
     expect(h.hooks.renderResults).not.toHaveBeenCalled();
   });
 });
@@ -1038,7 +1109,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
         sink: { pickDirectory: vi.fn(async () => dir) },
         tab: { sqlDraft: 'SELECT 1; SELECT 2' },
       });
-      h.ch.exportQuery.mockImplementationOnce(async () => pending.promise);
+      h.ch.exportResponse.mockImplementationOnce(async () => pending.promise);
       const run = createExportService(h.deps).exportEntry();
       await vi.advanceTimersByTimeAsync(200);
       expect(h.hooks.renderResults).toHaveBeenCalled();
@@ -1067,17 +1138,20 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       },
       sessionParamsFor: vi.fn(() => ({ session_id: 'sess-xyz' })),
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['1\n']) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['1\n']) })));
     await createExportService(h.deps).exportEntry();
 
-    // Effect statements (non-'rows') go through runQuery with format TSV.
-    expect(h.ch.runQuery).toHaveBeenCalledTimes(2);
-    const runCalls = h.ch.runQuery.mock.calls;
-    expect(runCalls[0][1]).toBe('CREATE TEMPORARY TABLE t (a Int8)');
-    expect(runCalls[1][1]).toBe('INSERT INTO t VALUES (1)');
-    runCalls.forEach((c) => expect(c[2].params).toMatchObject({ session_id: 'sess-xyz' }));
-    // Row-returning statement streams via exportQuery, one file.
-    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1);
+    // Effect statements (non-'rows') go through runEffectText, whole-body
+    // TabSeparatedWithNamesAndTypes text, wait_end_of_query=1 + CORS (#630
+    // Phase 7 §13).
+    expect(h.ch.runEffectText).toHaveBeenCalledTimes(2);
+    expect(effectCall(h, 0).sql).toBe('CREATE TEMPORARY TABLE t (a Int8)');
+    expect(effectCall(h, 0).defaultFormat).toBe('TabSeparatedWithNamesAndTypes');
+    expect(effectCall(h, 0).settings).toEqual({ wait_end_of_query: 1, add_http_cors_header: 1 });
+    expect(effectCall(h, 1).sql).toBe('INSERT INTO t VALUES (1)');
+    [effectCall(h, 0), effectCall(h, 1)].forEach((c) => expect(c.params).toMatchObject({ session_id: 'sess-xyz' }));
+    // Row-returning statement streams via exportResponse, one file.
+    expect(h.ch.exportResponse).toHaveBeenCalledTimes(1);
     expect((dir.getFileHandle as Mock)).toHaveBeenCalledTimes(1);
     const [name] = (dir.getFileHandle as Mock).mock.calls[0];
     expect(name).toBe('003-t.tsv');
@@ -1091,7 +1165,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'SELECT 1;\nSELECT 2;' },
     });
-    h.ch.exportQuery
+    h.ch.exportResponse
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['a']) })))
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['b']) })));
     await createExportService(h.deps).exportEntry();
@@ -1106,7 +1180,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       tab: { sqlDraft: 'SELECT 1 FORMAT JSON;\nSELECT 2;' },
       params: { execStatementSql: vi.fn((s: string) => s) },
     });
-    h.ch.exportQuery
+    h.ch.exportResponse
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['[]']) })))
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['x']) })));
     await createExportService(h.deps).exportEntry();
@@ -1120,7 +1194,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'CREATE TABLE bad;\nSELECT 1;' },
     });
-    h.ch.runQuery.mockResolvedValue({ error: 'DB::Exception: table exists' });
+    h.ch.runEffectText.mockRejectedValue(new Error('DB::Exception: table exists'));
     await createExportService(h.deps).exportEntry();
     expect((dir.getFileHandle as Mock)).not.toHaveBeenCalled();
     expect(h.hooks.loadSchema).not.toHaveBeenCalled();
@@ -1132,9 +1206,9 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'SELECT 1;\nSELECT 2;' },
     });
-    h.ch.exportQuery.mockRejectedValue(new Error('DB::Exception: nope'));
+    h.ch.exportResponse.mockRejectedValue(new Error('DB::Exception: nope'));
     await createExportService(h.deps).exportEntry();
-    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1); // stopped before statement 2
+    expect(h.ch.exportResponse).toHaveBeenCalledTimes(1); // stopped before statement 2
   });
 
   it('a mid-stream exception marks the row failed/incomplete and stops the script', async () => {
@@ -1146,9 +1220,9 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'SELECT 1;\nSELECT 2;' },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })));
     await createExportService(h.deps).exportEntry();
-    expect(h.ch.exportQuery).toHaveBeenCalledTimes(1); // stopped before statement 2
+    expect(h.ch.exportResponse).toHaveBeenCalledTimes(1); // stopped before statement 2
   });
 
   it('never retries — a transient SESSION_IS_LOCKED failure is reported like any other error', async () => {
@@ -1157,10 +1231,10 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'INSERT INTO t VALUES (1);\nSELECT 1;' },
     });
-    h.ch.runQuery.mockResolvedValue({ error: 'Code: 373. DB::Exception: SESSION_IS_LOCKED' });
+    h.ch.runEffectText.mockRejectedValue(new Error('Code: 373. DB::Exception: SESSION_IS_LOCKED'));
     await createExportService(h.deps).exportEntry();
-    expect(h.ch.runQuery).toHaveBeenCalledTimes(1); // no retry
-    expect(h.ch.exportQuery).not.toHaveBeenCalled(); // stopped before the SELECT
+    expect(h.ch.runEffectText).toHaveBeenCalledTimes(1); // no retry
+    expect(h.ch.exportResponse).not.toHaveBeenCalled(); // stopped before the SELECT
   });
 
   it('cancelExportScript aborts the active row, marks it cancelled, skips the rest, kills the active query, keeps completed files', async () => {
@@ -1170,7 +1244,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'SELECT 1;\nSELECT 2;\nSELECT 3;' },
     });
-    h.ch.exportQuery
+    h.ch.exportResponse
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['a']) })))
       .mockImplementationOnce(async () => pending.promise);
     const service = createExportService(h.deps);
@@ -1183,25 +1257,47 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
     await run;
 
     expect(written.get('001-select-1.tsv')!.writable.close).toHaveBeenCalledTimes(1); // completed file kept
-    expect(h.ch.killQuery).toHaveBeenCalledWith(h.ctx, expect.stringMatching(/^export-/), sqlString);
+    expect(h.ch.cancel).toHaveBeenCalledWith(null, expect.stringMatching(/^export-/));
     expect(h.state.exporting.value).toBe(false);
+  });
+
+  // #630 Phase 7 §9.3/9.5/§23 "owner-epoch cancel matrix" — the script-export
+  // path's own owner epoch (captured once, at wave start) reaches
+  // cancelExportScript's remote kill, exactly like cancelExport's.
+  it('cancelExportScript passes the wave-start execution scope epoch to deps.cancel', async () => {
+    const { dir } = fakeDirHandle();
+    const pending = deferred<Response>();
+    const h = makeHarness({
+      executionScope: () => scopeWithChecks(Array(30).fill(true)),
+      sink: { pickDirectory: vi.fn(async () => dir) },
+      tab: { sqlDraft: 'SELECT 1;\nSELECT 2;' },
+    });
+    h.ch.exportResponse.mockImplementation(async () => pending.promise);
+    const service = createExportService(h.deps);
+    const run = service.exportEntry();
+    await flush();
+    service.cancelExportScript();
+    pending.reject(abortError());
+    await run;
+    // `scopeWithChecks`'s fixed epoch is 1 (see its own definition above).
+    expect(h.ch.cancel).toHaveBeenCalledWith(1, expect.stringMatching(/^export-/));
   });
 
   it('a cancel that arrives just after a statement completed cleanly still skips the remaining statements', async () => {
     const { dir } = fakeDirHandle();
-    const pending = deferred<RunQueryResult>();
+    const pending = deferred<string>();
     const h = makeHarness({
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'CREATE TABLE t (a Int8);\nSELECT 1;' },
     });
-    h.ch.runQuery.mockImplementationOnce(async () => pending.promise);
+    h.ch.runEffectText.mockImplementationOnce(async () => pending.promise);
     const service = createExportService(h.deps);
     const run = service.exportEntry();
     await flush();
     service.cancelExportScript(); // cancel arrives while stmt1 is still in flight...
-    pending.resolve({}); // ...but the request completes cleanly anyway
+    pending.resolve(''); // ...but the request completes cleanly anyway
     await run;
-    expect(h.ch.exportQuery).not.toHaveBeenCalled(); // stmt2 was skipped, not run
+    expect(h.ch.exportResponse).not.toHaveBeenCalled(); // stmt2 was skipped, not run
   });
 
   it('refreshes the schema when an effect statement that actually ran is schema-mutating', async () => {
@@ -1210,7 +1306,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'CREATE TABLE t (a Int8);\nSELECT 1;' },
     });
-    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['x']) })));
+    h.ch.exportResponse.mockResolvedValue(asResponse(fakeExportResponse({ body: streamBody(['x']) })));
     await createExportService(h.deps).exportEntry();
     expect(h.hooks.loadSchema).toHaveBeenCalledTimes(1);
   });
@@ -1221,7 +1317,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'SELECT 1;\nSELECT 2;' },
     });
-    h.ch.exportQuery
+    h.ch.exportResponse
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['x']) })))
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['y']) })));
     await createExportService(h.deps).exportEntry();
@@ -1234,7 +1330,7 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
       sink: { pickDirectory: vi.fn(async () => dir) },
       tab: { sqlDraft: 'SELECT 1;\nSELECT 2;' },
     });
-    h.ch.exportQuery
+    h.ch.exportResponse
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['x']) })))
       .mockResolvedValueOnce(asResponse(fakeExportResponse({ body: streamBody(['y']) })));
     await createExportService(h.deps).exportEntry();

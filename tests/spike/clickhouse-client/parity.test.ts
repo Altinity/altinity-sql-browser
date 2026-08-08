@@ -12,12 +12,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startFaultServer, closedLoopbackUrl } from './fault-server.mjs';
 import { runCurrent } from './current-adapter.js';
-import { createOfficialConnection, runOfficial, makeOfficialRunQueryShim, runOfficialRefreshThenRetry, officialAuthFor } from './official-adapter.js';
+import { createOfficialConnection, runOfficial, makeOfficialQueryExecutionAdapter, runOfficialRefreshThenRetry, officialAuthFor } from './official-adapter.js';
 import { createEpochFence } from './guarded-fetch.js';
 import { BASIC_USER_A, BASIC_USER_B, DENIED_USER, BEARER_FIXTURE, JWT_AS_BASIC_FIXTURE } from './auth-fixtures.js';
 import { createQueryExecutionService } from '../../../src/application/query-execution-service.js';
 import { killQueryWithLease } from '../../../src/net/ch-client.js';
-import type { ChCtx, AuthenticatedCancellationLease } from '../../../src/net/ch-client.js';
+import type { AuthenticatedCancellationLease } from '../../../src/net/ch-client.js';
 import type { ScriptEntry } from '../../../src/core/script-result.js';
 import type { SpikeCredential, SpikeRequest } from './types.js';
 
@@ -89,19 +89,27 @@ function capturingFetch(realFetch: typeof fetch): { fetch: typeof fetch; lastAut
  * always mints a fresh id under `fixturePrefix` — `executeScript` always
  * calls `deps.uid('q')` internally (a fixed literal, ignoring the actual
  * fixture the test wants), so routing a full `executeScript` run to a
- * SPECIFIC fault-server fixture requires this override. */
+ * SPECIFIC fault-server fixture requires this override.
+ *
+ * #630 Phase 7 (plan §19, Checkpoint 2C's spike portion) — `official.runText`
+ * below is the retired `makeOfficialRunQueryShim` + this file's own
+ * `runTextViaShim` compile-compat bridge, replaced by the real
+ * `QueryExecutionDeps` shape `makeOfficialQueryExecutionAdapter` now supplies
+ * directly: no intermediate `(ctx, sql, RunQueryOptions)` shim, no
+ * `{error}`-to-throw translation layer. */
 function serviceFor(conn: ReturnType<typeof createOfficialConnection>, fixturePrefix: string) {
   let n = 0;
-  const runQueryShim = makeOfficialRunQueryShim(conn, () => BASIC_USER_A);
+  const official = makeOfficialQueryExecutionAdapter(conn, () => BASIC_USER_A);
   return createQueryExecutionService({
-    runQuery: runQueryShim as unknown as typeof import('../../../src/net/ch-client.js').runQuery,
-    killQuery: async () => {},
-    ctx: () => ({} as ChCtx),
+    // Never exercised by the `serviceFor()`-routed tests below — they only
+    // ever call `executeScript` (whole-body text mode).
+    runProgress: async () => { throw new Error('runProgress not exercised by this spike helper'); },
+    runText: official.runText,
+    cancel: async () => {},
     now: () => Date.now(),
     uid: () => { n += 1; return `${fixturePrefix}__${n}`; },
     retryMs: 1,
     sleep: () => Promise.resolve(),
-    sqlString: (s) => `'${String(s)}'`,
   });
 }
 
@@ -388,7 +396,7 @@ describe('cancellation lease — the REAL production killQueryWithLease uses the
     const rotatedAuthorization = `Basic ${btoa('rotated-user:rotated-pass')}`;
     expect(rotatedAuthorization).not.toBe(frozenAuthorization); // sanity: the two really differ
 
-    await killQueryWithLease(lease, qid('ordinary-query'), (s) => `'${String(s)}'`);
+    await killQueryWithLease(lease, qid('ordinary-query'));
 
     expect(lastAuth()).toBe(frozenAuthorization);
   });
@@ -398,8 +406,8 @@ describe('cancellation lease — the REAL production killQueryWithLease uses the
     const lease: AuthenticatedCancellationLease = {
       epoch: 1, origin: fault.baseUrl, authorization: 'Basic irrelevant', fetch: capturing,
     };
-    await killQueryWithLease(lease, null, (s) => `'${String(s)}'`);
-    await killQueryWithLease(lease, undefined, (s) => `'${String(s)}'`);
+    await killQueryWithLease(lease, null);
+    await killQueryWithLease(lease, undefined);
     expect(lastAuth()).toBeNull();
   });
 });
@@ -431,35 +439,36 @@ describe('retry safety — official outcomes fed through the REAL, unmodified Qu
     expect(result.entries[0].status).not.toBe('error');
   });
 
-  it('SESSION_IS_LOCKED: raw shim retried once by hand-driving the same policy the service applies', async () => {
+  it('SESSION_IS_LOCKED: raw adapter retried once by hand-driving the same policy the service applies', async () => {
     const conn = createOfficialConnection(fault.baseUrl, fetch);
-    const runQueryShim = makeOfficialRunQueryShim(conn, () => BASIC_USER_A);
+    const official = makeOfficialQueryExecutionAdapter(conn, () => BASIC_USER_A);
     const id = qid('session-is-locked');
-    const first = await runQueryShim({} as ChCtx, 'SELECT 1', { format: 'Table', queryId: id });
+    const request = { sql: 'SELECT 1', defaultFormat: 'JSONStringsEachRowWithProgress', params: { query_id: id } };
     // The retry policy's own `SESSION_BUSY` regex (query-execution-service.ts)
     // matches "locked by a concurrent" case-insensitively — it does not
     // depend on the "(SESSION_IS_LOCKED)" code-name suffix the official
     // client's `ClickHouseError` strips from the message (see the
     // pre-header-rejection scenario's comment above for the same finding).
-    expect(first.error).toContain('locked by a concurrent');
-    const second = await runQueryShim({} as ChCtx, 'SELECT 1', { format: 'Table', queryId: id });
-    expect(second).toEqual({ streamed: true });
+    // A pre-header rejection now THROWS (matching the new "package consumers
+    // throw" contract, #630 Phase 7 §6.5), never a returned `{error}`.
+    await expect(official.runProgress(request, {})).rejects.toThrow(/locked by a concurrent/);
+    await expect(official.runProgress(request, {})).resolves.toBeUndefined();
   });
 
-  it('a mid-stream connection reset on a read propagates as a throw (matching runQuery\'s own throw contract, not a swallowed {error})', async () => {
+  it('a mid-stream connection reset on a read propagates as a throw (matching the new "package consumers throw" contract, not a swallowed {error})', async () => {
     const conn = createOfficialConnection(fault.baseUrl, fetch);
-    const runQueryShim = makeOfficialRunQueryShim(conn, () => BASIC_USER_A);
+    const official = makeOfficialQueryExecutionAdapter(conn, () => BASIC_USER_A);
     const id = qid('post-header-connection-reset');
-    await expect(runQueryShim({} as ChCtx, 'SELECT 1', { format: 'Table', queryId: id })).rejects.toBeTruthy();
+    await expect(official.runProgress({ sql: 'SELECT 1', defaultFormat: 'JSONStringsEachRowWithProgress', params: { query_id: id } }, {})).rejects.toBeTruthy();
   });
 
   it('read-reset-retries-once: a read retries once after a mid-stream reset and then succeeds (hand-driven, same policy shape as the SESSION_IS_LOCKED case above)', async () => {
     const conn = createOfficialConnection(fault.baseUrl, fetch);
-    const runQueryShim = makeOfficialRunQueryShim(conn, () => BASIC_USER_A);
+    const official = makeOfficialQueryExecutionAdapter(conn, () => BASIC_USER_A);
     const id = qid('read-reset-then-success');
-    await expect(runQueryShim({} as ChCtx, 'SELECT 1', { format: 'Table', queryId: id })).rejects.toBeTruthy();
-    const second = await runQueryShim({} as ChCtx, 'SELECT 1', { format: 'Table', queryId: id });
-    expect(second).toEqual({ streamed: true });
+    const request = { sql: 'SELECT 1', defaultFormat: 'JSONStringsEachRowWithProgress', params: { query_id: id } };
+    await expect(official.runProgress(request, {})).rejects.toBeTruthy();
+    await expect(official.runProgress(request, {})).resolves.toBeUndefined();
   });
 
   it('ambiguous INSERT reset: no retry through the REAL QueryExecutionService; the ambiguous-write message is preserved', async () => {

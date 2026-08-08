@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, killQueryWithLease, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, killQueryWithLease, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
-import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable, StreamLine } from '../../src/net/ch-client.js';
+import type { AuthenticatedCancellationLease, ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
 // Issue #630 Phase 5 — sqlString now has one implementation, owned by the
 // package; format.js no longer declares it. Issue #630 Phase 6 — ClickHouseError
 // is the package's own non-2xx error class; queryJson's compatibility test
@@ -100,13 +100,17 @@ function deferred<T>() {
 // test (including its malformed-URL preflight-ordering proof) MOVED to
 // `tests/unit/authenticated-clickhouse-request.test.ts`, retargeted onto
 // `authenticatedRequest` — this file now keeps only caller-level proofs that
-// the exported `queryJson`/`runQuery`/`exportQuery` still reach that new
-// module correctly.
+// the exported `queryJson` still reaches that new module correctly. Issue
+// #630 Phase 7 — the generic, format-agnostic `runQuery`/`exportQuery` and
+// the ordinary mutable-context `killQuery` this file used to also cover are
+// DELETED (see the note just above the `killQueryWithLease` describe block
+// below for where their coverage moved).
 
 // (queryDashboardTile was retired in #193 — dashboard tiles now stream through
-// runQuery via the shared app.exec.executeRead seam (#276), carrying readonly:2 /
-// max_result_bytes / param_* in `params` and capping with resultRowLimit. Its
-// URL-shaping is covered by runQuery's tests below; the dashboard's use of the
+// the shared app.exec.executeRead seam (#276), carrying readonly:2 /
+// max_result_bytes / param_* in `params` and capping with resultRowLimit —
+// now QueryExecutionService's own row-cap/format mapping (#630 Phase 7, see
+// tests/unit/query-execution-service.test.ts); the dashboard's use of the
 // seam is covered in dashboard.test.js.)
 
 describe('queryJson', () => {
@@ -604,113 +608,18 @@ describe('loadFunctionsDocColumns / loadFunctionDocRow delegate to the generaliz
   });
 });
 
-describe('runQuery', () => {
-  it('uses typed progress streaming for the KPI transport alias', async () => {
-    const ctx = ctxWith(async () => streamResp([
-      '{"meta":[{"name":"metric","type":"Tuple(value Decimal(38, 2), delta Decimal(38, 2))"}]}\n',
-      '{"row":{"metric":{"value":"9007199254740993.25","delta":"-9007199254740993.25"}}}\n',
-    ]));
-    const lines: StreamLine[] = [];
-    await runQuery(ctx, 'SELECT 1', { format: 'KPI', params: { output_format_json_named_tuples_as_objects: 1, output_format_json_quote_decimals: 1 }, onLine: (line) => lines.push(line) });
-    expect(ctx.fetchMock.mock.calls[0][0]).toContain('default_format=JSONEachRowWithProgress');
-    expect(ctx.fetchMock.mock.calls[0][0]).toContain('output_format_json_named_tuples_as_objects=1');
-    expect(ctx.fetchMock.mock.calls[0][0]).toContain('output_format_json_quote_decimals=1');
-    expect((lines[1].row as Record<string, unknown>).metric).toEqual({ value: '9007199254740993.25', delta: '-9007199254740993.25' });
-  });
-  it('streams lines and reports an error result on !ok', async () => {
-    const ctx = ctxWith(async () => textResp('{"exception":"boom"}', false, 500));
-    const out = await runQuery(ctx, 'bad', { format: 'Table' });
-    expect(out).toEqual({ error: 'boom' });
-  });
-  it('parses a streaming body, calling onLine + onChunk', async () => {
-    const lines = [
-      '{"meta":[{"name":"a","type":"UInt8"}]}\n',
-      // blank line between objects exercises the `if (!line) continue` guard
-      '{"row":{"a":"1"}}\n\n{"progress":{"read_rows":"1"}}\n',
-      '{"row":{"a":"2"}}', // trailing, no newline
-    ];
-    const ctx = ctxWith(async () => streamResp(lines));
-    const got: StreamLine[] = [];
-    const out = await runQuery(ctx, 'SELECT a', { format: 'Table', onLine: (j) => got.push(j), onChunk: () => {} });
-    expect(out).toEqual({ streamed: true });
-    expect(got.filter((j) => j.row)).toHaveLength(2);
-    expect(got.some((j) => j.meta)).toBe(true);
-  });
-  it('skips malformed lines and a malformed trailing buffer', async () => {
-    const ctx = ctxWith(async () => streamResp(['not json\n', '{bad trailing']));
-    const got: StreamLine[] = [];
-    const out = await runQuery(ctx, 'x', { onLine: (j) => got.push(j) });
-    expect(out).toEqual({ streamed: true });
-    expect(got).toEqual([]);
-  });
-  it('defaults format to Table (streaming)', async () => {
-    const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    const out = await runQuery(ctx, 'x', {});
-    expect(out).toEqual({ streamed: true });
-  });
-  it('TSV raw mode returns the text body', async () => {
-    const ctx = ctxWith(async () => textResp('a\tb\n1\t2'));
-    expect(await runQuery(ctx, 'x', { format: 'TSV' })).toEqual({ raw: 'a\tb\n1\t2' });
-  });
-  it('JSON raw mode returns the text body', async () => {
-    const ctx = ctxWith(async () => textResp('{"x":1}'));
-    expect(await runQuery(ctx, 'x', { format: 'JSON' })).toEqual({ raw: '{"x":1}' });
-  });
-  it('passes the abort signal through', async () => {
-    const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    const signal = new AbortController().signal;
-    await runQuery(ctx, 'x', { signal });
-    expect(ctx.fetchMock.mock.calls[0][1].signal).toBe(signal);
-  });
-  it('tags the run request with query_id when given', async () => {
-    const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    await runQuery(ctx, 'x', { queryId: 'abc-123' });
-    expect(ctx.fetchMock.mock.calls[0][0]).toContain('query_id=abc-123');
-  });
-  it('passes caller params (e.g. result caps) alongside query_id', async () => {
-    const ctx = ctxWith(async () => textResp('{"meta":[],"data":[]}'));
-    await runQuery(ctx, 'x', { format: 'JSONCompact', queryId: 'q1', params: { max_result_rows: 100, result_overflow_mode: 'break' } });
-    const url = ctx.fetchMock.mock.calls[0][0];
-    expect(url).toContain('query_id=q1');
-    expect(url).toContain('max_result_rows=100');
-    expect(url).toContain('result_overflow_mode=break');
-  });
-  it('streams without wait_end_of_query; raw modes keep it for clean error status', async () => {
-    const s = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    await runQuery(s, 'x', { format: 'Table' });
-    expect(s.fetchMock.mock.calls[0][0]).not.toContain('wait_end_of_query'); // progressive first rows
-    const raw = ctxWith(async () => textResp('a\tb'));
-    await runQuery(raw, 'x', { format: 'TSV' });
-    expect(raw.fetchMock.mock.calls[0][0]).toContain('wait_end_of_query=1');
-  });
-  it('adds the server-side row cap when resultRowLimit is set; omits it otherwise', async () => {
-    const capped = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    await runQuery(capped, 'x', { format: 'Table', resultRowLimit: 500 });
-    const url = capped.fetchMock.mock.calls[0][0];
-    expect(url).toContain('max_result_rows=500');
-    expect(url).toContain('result_overflow_mode=break');
-    const uncapped = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    await runQuery(uncapped, 'x', { format: 'Table' }); // no limit → no cap params
-    expect(uncapped.fetchMock.mock.calls[0][0]).not.toContain('max_result_rows');
-  });
-});
-
-describe('killQuery', () => {
-  it('POSTs KILL QUERY for the query_id', async () => {
-    const ctx = ctxWith(async () => jsonResp({ data: [] }));
-    await killQuery(ctx, 'abc-123', sqlString);
-    expect(ctx.fetchMock.mock.calls[0][1].body).toBe("KILL QUERY WHERE query_id = 'abc-123' ASYNC");
-  });
-  it('no-ops without a query_id', async () => {
-    const ctx = ctxWith(async () => jsonResp({ data: [] }));
-    await killQuery(ctx, null, sqlString);
-    expect(ctx.fetchMock).not.toHaveBeenCalled();
-  });
-  it('swallows errors (cancellation must never throw)', async () => {
-    const ctx = ctxWith(async () => { throw new Error('boom'); });
-    await expect(killQuery(ctx, 'q', sqlString)).resolves.toBeUndefined();
-  });
-});
+// Issue #630 Phase 7 (plan §23) — the generic, format-agnostic `runQuery`,
+// `exportQuery`, and the ordinary mutable-context `killQuery` are DELETED
+// from `ch-client.ts` (Checkpoint 2D): their coverage moved to the services
+// that now own that policy — `QueryExecutionService`
+// (tests/unit/query-execution-service.test.ts, Table/KPI/TSV/raw mapping,
+// row caps, retry/result semantics) and `ExportService`
+// (tests/unit/export-service.test.ts, direct/script export, raw-byte
+// streaming, late-exception handling) — moved there in the Checkpoint 2A/2B
+// migration (#630 Phase 7). `killQueryWithLease` below is retargeted onto
+// the package's own stateless `createClickHouseHttpClient(...).killQuery(...)`
+// and no longer takes a `sqlString` parameter — the package owns the KILL
+// QUERY SQL and its quoting now.
 
 describe('killQueryWithLease', () => {
   const lease = (
@@ -729,9 +638,9 @@ describe('killQueryWithLease', () => {
     return { fetchMock, lease: lease(asFetch(fetchMock), authorization) };
   };
 
-  it('uses the exact frozen origin and complete Authorization header', async () => {
+  it('uses the exact frozen origin, queryId, and complete Authorization header, with exactly one fetch', async () => {
     const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
-    await killQueryWithLease(frozen, 'scope-q', sqlString);
+    await killQueryWithLease(frozen, 'scope-q');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('https://old-cluster.example:8443?default_format=JSON&enable_http_compression=1');
@@ -739,25 +648,38 @@ describe('killQueryWithLease', () => {
     expect(init.body).toBe("KILL QUERY WHERE query_id = 'scope-q' ASYNC");
   });
 
+  it('the package owns KILL QUERY quoting — an embedded single quote in the query id is escaped, never locally (#630 Phase 7: sqlString is no longer a killQueryWithLease parameter)', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
+    await killQueryWithLease(frozen, "a'b");
+    expect(fetchMock.mock.calls[0][1].body).toBe("KILL QUERY WHERE query_id = 'a''b' ASYNC");
+  });
+
   it('treats the frozen Authorization value as opaque for OAuth too', async () => {
     const { fetchMock, lease: frozen } = leaseFetch(
       async () => jsonResp({ data: [] }), 'Bearer old-token',
     );
-    await killQueryWithLease(frozen, 'q', sqlString);
+    await killQueryWithLease(frozen, 'q');
     expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer old-token' });
   });
 
   it('does not retry and swallows cleanup transport failures', async () => {
     const { fetchMock, lease: frozen } = leaseFetch(async () => { throw new Error('offline'); });
-    await expect(killQueryWithLease(
-      frozen, 'q', sqlString,
-    )).resolves.toBeUndefined();
+    await expect(killQueryWithLease(frozen, 'q')).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('no-ops without a query id', async () => {
+  it('swallows a non-2xx package ClickHouseError too (best-effort — no distinction from a native network failure)', async () => {
+    const { fetchMock, lease: frozen } = leaseFetch(
+      async () => textResp('Code: 999. DB::Exception: access denied', false, 403),
+    );
+    await expect(killQueryWithLease(frozen, 'q')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('no-ops without a query id (null or undefined) — no fetch at all', async () => {
     const { fetchMock, lease: frozen } = leaseFetch(async () => jsonResp({ data: [] }));
-    await killQueryWithLease(frozen, null, sqlString);
+    await killQueryWithLease(frozen, null);
+    await killQueryWithLease(frozen, undefined);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -767,47 +689,12 @@ describe('killQueryWithLease', () => {
     const refresh = vi.fn();
     // `AuthenticatedCancellationLease` has exactly 4 fields; this widens the
     // VALUE (not killQueryWithLease's declared parameter type) to prove the
-    // one-shot lease-scoped transport genuinely never calls these, rather
+    // one-shot lease-scoped client genuinely never calls these, rather
     // than merely never being GIVEN them.
     const leaseWithExtras = Object.freeze({ ...frozen, getToken, refresh });
-    await killQueryWithLease(leaseWithExtras, 'scope-q', sqlString);
+    await killQueryWithLease(leaseWithExtras, 'scope-q');
     expect(getToken).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
-  });
-});
-
-describe('exportQuery', () => {
-  it('sets query_id + default_format, passes the signal, and returns the raw Response', async () => {
-    const signal = new AbortController().signal;
-    const stream = streamResp(['a\tb\n1\tx\n']);
-    const ctx = ctxWith(async () => stream);
-    const resp = await exportQuery(ctx, 'SELECT 1 FORMAT TabSeparatedWithNames', {
-      queryId: 'export-abc', signal, format: 'TabSeparatedWithNames',
-    });
-    expect(resp).toBe(stream);
-    const [url, init] = ctx.fetchMock.mock.calls[0];
-    expect(url).toContain('default_format=TabSeparatedWithNames');
-    expect(url).toContain('query_id=export-abc');
-    expect(init.signal).toBe(signal);
-    expect(init.body).toBe('SELECT 1 FORMAT TabSeparatedWithNames');
-  });
-  it('defaults to TabSeparatedWithNames and omits query_id when absent', async () => {
-    const ctx = ctxWith(async () => streamResp(['x']));
-    await exportQuery(ctx, 'SELECT 1');
-    const url = ctx.fetchMock.mock.calls[0][0];
-    expect(url).toContain('default_format=TabSeparatedWithNames');
-    expect(url).not.toContain('query_id');
-  });
-  it('throws the parsed CH exception on a non-OK (pre-header) response', async () => {
-    const ctx = ctxWith(async () => textResp('{"exception":"DB::Exception: nope"}', false));
-    await expect(exportQuery(ctx, 'SELECT 1', { format: 'CSV' })).rejects.toThrow('DB::Exception: nope');
-  });
-  it('forwards caller params (e.g. session_id) alongside query_id (#99: script export)', async () => {
-    const ctx = ctxWith(async () => streamResp(['x']));
-    await exportQuery(ctx, 'SELECT 1', { queryId: 'export-abc', params: { session_id: 'sess-1' } });
-    const url = ctx.fetchMock.mock.calls[0][0];
-    expect(url).toContain('query_id=export-abc');
-    expect(url).toContain('session_id=sess-1');
   });
 });
 

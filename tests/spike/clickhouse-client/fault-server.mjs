@@ -362,6 +362,26 @@ export function startFaultServer(opts = {}) {
         res.end();
         return;
       }
+      case 'export-post-header-abort-hold': {
+        // #630 Phase 7 (pre-PR review Finding 1) — the EXPORT-shaped analogue
+        // of 'post-header-abort-hold' above: raw byte content (never NDJSON),
+        // and the FIRST chunk is deliberately larger than ExportService's own
+        // 32 KiB hold-back buffer (`streamToFile`'s `HOLDBACK` constant,
+        // `src/application/export-service.ts`), so a real file WRITE and
+        // PROGRESS event fire on the very first `reader.read()` — before any
+        // hold — proving the mid-read-abort assertions this fixture backs
+        // exercise actual already-committed bytes, not merely headers. The
+        // second (small) chunk is then held for POST_HEADER_ABORT_HOLD_MS,
+        // exactly like 'post-header-abort-hold', so a genuinely pending
+        // second `reader.read()` is guaranteed at the moment of cancellation.
+        res.writeHead(200, { 'content-type': 'text/tab-separated-values' });
+        const FIRST_CHUNK_BYTES = 40 * 1024; // > HOLDBACK (32 KiB) + margin
+        res.write('col1\n' + 'x'.repeat(FIRST_CHUNK_BYTES) + '\n');
+        await sleep(POST_HEADER_ABORT_HOLD_MS);
+        res.write('after-hold\n');
+        res.end();
+        return;
+      }
       case 'slow-headers': {
         // Headers themselves are delayed (plan §18 "cancel awaiting headers";
         // §21 "timeout") — unlike 'delayed-headers-scheduled-rows', where

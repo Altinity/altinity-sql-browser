@@ -2,15 +2,26 @@ import { randomUUID } from 'node:crypto';
 import { test, expect } from '@playwright/test';
 import { startFaultServer, POST_HEADER_ABORT_HOLD_MS } from '../spike/clickhouse-client/fault-server.mjs';
 
-// #630 Phase 1 — freezes native Fetch/Response/cancellation semantics for the
-// CURRENT `createHttpTransport` implementation, in real Chromium/WebKit,
-// against a real cross-origin HTTP server (the shared spike fault server,
-// started here in explicit browser/CORS mode). This spec owns the fault
-// server's Node-side lifecycle: the root Playwright config only starts
-// build/e2e-serve.mjs (the static/raw-ESM host on :5599) — it knows nothing
-// about this ephemeral fixture server. Firefox cannot launch locally
-// (repo-wide constraint); Chromium and WebKit are this phase's real
+// #630 Phase 1 — freezes native Fetch/Response/cancellation semantics, in
+// real Chromium/WebKit, against a real cross-origin HTTP server (the shared
+// spike fault server, started here in explicit browser/CORS mode). This spec
+// owns the fault server's Node-side lifecycle: the root Playwright config
+// only starts build/e2e-serve.mjs (the static/raw-ESM host on :5599) — it
+// knows nothing about this ephemeral fixture server. Firefox cannot launch
+// locally (repo-wide constraint); Chromium and WebKit are this phase's real
 // acceptance signal, exactly as the plan requires.
+//
+// #630 Phase 7 — the harness (`clickhouse-http-transport.html`) no longer
+// imports the retired SQL Browser compatibility transport adapter
+// (`src/net/clickhouse-http-transport.ts`, deleted this phase). The generic
+// scenarios below (1-8, plus invalid-UTF-8) now drive the package's OWN
+// `createClickHouseHttpClient(...).request()` directly; the auth/lifecycle
+// scenarios (the `*Auth` variants) continue to drive
+// `src/net/authenticated-clickhouse-request.ts`'s `authenticatedRequest()`/
+// `authenticatedProgress()`, unchanged. Every original behavioral assertion
+// below is preserved byte-for-byte — only the harness's internal transport
+// indirection changed. Scenario 9 remains `queryProgress()` coverage, not
+// export coverage.
 
 test.describe('#630 Phase 1 — native Fetch/Response/cancellation characterization', () => {
   test.skip(

@@ -25,20 +25,41 @@
 // proof) rather than staying here — there is intentionally only one
 // production stream implementation now, so this shared suite has nothing
 // left to register it against.
+//
+// Issue #630 Phase 7 (plan §2.1/§15) — the local `ClickHouseTransport`/
+// `TransportDeps`/`TransportRequest` seam this suite used to import from
+// `src/net/clickhouse-transport.types.ts` is deleted along with the rest of
+// the local compatibility transport (Checkpoint 2D): that whole file is
+// gone. This suite now retypes directly against the package's own PUBLIC
+// request types (`ClickHouseHttpClientDeps`/`ClickHouseHttpRequest`) and a
+// test-local minimal `send(request)` façade (`RequestSender`) rather than
+// recreating the deleted production `ClickHouseTransport` abstraction —
+// there is exactly one generic transport implementation left in the
+// repository (the package's), and this suite proves it against that
+// implementation's own request() (registered in
+// `clickhouse-http-package.test.ts`), with nothing else left to register it
+// against.
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ClickHouseTransport, TransportDeps, TransportRequest } from '../../src/net/clickhouse-transport.types.js';
+import type { ClickHouseHttpClientDeps, ClickHouseHttpRequest } from '@altinity/clickhouse-http';
 
 type FetchImpl = (url: string, init: RequestInit) => Response | Promise<Response>;
 type HeadersRecord = Record<string, string>;
 
-/** A concrete `ClickHouseTransport` implementation under test, built from a
- *  `TransportDeps` this factory constructs and controls (so cases can flip
- *  `setOrigin` mid-test — Adaptation A5 / sabotage case 2 — and inspect every
- *  call the implementation made to the stub fetch). */
-export type MakeTransport = (deps: TransportDeps) => ClickHouseTransport;
+/** Test-local minimal send-only façade — deliberately NOT a recreation of
+ *  the deleted production `ClickHouseTransport` interface, just the single
+ *  member this suite actually needs to drive an implementation under test. */
+type RequestSender = {
+  send(request: ClickHouseHttpRequest): Promise<Response>;
+};
 
-function baseRequest(overrides: Partial<TransportRequest> = {}): TransportRequest {
+/** Builds a concrete `RequestSender` under test from a
+ *  `ClickHouseHttpClientDeps` this factory constructs and controls (so cases
+ *  can flip `setOrigin` mid-test — Adaptation A5 / sabotage case 2 — and
+ *  inspect every call the implementation made to the stub fetch). */
+export type MakeRequestSender = (deps: ClickHouseHttpClientDeps) => RequestSender;
+
+function baseRequest(overrides: Partial<ClickHouseHttpRequest> = {}): ClickHouseHttpRequest {
   return {
     sql: 'SELECT 1',
     defaultFormat: 'JSON',
@@ -47,7 +68,7 @@ function baseRequest(overrides: Partial<TransportRequest> = {}): TransportReques
   };
 }
 
-export function runTransportContractSuite(name: string, makeTransport: MakeTransport): void {
+export function runTransportContractSuite(name: string, makeTransport: MakeRequestSender): void {
   describe(`ClickHouseTransport contract — ${name}`, () => {
     function harness(fetchImpl: FetchImpl) {
       const fetchMock = vi.fn(fetchImpl);
