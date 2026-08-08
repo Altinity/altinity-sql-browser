@@ -144,14 +144,24 @@
       // below (never via a wall-clock wait) — the same deterministic,
       // load-independent technique `clickhouse-http-transport.spec.js`'s own
       // Scenario 6/7/9 already use ("abort scheduled from inside the first
-      // onChunk callback"): calling `cancelExport()` synchronously here, in
-      // the SAME microtask that just committed the first hold-back-crossing
-      // write, aborts before `streamToFile`'s loop can receive any FURTHER
-      // network data — a fixed post-hoc wall-clock delay was tried first and
-      // found genuinely flaky under parallel Chromium+WebKit load (the whole
-      // fixture's 3000ms server-side hold could occasionally elapse before a
-      // delayed JS timer fired, letting the export race to normal EOF
-      // completion instead of being cancelled).
+      // onChunk callback"). `cancelExport()` itself is deferred one
+      // microtask (`queueMicrotask`, see `update()` below): `streamToFile`'s
+      // `for (;;)` loop calls `onProgress()` synchronously and then keeps
+      // running synchronously (no `await` in between) until it reaches the
+      // NEXT `await reader.read()`, which issues that read (a real fetch
+      // stream pull) before suspending. A microtask queued from inside
+      // `onProgress()` cannot run until that enclosing synchronous stretch
+      // finishes, so by construction it fires strictly after the next read
+      // has been issued and is genuinely pending — calling `cancelExport()`
+      // synchronously inside `onProgress()` instead would abort BEFORE that
+      // next `reader.read()` is ever issued, which is not the "pending read"
+      // scenario this fixture claims. A fixed post-hoc wall-clock delay was
+      // tried first and found genuinely flaky under parallel Chromium+WebKit
+      // load (the whole fixture's 3000ms server-side hold could occasionally
+      // elapse before a delayed JS timer fired, letting the export race to
+      // normal EOF completion instead of being cancelled); one microtask hop
+      // is deterministic and load-independent like the synchronous version,
+      // while still landing after the next read is issued.
       let progressCountBeforeCancel = 0;
       let writesBeforeCancelCount = 0;
       let bytesBeforeCancel = 0;
@@ -234,21 +244,27 @@
           showExportProgress: () => ({
             update(bytes) {
               progressEvents.push(bytes);
-              // Fires exactly once, synchronously, the FIRST time a real
-              // write has been committed past the 32 KiB hold-back — this is
-              // the "pending reader.read()" moment: `streamToFile`'s
-              // `for(;;)` loop has already (synchronously, no intervening
-              // await) issued its NEXT `reader.read()` by the time this
-              // microtask continuation reaches here (see the file-level
-              // comment above), and that read is genuinely blocked on the
-              // fixture's still-in-progress POST_HEADER_ABORT_HOLD_MS
-              // server-side hold. Calling `cancelExport()` here — never via a
-              // later wall-clock delay — aborts that exact pending read.
+              // Fires exactly once, the FIRST time a real write has been
+              // committed past the 32 KiB hold-back. This callback itself
+              // runs SYNCHRONOUSLY inside `streamToFile`'s current
+              // `reader.read()` continuation — snapshot the "before cancel"
+              // counters right here, synchronously, so they reflect exactly
+              // this write and no more. `cancelExport()` is deferred with
+              // `queueMicrotask()` (see the file-level comment above): the
+              // loop's synchronous continuation keeps running after this
+              // callback returns and reaches its NEXT `await reader.read()`,
+              // issuing that read against the fixture's still-in-progress
+              // POST_HEADER_ABORT_HOLD_MS server-side hold — only THEN does
+              // the queued microtask run and call `cancelExport()`, aborting
+              // that now-genuinely-pending read. Calling `cancelExport()`
+              // synchronously here instead would abort before the next read
+              // is ever issued, and a later wall-clock delay was tried and
+              // found flaky under parallel Chromium+WebKit load.
               if (progressCountBeforeCancel === 0) {
                 progressCountBeforeCancel = progressEvents.length;
                 writesBeforeCancelCount = fakeFile.writes.length;
                 bytesBeforeCancel = fakeFile.totalBytes();
-                exportService.cancelExport();
+                queueMicrotask(() => exportService.cancelExport());
               }
             },
             remove() {},
