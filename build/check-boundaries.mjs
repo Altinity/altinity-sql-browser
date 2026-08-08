@@ -363,9 +363,27 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
   checkedFiles += 1;
   const source = fs.readFileSync(file, 'utf8');
-  const mentionsPackage = source.includes(CLICKHOUSE_HTTP_SPECIFIER); // cheap pre-filter before spawning the real parser — a deep or bare specifier must contain this substring
+  // Cheap pre-filter before spawning the real parser. A raw substring test
+  // alone is unsound: a valid string/template literal can spell the exact
+  // same specifier through a JS escape sequence — a hex escape
+  // (`@altinity/clickhouse-h\x74tp`), a Unicode escape, or even a
+  // per-character identity escape (`\@\a\l\t...`, legal and decodes to the
+  // plain character for almost any char that isn't itself a multi-char
+  // escape introducer) — none of which contain the RAW substring, so
+  // `source.includes(CLICKHOUSE_HTTP_SPECIFIER)` alone silently skipped the
+  // real parser for exactly the files that most need it (review found this).
+  // Every one of those escape forms requires at least one literal backslash
+  // in the source, so "no plain substring AND no backslash anywhere in the
+  // file" is the only combination that can safely skip the parser-backed
+  // checks below — any backslash routes the file through them instead, and
+  // they decode escapes correctly via the real parser's own `node.text`.
+  // This stays a textual pre-filter, not a hand-rolled escape decoder: the
+  // decoding itself is left entirely to the real parser, for the same reason
+  // `build/lib/check-legacy-owners.mjs`'s module doc comment gives for why a
+  // hand-rolled scanner over this grammar keeps losing to pattern-widening.
+  const mightReferencePackage = source.includes(CLICKHOUSE_HTTP_SPECIFIER) || source.includes('\\');
 
-  if (mentionsPackage) {
+  if (mightReferencePackage) {
     for (const spec of findDeepImportSpecifiers(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: @altinity/clickhouse-http exposes only its "." export — deep imports are forbidden everywhere)`);
     }
@@ -396,7 +414,7 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   // `src/net/**` every access form/name remains unrestricted, matching
   // existing production usage (`ch-client.ts`, `clickhouse-http-transport.ts`).
   if (relFile.startsWith('src/net/')) continue;
-  if (!mentionsPackage) continue;
+  if (!mightReferencePackage) continue;
   for (const usage of findPackageImportUsages(source, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
     if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
     const label = usage.kind === 'named' ? `named import of '${usage.name}' (transport/protocol API)`

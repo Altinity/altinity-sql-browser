@@ -167,12 +167,24 @@ function bareSpecifierViolations(dir, virtualFiles = []) {
 // comments as trivia by construction. Both halves of Rule D now call the
 // same shared real-parser helper module.
 const CLICKHOUSE_HTTP_SPECIFIER = '@altinity/clickhouse-http';
+// Cheap pre-filter before spawning the real parser, matching the production
+// checker (build/check-boundaries.mjs). A raw substring test alone is
+// unsound: a valid string/template literal can spell the exact same
+// specifier through a JS escape sequence (a hex escape, a Unicode escape, or
+// a per-character identity escape) that decodes to the real package name
+// without the RAW source ever containing the plain substring — every such
+// escape needs at least one literal backslash, so "no plain substring AND no
+// backslash anywhere" is the only combination that may safely skip the
+// parser-backed checks below.
+function mightReferencePackage(text) {
+  return text.includes(CLICKHOUSE_HTTP_SPECIFIER) || text.includes('\\');
+}
 function deepImportViolations(dir, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
     const relFile = relative(repoRoot, file).split(sep).join('/');
     const text = source ?? readFileSync(file, 'utf8');
-    if (!text.includes(CLICKHOUSE_HTTP_SPECIFIER)) continue; // cheap pre-filter before spawning the real parser, matching the production checker
+    if (!mightReferencePackage(text)) continue;
     for (const spec of findDeepImportSpecifiers(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       found.push(`${relFile} → ${spec}`);
     }
@@ -192,7 +204,7 @@ function packageNameShapeViolations(dir, virtualFiles = []) {
     const relFile = relative(repoRoot, file).split(sep).join('/');
     if (relFile.startsWith('src/net/')) continue; // net is unrestricted by design
     const text = source ?? readFileSync(file, 'utf8');
-    if (!text.includes(CLICKHOUSE_HTTP_SPECIFIER)) continue;
+    if (!mightReferencePackage(text)) continue;
     for (const usage of findPackageImportUsages(text, relFile, CLICKHOUSE_HTTP_SPECIFIER)) {
       if (usage.kind === 'named' && PHASE5_PACKAGE_LANGUAGE_EXPORTS.includes(usage.name)) continue;
       found.push(`${relFile} → ${CLICKHOUSE_HTTP_SPECIFIER} (${usage.kind}${usage.name ? `:${usage.name}` : ''})`);
@@ -370,6 +382,21 @@ describe('Rule D, deep-import half — the deep-import subpath form is forbidden
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_deepimporttype__'))).toBe(true);
   });
+
+  // Regression for a real escape found in review pass 1: the pre-filter
+  // gating the real parser was a RAW substring test
+  // (`text.includes(CLICKHOUSE_HTTP_SPECIFIER)`), which a string literal
+  // spelling the same specifier through a JS hex-escape sequence never
+  // contains, even though it decodes to the exact same text the real parser
+  // resolves via `node.text`. `\x74` decodes to `t`, so this specifier
+  // decodes to `@altinity/clickhouse-http/src/client`.
+  it('flags a deep-import subpath spelled through a hex-escaped specifier that never contains the raw substring (sabotage probe, not written to disk)', () => {
+    const found = deepImportViolations(join(repoRoot, 'src'), [
+      ['src/net/__boundary_probe_630_deepescape__.ts',
+        "import { createClickHouseHttpClient } from '@altinity/clickhouse-h\\x74tp/src/client';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_deepescape__'))).toBe(true);
+  });
 });
 
 // Issue #630 Phase 5 — Rule D's revised bare-specifier half (plan §8.2):
@@ -532,6 +559,33 @@ describe('Rule D, revised bare-specifier half (issue #630 Phase 5) — outside s
         "import { type sqlString } from '@altinity/clickhouse-http';\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_typespecifier_language__'))).toBe(false);
+  });
+
+  // Regression for a real escape found in review pass 1: same pre-filter
+  // bypass as the deep-import half above, applied to a bare (non-deep)
+  // specifier — a named import of a transport export, spelled with a
+  // hex-escaped specifier that decodes to the exact plain package name
+  // without the RAW source ever containing it as a substring.
+  it('flags a named import of a transport export spelled through a hex-escaped specifier that never contains the raw substring (sabotage probe, not written to disk)', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_escapedspecifier__.ts',
+        "import { createClickHouseHttpClient } from '@altinity/clickhouse-h\\x74tp';\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_escapedspecifier__'))).toBe(true);
+  });
+
+  // The widened pre-filter (any backslash routes a file through the real
+  // parser, not just a raw substring match) must not turn an UNRELATED
+  // backslash — a regex literal, an unrelated string escape — into a false
+  // positive: the real parser-backed check still requires the decoded
+  // specifier to match exactly, so a file that merely contains a backslash
+  // elsewhere stays clean.
+  it('does not flag a file with an unrelated backslash and no reference to the package at all', () => {
+    const found = packageNameShapeViolations(join(repoRoot, 'src'), [
+      ['src/core/__boundary_probe_630_unrelated_backslash__.ts',
+        "export const re = /a\\/b/;\nexport function f(s) { return s.replace(/\\\\/g, ''); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_630_unrelated_backslash__'))).toBe(false);
   });
 
   it('flags a package re-export gateway outside src/net/** (sabotage probe, not written to disk)', () => {
