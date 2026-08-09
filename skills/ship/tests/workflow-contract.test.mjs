@@ -32,20 +32,29 @@ test('the canonical plan path remains the authoring-session identity', async () 
   assert.match(workflow, /--output-file \$\{shellQuote\(runArgs\.planFile\)\}/);
 });
 
-test('the decompose-and-implement loop grounds decomposition in the real branch, runs sub-tasks sequentially, and propagates failure', async () => {
+test('the decompose-and-implement loop grounds decomposition in the real branch, runs waves in dependency order, parallelizing only within an explicitly-independent wave, and propagates failure', async () => {
   const source = await fs.readFile(path.join(root, 'references/decompose-and-implement-loop.workflow.mjs'), 'utf8');
   assert.doesNotThrow(() => new Function(`return async function workflowSyntaxCheck() {\n${source.replace('export const meta', 'const meta')}\n}`));
   // Decomposition must read what's ALREADY committed, not just the plan in the abstract.
   assert.match(source, /git log --oneline origin\/main\.\.HEAD/);
   assert.match(source, /model: 'fable', effort: 'high'/);
-  // Sequential, not parallel — a for-loop with one agent() awaited per iteration, no
-  // parallel()/pipeline() call fanning sub-tasks out concurrently.
-  assert.match(source, /for \(const \[index, task\] of decomposition\.subtasks\.entries\(\)\)/);
-  assert.doesNotMatch(source, /parallel\(/);
+  // Waves run strictly in dependency order; a solo wave (no independent sibling) runs its
+  // one sub-task directly, never via parallel() — only a wave the decomposition agent
+  // explicitly declared independent (size > 1) fans out concurrently, scoped to that one
+  // wave's own sub-tasks.
+  assert.match(source, /for \(const \[waveIndex, wave\] of waves\.entries\(\)\)/);
+  assert.match(source, /if \(wave\.length === 1\)/);
+  assert.match(source, /parallel\(wave\.map\(/);
   assert.doesNotMatch(source, /pipeline\(/);
-  assert.match(source, /model: 'sonnet'/);
-  // A dead sub-task agent must stop the loop, not silently skip the rest.
-  assert.match(source, /if \(!result\) return \{ status: 'error'/);
+  // Each sub-task is implemented by a fresh Sonnet coding agent, on both the solo path
+  // and the concurrent-wave path.
+  assert.match(source, /\{ label: task\.id, phase: 'Implement', model: 'sonnet' \}/);
+  assert.match(source, /\{ label: task\.id, phase: 'Implement', model: 'sonnet', isolation: 'worktree'/);
+  // A dead sub-task agent must stop the loop at every call site, not silently skip the
+  // rest: the solo path, the concurrent-wave path, and post-wave integration.
+  assert.match(source, /if \(!summary\) return \{ status: 'error'/);
+  assert.match(source, /const diedIndex = waveOutputs\.findIndex\(o => !o\)/);
+  assert.match(source, /if \(!integration\) return \{ status: 'error'/);
 });
 
 test('required args are validated and the issue tag is derived for commit messages', async () => {

@@ -175,7 +175,10 @@ Before handing the unit back, verify:
 - **Security-sensitive** (auth / OAuth / `config.json`): add one focused pass with the
   `security-review` skill.
 
-Do not run a generic code review plus a multi-agent review over the same diff.
+Do not run a generic code review plus a multi-agent review over the same diff. None of
+these tiers include asking ChatGPT ad hoc — that's a distinct, coordinator-only escalation
+for when internal review genuinely can't resolve a tradeoff (`references/review-loops.md`),
+not a substitute for running this budget first.
 
 Reviewer prompt:
 
@@ -220,7 +223,9 @@ When a finding exposes a **missing invariant** rather than an isolated bug:
 
 If two review rounds find variants of one root cause, revise the invariant map before
 writing another fix. Fixes that relocate a defect are how a one-pass review becomes
-four.
+four. If even this process doesn't settle which structural fix is right,
+`references/review-loops.md`'s ad hoc consultation procedure is for exactly this — a
+genuine tradeoff internal review can't resolve, not routine debugging.
 
 ## 4 — Reconcile (before the PR — and before certification)
 
