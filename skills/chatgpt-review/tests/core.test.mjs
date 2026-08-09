@@ -58,45 +58,66 @@ test('GitHub targets are canonical and kind checked', () => {
 
 test('prompts enforce investigation, trust, publication, and follow-up contracts', () => {
   const target = normalizeGithubTarget('https://github.com/o/r/pull/9', 'pr');
-  const initial = buildPrompt({ mode: 'pr', target, publish: true, pass: 1, context: 'coverage gate' });
+  // Every mode now uploads its --question-file (referenced via contextUploadName) rather
+  // than pasting it — this used to duplicate content already in the GitHub issue/PR every
+  // mode's own prompt separately tells ChatGPT to browse.
+  const initial = buildPrompt({ mode: 'pr', target, publish: true, pass: 1, contextUploadName: 'question-pass1.md' });
   assert.match(initial, /complete current PR/);
   assert.match(initial, /exact head SHA/);
   assert.match(initial, /pass 1/);
   assert.match(initial, /untrusted evidence/);
+  assert.match(initial, /attached as question-pass1\.md/);
   const followup = buildPrompt({ mode: 'pr', target, publish: true, pass: 2, previousSha: 'a'.repeat(40) });
   assert.match(followup, /reassess every earlier finding/);
   assert.match(followup, /complete updated PR for regressions/);
   assert.match(followup, new RegExp('a{40}'));
   assert.match(followup, /Do not edit or replace/);
-  assert.match(buildPrompt({ mode: 'issue', target: { ...target, canonicalUrl: 'https://github.com/o/r/issues/9' }, publish: false, pass: 1 }), /Do not post/);
-  const plan = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', context: 'acceptance', pass: 1 });
-  assert.match(plan, /attached as exact-plan\.md/);
+  assert.match(buildPrompt({ mode: 'issue', target: { ...target, canonicalUrl: 'https://github.com/o/r/issues/9' }, publish: false, pass: 1, contextUploadName: 'question-pass1.md' }), /Do not post/);
+  // If a caller somehow reaches buildPrompt with no contextUploadName at all (should not
+  // happen in real operation — chatgpt-review.mjs always uploads a given --question-file),
+  // it falls back to pasting inline rather than silently dropping the context.
+  const pastedFallback = buildPrompt({ mode: 'pr', target, publish: true, pass: 1, context: 'coverage gate' });
+  assert.match(pastedFallback, /Project and acceptance context from the caller:\ncoverage gate/);
+  assert.doesNotMatch(pastedFallback, /attached as/);
+
+  const plan = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', contextUploadName: 'question-pass1.md', pass: 1 });
+  assert.match(plan, /attached as exact-plan\.md/); // the plan itself (uploadName)
+  assert.match(plan, /attached as question-pass1\.md/); // the caller's context (contextUploadName) — a distinct attachment
   assert.match(plan, /Do not write anything to GitHub/);
   assert.doesNotMatch(plan, /SAME conversation/);
-  const planRevision = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', context: 'acceptance', pass: 2 });
+  const planRevision = buildPrompt({ mode: 'plan', uploadName: 'exact-plan.md', contextUploadName: 'question-pass2.md', pass: 2 });
   assert.match(planRevision, /revision review pass 2 of the SAME plan, in the SAME conversation/);
   assert.match(planRevision, /"## Review responses" section/);
   assert.match(planRevision, /explicitly engage with and refute its cited evidence/);
   assert.doesNotMatch(planRevision, /Critically review whether it closes the stated acceptance gap, respects the repository architecture and seams, has a safe migration order and rollback story, and includes adequate tests\. Identify omissions/);
-  // plan-author uploads its question file rather than pasting it (chatgpt-review.mjs's
-  // prepare()/run() set uploadName from --question-file for this mode specifically) — the
-  // real production shape always has uploadName set and context empty; passing `context`
-  // here anyway proves it's ignored, never pasted, for this one mode.
-  const author = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 1, context: 'UNIQUE_CONTEXT_MARKER_SHOULD_NOT_BE_PASTED', uploadName: 'contract-pass1.md' });
+
+  // plan-author uploads its question file rather than pasting it — the real production
+  // shape always has contextUploadName set. On pass 1 there's no revision-note delta yet
+  // (chatgpt-review.mjs's run() only reads --revision-note-file, which the workflow only
+  // ever supplies from pass 2 onward), so context stays empty in real usage.
+  const author = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 1, contextUploadName: 'contract-context-pass1.md' });
   assert.match(author, /Browse the issue, the actual repository, CLAUDE\.md/);
   assert.match(author, /PLAN_STATUS: READY/);
   assert.match(author, /Do not write anything to GitHub/);
-  assert.match(author, /attached as contract-pass1\.md/);
-  assert.doesNotMatch(author, /UNIQUE_CONTEXT_MARKER_SHOULD_NOT_BE_PASTED/);
-  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2, uploadName: 'contract-pass2.md' });
+  assert.match(author, /attached as contract-context-pass1\.md/);
+  assert.doesNotMatch(author, /new findings from an independent reviewer/);
+  // On a REAL revision (pass 2+), a genuinely new, small delta of findings from an
+  // independent reviewer IS pasted, alongside the still-uploaded (fresh copy) contract —
+  // unlike the contract, it's new each time and small enough that pasting isn't wasteful.
+  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2, contextUploadName: 'contract-context-pass2.md', context: 'Finding: the retry loop never resets its counter.' });
   assert.match(revision, /that you produced in your own most recent message above in this conversation/);
-  assert.match(revision, /attached as contract-pass2\.md/);
+  assert.match(revision, /attached as contract-context-pass2\.md/);
   assert.match(revision, /rebuttals in the attached file/);
-  // If a caller somehow reaches buildPrompt with no uploadName at all (should not happen
-  // in real operation — the CLI requires --question-file for this mode), the reference
-  // is simply omitted rather than falling back to pasting context text.
+  assert.match(revision, /This pass's new findings from an independent reviewer/);
+  assert.match(revision, /the retry loop never resets its counter/);
+  // If a caller somehow reaches buildPrompt with no contextUploadName at all (should not
+  // happen in real operation — the CLI requires --question-file for this mode), the
+  // reference is simply omitted rather than falling back to pasting the contract text.
   assert.doesNotMatch(buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2 }), /attached as/);
-  assert.match(buildPrompt({ mode: 'local', uploadName: 'local.diff' }), /only source for local-only state/);
+
+  const local = buildPrompt({ mode: 'local', uploadName: 'local.diff', contextUploadName: 'question.md' });
+  assert.match(local, /only source for local-only state/);
+  assert.match(local, /attached as question\.md/);
 });
 
 test('reported SHA and comment URL are extracted', () => {
@@ -339,6 +360,32 @@ test('plan mode uploads a pass-numbered copy (never the literal session-identity
   assert.match(observed.prompt, /Do not write anything to GitHub/);
 });
 
+test('plan mode with a --question-file uploads both the plan and the context together, distinctly named', async (t) => {
+  // ChatGPT's own upload input accepts multiple simultaneous files (confirmed live) — when
+  // a mode has its own primary artifact (the plan) AND a caller-supplied context/question
+  // file, both are uploaded together in one message rather than the context being pasted.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-review-plan-ctx-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const planFile = path.join(dir, 'complete-plan.md');
+  const questionFile = path.join(dir, 'contract.md');
+  await fs.writeFile(planFile, '# Complete plan\n');
+  await fs.writeFile(questionFile, 'UNIQUE_QUESTION_FILE_MARKER_SHOULD_NOT_BE_PASTED');
+  const store = {
+    async create(data) { return { handle: '00000000-0000-4000-8000-000000000003', passCount: 0, ...data }; },
+    async write(value) { return value; },
+  };
+  let observed;
+  const driver = { async review(input) { observed = input; return { responseText: 'review', conversationUrl: 'https://chatgpt.com/c/plan-ctx' }; } };
+  const result = await run(['plan', planFile, '--question-file', questionFile], { store, driver });
+  assert.equal(result.status, 'completed');
+  assert.ok(Array.isArray(observed.uploadPath), 'expected both files to be uploaded together as an array');
+  const basenames = observed.uploadPath.map((p) => path.basename(p));
+  assert.deepEqual(basenames, ['complete-plan-pass1.md', 'contract-context-pass1.md']);
+  assert.match(observed.prompt, /attached as complete-plan-pass1\.md/);
+  assert.match(observed.prompt, /attached as contract-context-pass1\.md/);
+  assert.doesNotMatch(observed.prompt, /UNIQUE_QUESTION_FILE_MARKER_SHOULD_NOT_BE_PASTED/);
+});
+
 test('plan-author writes ready output atomically, reports blockers, and never publishes', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-author-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -366,7 +413,7 @@ test('plan-author writes ready output atomically, reports blockers, and never pu
   // The question file is uploaded (a pass-numbered copy, not the literal questionFile
   // path — same convention as every other mode's own upload) rather than pasted, so
   // the composer's typed prompt stays short regardless of the contract's size.
-  assert.equal(path.basename(observed.uploadPath), 'contract-pass1.md');
+  assert.equal(path.basename(observed.uploadPath), 'contract-context-pass1.md');
   assert.equal(uploadedContentAtCallTime, 'delivery contract');
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Complete plan\n\nSteps.\n');
   assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp')), []);
@@ -398,7 +445,7 @@ test('invalid plan-author revisions preserve the last valid plan and keep the se
     // The question file is uploaded fresh on every pass, including a revision — cheap
     // (a file transfer, not retyped text), unlike the plan itself, which is never
     // re-supplied since ChatGPT already wrote it in this same conversation.
-    assert.equal(path.basename(input.uploadPath), 'contract-pass1.md');
+    assert.equal(path.basename(input.uploadPath), 'contract-context-pass1.md');
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/revision' };
   } };
   const result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', created.handle], { store, driver });
@@ -432,8 +479,8 @@ test('plan-author revisions reuse the conversation by session handle alone, uplo
   // each pass (never the same filename twice — matches every other mode's own upload
   // convention, avoiding ChatGPT's own upload-UI collision-rename quirk).
   assert.deepEqual(calls, [
-    { session: null, uploadBasename: 'contract-pass1.md' },
-    { session: handle, uploadBasename: 'contract-pass2.md' },
+    { session: null, uploadBasename: 'contract-context-pass1.md' },
+    { session: handle, uploadBasename: 'contract-context-pass2.md' },
   ]);
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Replacement plan\n');
 });
@@ -456,7 +503,7 @@ test('plan-author timeout resumes the same conversation on retry, re-uploading t
     assert.ok(input.session);
     // The retry never incremented passCount (the first attempt threw before completing),
     // so it's still pass 1 -- and re-uploads that SAME pass's question file fresh.
-    assert.equal(path.basename(input.uploadPath), 'contract-pass1.md');
+    assert.equal(path.basename(input.uploadPath), 'contract-context-pass1.md');
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Revised plan\n${PLAN_END}`, conversationUrl: timeout.conversationUrl };
   } };
   let result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver });

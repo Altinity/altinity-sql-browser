@@ -36,7 +36,8 @@ export async function run(argv, dependencies = {}) {
 
     const prepared = await prepare(options);
     const prepareCleanup = prepared.cleanup ?? (async () => {});
-    cleanup = prepareCleanup;
+    const uploadCleanups = [prepareCleanup];
+    cleanup = async () => { for (const c of uploadCleanups) await c(); };
     if (options.session) {
       session = await store.load(options.session);
       if (session.mode !== options.mode || session.targetIdentity !== prepared.targetIdentity) throw new CliError('Session does not match this mode and target');
@@ -58,27 +59,44 @@ export async function run(argv, dependencies = {}) {
     passNumber = (session.passCount ?? 0) + 1;
     if (options.mode === 'pr' && passNumber > 3) throw new CliError('PR review sessions permit at most three total passes');
 
-    // Name each pass's upload distinctly (plan-590-pass4.md, not plan-590.md every time) — the
-    // plan/diff file's own path must never move (it is the plan-review-loop's session identity),
-    // so we upload a same-content, differently-named COPY. Reusing one literal filename across
-    // many passes made ChatGPT's own upload UI collision-rename it (plan-590(9).md) after enough
-    // retries, which is confusing and unrelated to the real pass count.
-    let uploadPath = prepared.uploadPath;
-    if (uploadPath) {
-      const ext = path.extname(uploadPath);
-      const base = path.basename(uploadPath, ext);
-      const content = await fs.readFile(uploadPath, 'utf8');
-      const renamed = await writePrivateTempFile(`${base}-pass${passNumber}${ext}`, content);
-      uploadPath = renamed.filename;
-      const uploadCleanup = renamed.cleanup;
-      cleanup = async () => { await uploadCleanup(); await prepareCleanup(); };
+    // Name each pass's upload distinctly (plan-590-pass4.md, not plan-590.md every time) —
+    // the source file's own path must never move (it may be the plan-review-loop's own
+    // session identity, or the coordinator's stable context file reused across every pass),
+    // so upload a same-content, differently-named COPY. Reusing one literal filename across
+    // many passes made ChatGPT's own upload UI collision-rename it (plan-590(9).md) after
+    // enough retries, which is confusing and unrelated to the real pass count.
+    async function renamedUploadCopy(sourcePath, label) {
+      const ext = path.extname(sourcePath);
+      const base = path.basename(sourcePath, ext);
+      const content = await fs.readFile(sourcePath, 'utf8');
+      const renamed = await writePrivateTempFile(`${base}-${label}${ext}`, content);
+      uploadCleanups.push(renamed.cleanup);
+      return renamed.filename;
     }
 
-    // plan-author uploads its question file (above) instead of pasting it — buildPrompt
-    // references the upload by name for that mode, so context stays empty there rather
-    // than duplicating the exact same content into the chat text as well.
-    const context = (options.questionFile && options.mode !== 'plan-author')
-      ? await fs.readFile(path.resolve(options.questionFile), 'utf8')
+    const primaryUploadPath = prepared.uploadPath ? await renamedUploadCopy(prepared.uploadPath, `pass${passNumber}`) : null;
+    // Every mode now uploads its --question-file (the coordinator's delivery contract,
+    // acceptance subset, and focused questions) instead of pasting it: pasting used to
+    // duplicate content already in the GitHub issue (which every mode's prompt separately
+    // tells ChatGPT to browse) and, across passes, duplicate the SAME text repeatedly even
+    // though the conversation already had it. A fresh, distinctly-named upload copy each
+    // pass is a cheap file transfer, not retyped text, so the composer's typed prompt stays
+    // short regardless of the contract's size.
+    const contextUploadPath = options.questionFile ? await renamedUploadCopy(path.resolve(options.questionFile), `context-pass${passNumber}`) : null;
+    // plan/local modes already have their own primary artifact (plan file / diff); pr/issue/
+    // plan-author have none. ChatGPT's upload input accepts multiple files in one message
+    // (confirmed live), so when both exist, upload them together; otherwise upload whichever
+    // one exists, keeping the single-path shape callers/tests already expect in that case.
+    const uploadTargets = [primaryUploadPath, contextUploadPath].filter(Boolean);
+    const uploadPath = uploadTargets.length > 1 ? uploadTargets : (uploadTargets[0] ?? null);
+
+    // plan-author's revision passes carry a SMALL, genuinely-new-each-time delta (this
+    // round's findings) as pasted text alongside the always-uploaded contract — unlike the
+    // contract itself, findings are small and not duplicative, so pasting them is fine and
+    // avoids needing a dedicated second upload slot for something this cheap. Every other
+    // mode's own context is now uploaded above, never pasted.
+    const context = (options.mode === 'plan-author' && options.revisionNoteFile)
+      ? await fs.readFile(path.resolve(options.revisionNoteFile), 'utf8')
       : '';
     const prompt = buildPrompt({
       mode: options.mode,
@@ -87,7 +105,8 @@ export async function run(argv, dependencies = {}) {
       publish: options.requestedPublication,
       pass: passNumber,
       previousSha: session.reportedReviewedSha,
-      uploadName: uploadPath ? path.basename(uploadPath) : null,
+      uploadName: primaryUploadPath ? path.basename(primaryUploadPath) : null,
+      contextUploadName: contextUploadPath ? path.basename(contextUploadPath) : null,
     });
     // A genuinely fresh conversation (neither --session nor --seed-from-session) passes
     // null so pageFor() opens chatgpt.com from scratch. Both --session (resuming this exact
@@ -148,25 +167,10 @@ async function prepare(options) {
       // The PLAN FILE (options.outputFile) is never uploaded: a revision pass is a
       // follow-up message in the SAME conversation ChatGPT just wrote the plan in, so it
       // already has the exact current text without one — re-uploading ChatGPT's own prior
-      // output would be redundant.
-      //
-      // The QUESTION FILE (options.questionFile — the delivery contract, acceptance
-      // subset, and focused questions the COORDINATOR provides) is a different matter: it
-      // used to be pasted into the composer as raw chat text via buildPrompt's
-      // contextBlock, which duplicated content already in the GitHub issue (which the
-      // prompt separately tells ChatGPT to browse) and, on every revision pass, duplicated
-      // the SAME text again even though the conversation already had it from pass 1.
-      // Uploading it instead keeps the composer's typed prompt short regardless of the
-      // contract's size, and — being a cheap file transfer rather than retyped text — can
-      // be re-attached fresh on every pass at negligible cost, preserving the insurance
-      // against a failed live browse or (for a very long conversation) lost early context,
-      // without ever re-pasting the same text as chat content again.
+      // output would be redundant. The question file IS uploaded, but uniformly with every
+      // other mode below (run()'s contextUploadPath), not here.
       const planFile = path.resolve(options.outputFile);
-      return {
-        target,
-        targetIdentity: `plan-author:${target.identity}:${planFile}`,
-        uploadPath: options.questionFile ? path.resolve(options.questionFile) : undefined,
-      };
+      return { target, targetIdentity: `plan-author:${target.identity}:${planFile}` };
     }
     return { target, targetIdentity: `${options.mode}:${target.identity}` };
   }

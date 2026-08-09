@@ -73,7 +73,27 @@ test('hidden upload is supported without touching model or effort controls', asy
   });
   const driver = driverWith(page);
   await driver.upload(page, '/tmp/plan.md');
-  assert.equal(input.files, '/tmp/plan.md');
+  // setInputFiles always receives an array now, even for a single file — see the next
+  // test for the real reason: ChatGPT's own upload input accepts multiple simultaneous
+  // files, and one setInputFiles([...]) call attaches all of them together.
+  assert.deepEqual(input.files, ['/tmp/plan.md']);
+});
+
+test('multiple files (e.g. a mode\'s own primary artifact plus the caller\'s context) attach together and each is individually confirmed', async () => {
+  // Confirmed live against the real ChatGPT composer: its upload input has `multiple` set,
+  // and one setInputFiles([...]) call attaches every given file as its own separate,
+  // individually-confirmable chip — not a last-one-wins replacement.
+  const input = new Element({ visible: false });
+  let waitedFor = [];
+  const page = readyPage({ [SELECTORS.fileInput[0]]: [input] });
+  page.getByText = (text) => {
+    waitedFor.push(text);
+    return { last: () => ({ waitFor: async () => {} }) };
+  };
+  const driver = driverWith(page);
+  await driver.upload(page, ['/tmp/plan.md', '/tmp/contract.md']);
+  assert.deepEqual(input.files, ['/tmp/plan.md', '/tmp/contract.md']);
+  assert.deepEqual(waitedFor, ['plan.md', 'contract.md']);
 });
 
 test('streaming response must be new, non-empty, stopped, and stable', async () => {
