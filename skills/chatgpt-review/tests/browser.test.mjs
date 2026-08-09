@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ChatGptBrowser, ReviewError, SELECTORS, classifyAlertText, classifyPermission, connectToChrome, fingerprintText } from '../scripts/lib/browser.mjs';
+import { ChatGptBrowser, ReviewError, RECOVERY_NUDGE, SELECTORS, classifyAlertText, classifyPermission, connectToChrome, fingerprintText } from '../scripts/lib/browser.mjs';
 
 class Element {
-  constructor({ text = '', visible = true, onClick, nested = {} } = {}) { this.text = text; this.visible = visible; this.onClick = onClick; this.nested = nested; }
+  constructor({ text = '', visible = true, onClick, nested = {}, evaluate } = {}) { this.text = text; this.visible = visible; this.onClick = onClick; this.nested = nested; this._evaluate = evaluate; }
   async isVisible() { return this.visible; }
   async count() { return 1; }
   async innerText() { return this.text; }
@@ -11,6 +11,14 @@ class Element {
   async fill(value) { this.value = value; }
   async press(value) { this.pressed = value; }
   async setInputFiles(value) { this.files = value; }
+  // Real Playwright's locator.evaluate(fn, arg) runs fn IN THE BROWSER PAGE, with a real
+  // DOM element bound as fn's first argument. This mock has no DOM at all by default —
+  // matching today's actual test environment (Node, no browser) — so it throws unless a
+  // test explicitly supplies an `evaluate` override to simulate a real page.
+  async evaluate(fn, arg) {
+    if (this._evaluate) return this._evaluate(fn, arg);
+    throw new TypeError('no DOM available in the test harness');
+  }
   locator(selector) { return new Locator(this.nested[selector] ?? []); }
 }
 class Locator {
@@ -72,7 +80,10 @@ test('streaming response must be new, non-empty, stopped, and stable', async () 
   let sent = false;
   const assistant = new Element({ text: 'complete answer' });
   const composer = new Element();
-  const send = new Element({ onClick: () => { sent = true; } });
+  // ChatGPT swaps its temporary root URL for a permanent /c/<id> one within ~1-2s of a
+  // real submission — simulating that here keeps waitForPermanentConversationUrl from
+  // burning its own poll budget against this test's unrelated (tiny, fake-clock) timeout.
+  const send = new Element({ onClick: () => { sent = true; page.currentUrl = 'https://chatgpt.com/c/test'; } });
   const page = new Page('https://chatgpt.com/', {
     [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send],
     [SELECTORS.assistant[0]]: () => sent ? [assistant] : [],
@@ -114,7 +125,10 @@ test('session retry recovers an uncollected response without sending a duplicate
 test('fresh submission detects a new response even when DOM pruning keeps the assistant-message count flat', async () => {
   let sent = false;
   const composer = new Element();
-  const send = new Element({ onClick: () => { sent = true; } });
+  // ChatGPT swaps its temporary root URL for a permanent /c/<id> one within ~1-2s of a
+  // real submission — simulating that here keeps waitForPermanentConversationUrl from
+  // burning its own poll budget against this test's unrelated (tiny, fake-clock) timeout.
+  const send = new Element({ onClick: () => { sent = true; page.currentUrl = 'https://chatgpt.com/c/test'; } });
   // Simulates ChatGPT virtualizing old turns out of the DOM: the assistant locator always
   // returns exactly one element (a fixed-size window), but its content is the STALE prior
   // answer until submit, then the NEW one — never two elements at once, so a count-based
@@ -198,7 +212,10 @@ test('a completed response is fingerprinted by its plain rendered tail even when
   const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
   let stage = 0; // 0: nothing sent yet, 1: first reply present, 2: second reply present
   const composer = new Element();
-  const send = new Element({ onClick: () => { stage += 1; } });
+  // ChatGPT swaps its temporary root URL for a permanent /c/<id> one within ~1-2s of a
+  // real submission — simulating that here keeps waitForPermanentConversationUrl from
+  // burning its own poll budget against this test's unrelated (tiny, fake-clock) timeout.
+  const send = new Element({ onClick: () => { stage += 1; page.currentUrl = 'https://chatgpt.com/c/test'; } });
   const firstText = 'PLAN_STATUS: READY rendered without markdown syntax';
   const secondText = 'a later, different reply';
   const page = new Page('https://chatgpt.com/', {
@@ -323,6 +340,160 @@ test('composer fill gives up and throws after exhausting its retries', async () 
   composer.fill = async () => { throw new Error('locator.fill: Timeout 30000ms exceeded'); };
   const page = readyPage({ [SELECTORS.composer[0]]: [composer] });
   await assert.rejects(() => driverWith(page).fillAndSend(page, 'prompt text'), /Timeout 30000ms exceeded/);
+});
+
+test('native insertion is preferred when the composer supports it; Playwright .fill() is never called', async () => {
+  // Measured live against the production ChatGPT composer: an 80KB execCommand insertText
+  // call lands in ~50ms regardless of size, sidestepping Playwright's own actionability-
+  // checked .fill(), which has been observed to still genuinely time out under real load
+  // even at 120s x 2 retries (issue #630, 246.9s elapsed). This proves the fast path is
+  // actually tried first, not merely available.
+  let fillCalled = false;
+  let insertedValue = null;
+  const composer = new Element({ evaluate: (fn, value) => { insertedValue = value; } });
+  composer.fill = async (value) => { fillCalled = true; composer.value = value; };
+  const send = new Element();
+  const page = readyPage({ [SELECTORS.composer[0]]: [composer], [SELECTORS.send[0]]: [send] });
+  await driverWith(page).fillAndSend(page, 'a large prompt body');
+  assert.equal(insertedValue, 'a large prompt body');
+  assert.equal(fillCalled, false);
+  assert.equal(composer.value, undefined);
+});
+
+test('the whole review() call is bounded by its own timeoutMs even when a setup phase needs its own retry', async () => {
+  // Before the unified-deadline fix, assertReady/upload/fillAndSend/waitForPermanentConversationUrl
+  // each had their own independent, ADDITIONAL worst-case allowance on top of timeoutMs, so
+  // the real total wall time could run ~300s past what a caller's own --timeout 540 assumed —
+  // confirmed live: 6 real invocations across issue #630 were killed with zero output ever
+  // flushed. A composer that never accepts native insertion AND whose Playwright .fill()
+  // always fails, combined with a conversation URL that never becomes permanent, forces every
+  // setup phase to burn its own ceiling — the whole call must still fail by (approximately)
+  // the caller's timeoutMs, not additively stack every phase's ceiling on top of it.
+  const composer = new Element();
+  composer.fill = async () => { throw new Error('locator.fill: Timeout 30000ms exceeded'); };
+  const page = readyPage({ [SELECTORS.composer[0]]: [composer] }); // no [SELECTORS.send] -> composer.press('Enter') fallback; URL never becomes /c/<id>
+  const clock = { value: 0 };
+  const driver = new ChatGptBrowser({
+    browser: { contexts: () => [new Context([], page)] }, now: () => clock.value,
+    sleep: async (ms) => { clock.value += ms; }, stableMs: 2, pollMs: 1, stderr: { write() {} },
+  });
+  // The composer.fill() timeout surfaces as a plain Error here (fillAndSend's fallback
+  // re-throws it unwrapped, exactly as chatgpt-review.mjs's own run() does in production,
+  // where it becomes an "internal_error" status) — what matters for THIS test is only that
+  // the call fails promptly, not which error type carries it.
+  await assert.rejects(() => driver.review({ prompt: 'review', timeoutMs: 500, target: null, publish: false }));
+  // Old behavior would have let assertReady/fillAndSend/waitForPermanentConversationUrl each
+  // additively consume their own full ceiling BEFORE waitForCompletion's clock even started,
+  // pushing total elapsed well past 500 (into the multiple-thousands). The fix bounds the
+  // whole call close to the caller's own timeoutMs.
+  assert.ok(clock.value < 2000, `expected total elapsed to stay close to timeoutMs (500), got ${clock.value}`);
+});
+
+test('plan-author mode retries a failed clipboard copy before falling back to plain text', async () => {
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  let readAttempts = 0;
+  const realMarkdown = 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\nbody\n<<<CHATGPT_PLAN_END>>>';
+  const page = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: 'plain rendered tail, no literal heading syntax' })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+  }, { evaluate: () => { readAttempts += 1; return readAttempts === 1 ? null : realMarkdown; } });
+  const driver = driverWith(page);
+  const text = await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false, mode: 'plan-author' });
+  assert.equal(text, realMarkdown);
+  assert.ok(readAttempts >= 2, `expected at least one retry, got ${readAttempts} attempt(s)`);
+});
+
+test('non-plan-author modes do not retry a failed clipboard copy — a single miss falls back to plain text immediately', async () => {
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  let readAttempts = 0;
+  const page = readyPage({
+    [SELECTORS.assistant[0]]: [new Element({ text: 'plain rendered tail' })],
+    [SELECTORS.responseActions[0]]: [responseGroup],
+  }, { evaluate: () => { readAttempts += 1; return readAttempts === 1 ? null : '# would only appear on a retry'; } });
+  const driver = driverWith(page);
+  const text = await driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false });
+  assert.equal(text, 'plain rendered tail');
+  assert.equal(readAttempts, 1);
+});
+
+test('heartbeat is emitted periodically during polling, throttled, with useful progress fields', async () => {
+  const heartbeats = [];
+  const page = readyPage({ [SELECTORS.assistant[0]]: [new Element({ text: 'final answer' })] });
+  const clock = { value: 0 };
+  const driver = new ChatGptBrowser({
+    browser: { contexts: () => [new Context([], page)] }, now: () => clock.value,
+    sleep: async (ms) => { clock.value += ms; }, stableMs: 2, pollMs: 1, heartbeatIntervalMs: 1,
+    stderr: { write() {} },
+  });
+  const text = await driver.waitForCompletion(page, {
+    before: '', timeoutMs: 50, publish: false,
+    onHeartbeat: (state) => { heartbeats.push(state); },
+  });
+  assert.equal(text, 'final answer');
+  assert.ok(heartbeats.length >= 1, 'expected at least one heartbeat during polling');
+  assert.ok(heartbeats.every((h) => typeof h.elapsedMs === 'number' && typeof h.generating === 'boolean' && typeof h.textLength === 'number'));
+});
+
+test('a heartbeat write failure never aborts the review', async () => {
+  const page = readyPage({ [SELECTORS.assistant[0]]: [new Element({ text: 'final answer' })] });
+  const clock = { value: 0 };
+  const driver = new ChatGptBrowser({
+    browser: { contexts: () => [new Context([], page)] }, now: () => clock.value,
+    sleep: async (ms) => { clock.value += ms; }, stableMs: 2, pollMs: 1, heartbeatIntervalMs: 1,
+    stderr: { write() {} },
+  });
+  const text = await driver.waitForCompletion(page, {
+    before: '', timeoutMs: 50, publish: false,
+    onHeartbeat: async () => { throw new Error('disk full'); },
+  });
+  assert.equal(text, 'final answer');
+});
+
+test('a stalled generation with zero growth triggers one automatic stop+nudge recovery, then completes normally', async () => {
+  let stopped = false;
+  let nudged = false;
+  let recoveredText = null;
+  const stop = new Element({ onClick: () => { stopped = true; } });
+  const composer = new Element({ evaluate: (fn, value) => { nudged = value === RECOVERY_NUDGE; } });
+  const send = new Element({ onClick: () => { recoveredText = 'now producing real content'; } });
+  const page = readyPage({
+    [SELECTORS.composer[0]]: [composer],
+    [SELECTORS.send[0]]: [send],
+    [SELECTORS.stop[0]]: () => (stopped ? [] : [stop]),
+    [SELECTORS.assistant[0]]: () => [new Element({ text: recoveredText ?? 'stalled text, never growing' })],
+  });
+  const clock = { value: 0 };
+  const driver = new ChatGptBrowser({
+    browser: { contexts: () => [new Context([], page)] }, now: () => clock.value,
+    sleep: async (ms) => { clock.value += ms; }, stableMs: 2, pollMs: 1, noProgressStallMs: 5,
+    stderr: { write() {} },
+  });
+  const text = await driver.waitForCompletion(page, { before: '', timeoutMs: 5000, publish: false });
+  assert.equal(stopped, true, 'expected the stop control to be clicked');
+  assert.equal(nudged, true, 'expected the recovery nudge to be inserted into the composer');
+  assert.equal(text, 'now producing real content');
+});
+
+test('a conversation that stalls for a reason recovery cannot fix still times out normally, without nudging forever', async () => {
+  let stopClicks = 0;
+  const stop = new Element({ onClick: () => { stopClicks += 1; } });
+  const page = readyPage({
+    [SELECTORS.stop[0]]: [stop], // never clears, even after the one recovery attempt
+    [SELECTORS.assistant[0]]: [new Element({ text: 'stalled text, never growing' })],
+  });
+  const clock = { value: 0 };
+  const driver = new ChatGptBrowser({
+    browser: { contexts: () => [new Context([], page)] }, now: () => clock.value,
+    sleep: async (ms) => { clock.value += ms; }, stableMs: 2, pollMs: 1, noProgressStallMs: 5,
+    stderr: { write() {} },
+  });
+  await assert.rejects(
+    () => driver.waitForCompletion(page, { before: '', timeoutMs: 50, publish: false }),
+    (error) => error.status === 'timed_out',
+  );
+  assert.equal(stopClicks, 1, 'expected exactly one recovery attempt, not repeated nudging');
 });
 
 test('message stream failures use Retry without completing or creating a new prompt', async () => {

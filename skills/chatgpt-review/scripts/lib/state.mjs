@@ -54,6 +54,23 @@ export class SessionStore {
     }
   }
   sessionPath(handle) { return path.join(this.root, 'sessions', `${handle}.json`); }
+  // Best-effort progress snapshot, written periodically during a single run's poll loop
+  // (browser.mjs's onHeartbeat), so a process killed externally with zero stdout ever
+  // flushed (confirmed live 6 times across issue #630 — see browser.mjs's review() comment)
+  // still leaves something recoverable: was it alive, still generating, how much text had
+  // it seen, how long had it been running. A separate file/directory from the session
+  // record itself since this is transient run state, not the session's own durable identity.
+  async writeHeartbeat(handle, data) {
+    if (!/^[0-9a-f-]{36}$/i.test(handle)) throw new CliError('Invalid session handle');
+    await this.initialize();
+    const directory = path.join(this.root, 'heartbeat');
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    const destination = path.join(directory, `${handle}.json`);
+    const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify({ handle, ...data, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await fs.rename(temporary, destination);
+    await fs.chmod(destination, 0o600);
+  }
   async writeIndex(identity, handle) {
     const filename = path.join(this.root, 'targets.json');
     let current = {};
