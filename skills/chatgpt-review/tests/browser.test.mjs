@@ -360,6 +360,45 @@ test('native insertion is preferred when the composer supports it; Playwright .f
   assert.equal(composer.value, undefined);
 });
 
+test('a send button that only mounts a moment after native insertion is still found and clicked, not skipped for the Enter fallback', async () => {
+  // insertNatively resolves as soon as the in-page evaluate() call returns, BEFORE React
+  // has necessarily re-rendered in response to it — confirmed live against the production
+  // ChatGPT composer: the real send-button selector showed 0 matches on the very next
+  // synchronous DOM query and only 1 match after yielding a render tick
+  // (requestAnimationFrame). A single, immediate, no-retry check for the send button would
+  // silently fall through to composer.press('Enter') on this timing race every time, not
+  // because the button is actually missing.
+  let checkCount = 0;
+  let clicked = false;
+  let pressed = false;
+  const composer = new Element({ evaluate: () => {} });
+  composer.press = async (value) => { pressed = value; };
+  const page = readyPage({
+    [SELECTORS.composer[0]]: [composer],
+    // The send selector "exists" only from the 3rd check onward — exactly like the real
+    // send button only appearing after React's next render tick, not on the very first,
+    // immediate, synchronous check right after insertion.
+    [SELECTORS.send[0]]: () => {
+      checkCount += 1;
+      if (checkCount < 3) return [];
+      return [new Element({ onClick: () => { clicked = true; } })];
+    },
+  });
+  await driverWith(page).fillAndSend(page, 'prompt text');
+  assert.ok(checkCount >= 3, `expected at least 3 checks before the button appeared, got ${checkCount}`);
+  assert.equal(clicked, true, 'expected the send button to be found and clicked once it mounted');
+  assert.equal(pressed, false, 'must not fall back to Enter when the button eventually appears');
+});
+
+test('submit() still falls back to Enter if the send button genuinely never appears', async () => {
+  let pressed = false;
+  const composer = new Element();
+  composer.press = async (value) => { pressed = value; };
+  const page = readyPage({ [SELECTORS.composer[0]]: [composer] }); // no [SELECTORS.send] at all
+  await driverWith(page).submit(page, composer);
+  assert.equal(pressed, 'Enter');
+});
+
 test('the whole review() call is bounded by its own timeoutMs even when a setup phase needs its own retry', async () => {
   // Before the unified-deadline fix, assertReady/upload/fillAndSend/waitForPermanentConversationUrl
   // each had their own independent, ADDITIONAL worst-case allowance on top of timeoutMs, so
