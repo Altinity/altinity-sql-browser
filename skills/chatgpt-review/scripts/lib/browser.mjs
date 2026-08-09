@@ -191,6 +191,24 @@ export class ChatGptBrowser {
     } catch { return false; }
   }
 
+  // insertNatively resolves as soon as the in-page evaluate() call returns, which is
+  // BEFORE React has necessarily re-rendered in response to it — confirmed live: the send
+  // button's own selector showed 0 matches on the very next synchronous DOM query, and 1
+  // match only after yielding a render tick (requestAnimationFrame). Checking for it exactly
+  // once, immediately, made this silently fall through to the composer.press('Enter')
+  // fallback on what is actually a timing race, not a missing/dead selector — a few short
+  // retries (bounded, cheap) removes the race instead of relying on it happening to be
+  // masked by whatever incidental latency the caller's own prior awaits introduced.
+  async submit(page, composer) {
+    let send = null;
+    for (let attempt = 0; attempt < 5 && !send; attempt += 1) {
+      send = await firstVisible(page, SELECTORS.send);
+      if (!send) await this.sleep(100);
+    }
+    if (send) await send.click();
+    else await composer.press('Enter');
+  }
+
   async fillAndSend(page, prompt, deadline = this.now() + 242_000) {
     const composer = await firstVisible(page, SELECTORS.composer);
     if (!composer) throw new ReviewError('ui_incompatible', 'ChatGPT composer disappeared before submission');
@@ -209,9 +227,7 @@ export class ChatGptBrowser {
       }
       if (lastError) throw lastError;
     }
-    const send = await firstVisible(page, SELECTORS.send);
-    if (send) await send.click();
-    else await composer.press('Enter');
+    await this.submit(page, composer);
   }
 
   async waitForPermanentConversationUrl(page, deadline = this.now() + 15_000) {
@@ -375,8 +391,7 @@ export class ChatGptBrowser {
         await this.sleep(1000);
         const composer = await firstVisible(page, SELECTORS.composer);
         if (composer && (await this.insertNatively(composer, RECOVERY_NUDGE))) {
-          const send = await firstVisible(page, SELECTORS.send);
-          if (send) await send.click(); else await composer.press('Enter');
+          await this.submit(page, composer);
         }
         lastText = '';
         stableSince = null;
