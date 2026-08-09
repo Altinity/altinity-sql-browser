@@ -15,7 +15,7 @@ export const EXIT_CODES = Object.freeze({
 
 const VALUE_FLAGS = new Set([
   '--question-file', '--session', '--seed-from-session', '--timeout', '--format', '--repo', '--base',
-  '--cdp-url', '--diagnostics-dir', '--output-file',
+  '--cdp-url', '--diagnostics-dir', '--output-file', '--revision-note-file',
 ]);
 const BOOL_FLAGS = new Set(['--publish', '--no-publish', '--working-tree', '--include-untracked']);
 
@@ -25,9 +25,17 @@ export function usage() {
   chatgpt-review.mjs pr <url> [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--no-publish] [--timeout 1800]
   chatgpt-review.mjs issue <url> [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--publish] [--timeout 1800]
   chatgpt-review.mjs plan <plan-file> [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
-  chatgpt-review.mjs plan-author <issue-url> --output-file <absolute-plan-path> --question-file <path> [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
+  chatgpt-review.mjs plan-author <issue-url> --output-file <absolute-plan-path> --question-file <path> [--revision-note-file <path>] [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
   chatgpt-review.mjs local [--repo <path>] [--base <ref>] [--working-tree] [--include-untracked] [--question-file <path>] [--session <handle>|--seed-from-session <handle>] [--timeout 1800]
 
+  --question-file <path>: uploaded as an attachment (not pasted) — the coordinator's
+  delivery contract, acceptance subset, and focused questions, kept out of the composer's
+  typed prompt regardless of its size and, being a cheap file transfer, safe to re-attach
+  fresh on every pass.
+  --revision-note-file <path>: plan-author only. This pass's new, genuinely small findings
+  from an independent reviewer, pasted (not uploaded) alongside the always-uploaded
+  --question-file — unlike the contract itself, a revision's findings are new each time and
+  small enough that pasting them is not duplicative.
   --session <handle>: resume THIS exact mode+target's own prior session (same conversation, same pass counter).
   --seed-from-session <handle>: start a NEW session for this mode+target, but continue an EXISTING
   ChatGPT conversation from a prior session of a DIFFERENT mode (e.g. thread a plan-author
@@ -67,6 +75,8 @@ export function parseArgs(argv, env = process.env) {
     if (!options.outputFile || !path.isAbsolute(options.outputFile)) throw new CliError('plan-author requires --output-file with an absolute path');
     if (!options.questionFile) throw new CliError('plan-author requires --question-file');
     if (options.publish || options.noPublish) throw new CliError('plan-author never accepts publication options');
+  } else if (options.revisionNoteFile) {
+    throw new CliError('--revision-note-file is only meaningful for plan-author');
   }
   return {
     mode,

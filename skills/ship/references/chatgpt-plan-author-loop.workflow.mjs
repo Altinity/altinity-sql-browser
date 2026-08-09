@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Author', detail: 'ChatGPT writes or replaces the canonical plan privately' },
     { title: 'Review', detail: 'Fable/high reviews the plan read-only against the repository' },
-    { title: 'Prepare', detail: 'fold Fable\'s raw findings into revision context for ChatGPT to verify and incorporate itself' },
+    { title: 'Prepare', detail: 'write this pass\'s findings-only revision note for ChatGPT to verify and incorporate itself' },
   ],
 }
 
@@ -47,15 +47,20 @@ const RUNNER_BOUNDARY = 'Do not edit repository or plan files directly, mutate g
 const label = runArgs.unitLabel ?? runArgs.issueUrl
 let session = runArgs.session ?? null
 let conversationUrl = runArgs.conversationUrl ?? null
-let authorContextFile = runArgs.contextFile
+// The delivery contract at runArgs.contextFile never changes and is never re-copied — it is
+// uploaded fresh (not pasted) on every pass by chatgpt-review.mjs's own --question-file
+// handling. Only a genuinely new, small, findings-only note is generated per revision pass
+// and pasted alongside it.
+let revisionNoteFile = null
 let lastFindings = []
 
 for (let pass = 1; pass <= 5; pass++) {
   log(`ChatGPT plan authoring / Fable review pass ${pass}/5 — ${label}`)
   const sessionFlag = session ? ` --session ${shellQuote(session)}` : ''
+  const revisionNoteFlag = revisionNoteFile ? ` --revision-note-file ${shellQuote(revisionNoteFile)}` : ''
   const authored = await agent(
     'Run the private ChatGPT plan-author command below in Bash IN THE FOREGROUND with the Bash timeout set to 580000, redirect stdout to a JSON file under $TMPDIR, and never use run_in_background:\n\n' +
-    `node skills/chatgpt-review/scripts/chatgpt-review.mjs plan-author ${shellQuote(runArgs.issueUrl)} --output-file ${shellQuote(runArgs.planFile)} --question-file ${shellQuote(authorContextFile)} --timeout 540${sessionFlag}\n\n` +
+    `node skills/chatgpt-review/scripts/chatgpt-review.mjs plan-author ${shellQuote(runArgs.issueUrl)} --output-file ${shellQuote(runArgs.planFile)} --question-file ${shellQuote(runArgs.contextFile)}${revisionNoteFlag} --timeout 540${sessionFlag}\n\n` +
     'Read the JSON. A complete result has status=completed and plan_status=ready or blocked. For timed_out, rate_limited, invalid_response, or any other incomplete result, retry the same command with --session from the JSON for up to 4 total attempts; wait 90 seconds before a rate_limited retry using a small-increment loop. Never start a new conversation after a session handle exists. Map the last JSON to the schema: completed=true only for a complete ready/blocked protocol; planStatus from plan_status uppercased, otherwise INVALID; retain session, conversation_url, and blocker; lastResponsePreview = the last ~500 characters of the FINAL attempt\'s response_text field (even if it looks empty, partial, or truncated) when completed=false, otherwise null — this is diagnostic only, to help a future incomplete-with-real-content-present case get root-caused instead of just re-observed. The command is private and must never receive publication flags. ' + RUNNER_BOUNDARY,
     { label: `author plan ${pass}`, phase: 'Author', schema: AUTHOR_SCHEMA, model: 'sonnet' },
   )
@@ -86,14 +91,16 @@ for (let pass = 1; pass <= 5; pass++) {
   // pass fact-checking Fable before handing ChatGPT a pre-filtered accept/reject list,
   // ChatGPT verifies each finding itself (it already does this kind of live check when
   // revising — e.g. looking up an exact npm package version) and decides whether to fold
-  // it in or reject it, recording either outcome so nothing is silently dropped.
-  const nextContext = `${runArgs.contextFile}.chatgpt-revision-${pass + 1}.md`
-  const contextWrite = await agent(
-    `Create ${nextContext} as a complete revision context. Copy the full original delivery contract from ${runArgs.contextFile}, then append a section "Fable review pass ${pass} — unverified findings" containing these raw findings from an independent read-only reviewer: ${JSON.stringify(review.findings)}. Precede them with this instruction verbatim: "These are UNVERIFIED claims from a reviewer with no live access to confirm exact repository state, registry contents, or line numbers. Before incorporating any finding, verify it yourself against the actual issue, the real repository, and current external sources (e.g. package registries) as needed. Fold in only what you confirm is correct and material. For any finding you determine is wrong, outdated, or already addressed, do not incorporate it — instead add a one-or-two-line entry under a '##' + ' Review responses' section at the end of the plan explaining why, citing your own verification evidence." Mutation boundary: Write ${nextContext} only; no other file, git, gh, task, memory, or chatgpt-review mutation.`,
-    { label: `prepare revision context ${pass + 1}`, phase: 'Prepare', schema: CONTEXT_SCHEMA, model: 'sonnet' },
+  // it in or reject it, recording either outcome so nothing is silently dropped. The note
+  // is ONLY this pass's new findings — never a copy of the delivery contract, which is
+  // already re-attached in full, unchanged, every pass via --question-file above.
+  const nextNote = `${runArgs.contextFile}.chatgpt-revision-${pass + 1}-findings.md`
+  const noteWrite = await agent(
+    `Create ${nextNote} containing ONLY this revision pass's findings note — do not copy, restate, or summarize the delivery contract at ${runArgs.contextFile}; it is a separate attachment ChatGPT already has and always will on every pass, so repeating any of its content here is a duplication bug, not a safety margin. Write exactly: a heading "## Fable review pass ${pass} — unverified findings", then this instruction verbatim: "These are UNVERIFIED claims from a reviewer with no live access to confirm exact repository state, registry contents, or line numbers. Before incorporating any finding, verify it yourself against the actual issue, the real repository, and current external sources (e.g. package registries) as needed. Fold in only what you confirm is correct and material. For any finding you determine is wrong, outdated, or already addressed, do not incorporate it — instead add a one-or-two-line entry under a '##' + ' Review responses' section at the end of the plan explaining why, citing your own verification evidence.", then these raw findings from an independent read-only reviewer: ${JSON.stringify(review.findings)}. Mutation boundary: Write ${nextNote} only; no other file, git, gh, task, memory, or chatgpt-review mutation.`,
+    { label: `prepare revision note ${pass + 1}`, phase: 'Prepare', schema: CONTEXT_SCHEMA, model: 'sonnet' },
   )
-  if (!contextWrite?.written) return { status: 'error', reason: 'could not prepare ChatGPT revision context', pass, session, conversationUrl }
-  authorContextFile = nextContext
+  if (!noteWrite?.written) return { status: 'error', reason: 'could not prepare ChatGPT revision note', pass, session, conversationUrl }
+  revisionNoteFile = nextNote
 }
 
 return { status: 'needs_human', reason: 'no Fable APPROVED verdict after 5 passes', passes: 5, session, conversationUrl, findings: lastFindings }

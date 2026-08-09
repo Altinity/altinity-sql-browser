@@ -159,14 +159,22 @@ export class ChatGptBrowser {
     throw new ReviewError('ui_incompatible', 'Could not find the ChatGPT composer; the UI may have changed');
   }
 
+  // uploadPath may be a single path or an array — e.g. plan/local modes now attach BOTH
+  // their own primary artifact (plan file / diff) and the caller's context/delivery-
+  // contract file in one message. Confirmed live: ChatGPT's upload input has `multiple`
+  // set, and one setInputFiles([...]) call attaches all of them as separate, individually
+  // confirmable chips (not a last-one-wins replacement).
   async upload(page, uploadPath, deadline = this.now() + 30_000) {
+    const paths = Array.isArray(uploadPath) ? uploadPath : [uploadPath];
     const input = await firstExisting(page, SELECTORS.fileInput);
     if (!input) throw new ReviewError('ui_incompatible', 'ChatGPT file upload input was not found');
-    await input.setInputFiles(uploadPath);
+    await input.setInputFiles(paths);
     if (page.getByText) {
-      const attachment = page.getByText(path.basename(uploadPath), { exact: false }).last();
-      try { await attachment.waitFor({ state: 'visible', timeout: Math.max(1000, deadline - this.now()) }); }
-      catch { throw new ReviewError('ui_incompatible', 'ChatGPT did not confirm the requested file upload'); }
+      for (const singlePath of paths) {
+        const attachment = page.getByText(path.basename(singlePath), { exact: false }).last();
+        try { await attachment.waitFor({ state: 'visible', timeout: Math.max(1000, deadline - this.now()) }); }
+        catch { throw new ReviewError('ui_incompatible', `ChatGPT did not confirm the requested file upload: ${path.basename(singlePath)}`); }
+      }
     }
   }
 
