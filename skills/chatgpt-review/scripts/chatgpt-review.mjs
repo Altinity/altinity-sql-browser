@@ -74,7 +74,12 @@ export async function run(argv, dependencies = {}) {
       cleanup = async () => { await uploadCleanup(); await prepareCleanup(); };
     }
 
-    const context = options.questionFile ? await fs.readFile(path.resolve(options.questionFile), 'utf8') : '';
+    // plan-author uploads its question file (above) instead of pasting it — buildPrompt
+    // references the upload by name for that mode, so context stays empty there rather
+    // than duplicating the exact same content into the chat text as well.
+    const context = (options.questionFile && options.mode !== 'plan-author')
+      ? await fs.readFile(path.resolve(options.questionFile), 'utf8')
+      : '';
     const prompt = buildPrompt({
       mode: options.mode,
       target: prepared.target,
@@ -140,12 +145,28 @@ async function prepare(options) {
     const targetMode = options.mode === 'plan-author' ? 'issue' : options.mode;
     const target = normalizeGithubTarget(options.target, targetMode);
     if (options.mode === 'plan-author') {
-      // No attachment: a revision pass is a follow-up message in the SAME conversation
-      // ChatGPT just wrote the plan in, so it already has the exact current text without
-      // one. Re-uploading it every pass only adds a redundant multi-tens-of-KB payload to
-      // an already-large composer fill (see the fillAndSend timeout fix).
+      // The PLAN FILE (options.outputFile) is never uploaded: a revision pass is a
+      // follow-up message in the SAME conversation ChatGPT just wrote the plan in, so it
+      // already has the exact current text without one — re-uploading ChatGPT's own prior
+      // output would be redundant.
+      //
+      // The QUESTION FILE (options.questionFile — the delivery contract, acceptance
+      // subset, and focused questions the COORDINATOR provides) is a different matter: it
+      // used to be pasted into the composer as raw chat text via buildPrompt's
+      // contextBlock, which duplicated content already in the GitHub issue (which the
+      // prompt separately tells ChatGPT to browse) and, on every revision pass, duplicated
+      // the SAME text again even though the conversation already had it from pass 1.
+      // Uploading it instead keeps the composer's typed prompt short regardless of the
+      // contract's size, and — being a cheap file transfer rather than retyped text — can
+      // be re-attached fresh on every pass at negligible cost, preserving the insurance
+      // against a failed live browse or (for a very long conversation) lost early context,
+      // without ever re-pasting the same text as chat content again.
       const planFile = path.resolve(options.outputFile);
-      return { target, targetIdentity: `plan-author:${target.identity}:${planFile}` };
+      return {
+        target,
+        targetIdentity: `plan-author:${target.identity}:${planFile}`,
+        uploadPath: options.questionFile ? path.resolve(options.questionFile) : undefined,
+      };
     }
     return { target, targetIdentity: `${options.mode}:${target.identity}` };
   }
