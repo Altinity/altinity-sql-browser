@@ -1,6 +1,6 @@
 export function parseShipInvocation(input) {
   const tokens = String(input).trim().replace(/^\/ship(?:\s+|$)/, '').split(/\s+/).filter(Boolean);
-  let planner = 'fable';
+  let planner = 'chatgpt';
   let scope = null;
   let plannerSeen = false;
   for (let index = 0; index < tokens.length; index += 1) {

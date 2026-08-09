@@ -28,7 +28,7 @@ if (!runArgs || !runArgs.prUrl || !runArgs.questionFile || !runArgs.pass || !run
 const PASS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['completed', 'verdict', 'session', 'conversationUrl', 'reviewedSha', 'commentUrl', 'findings'],
+  required: ['completed', 'verdict', 'session', 'conversationUrl', 'reviewedSha', 'commentUrl', 'findings', 'attemptsUsed', 'sessionExhausted'],
   properties: {
     completed: { type: 'boolean' },
     verdict: { type: 'string', enum: ['SHIP', 'REVISE'] },
@@ -36,6 +36,8 @@ const PASS_SCHEMA = {
     conversationUrl: { type: ['string', 'null'] },
     reviewedSha: { type: ['string', 'null'] },
     commentUrl: { type: ['string', 'null'] },
+    attemptsUsed: { type: 'integer', description: 'total real chatgpt-review CLI calls made this pass, including retries — a single /ship-labelled pass can spend more than 1 of the session\'s 3 total pr-mode slots' },
+    sessionExhausted: { type: 'boolean', description: 'true only if a chatgpt-review call itself returned status invalid_request with "permit at most three total passes" (the session\'s hard cap was already spent before this pass could get a real review) — distinct from a generic incomplete/timeout' },
     findings: {
       type: 'array',
       items: {
@@ -91,12 +93,15 @@ const review = await agent(
   `Instead, run this command with Bash IN THE FOREGROUND, with the Bash call's own timeout set to 580000 (its practical ceiling is 600000ms), redirecting stdout to EXACTLY this file — do not substitute a generic name. This filename is unique to this PR and pass on purpose: a long /ship run reuses the same $TMPDIR across many PRs and passes over many hours, and a generic filename risks a LATER pass silently reading a stale file left over from an EARLIER one instead of its own real result. It publishes a PR comment:\n\n` +
   `node skills/chatgpt-review/scripts/chatgpt-review.mjs pr ${runArgs.prUrl} --question-file ${runArgs.questionFile} --timeout 540${sessionFlag} > ${outputFile}\n\n` +
   '--timeout 540 caps the script\'s OWN internal wait at 9 minutes — safely inside the Bash tool\'s 10-minute ceiling — so the process exits cleanly with valid JSON instead of being killed. A "status" of "timed_out" is EXPECTED and NORMAL here, not a failure: the script persists its session handle and conversation URL even on a timeout.\n' +
-  'Read the output file (it is JSON). FIRST check response_text regardless of "status": if it already ends with exactly one well-formed "VERDICT: SHIP" or "VERDICT: REVISE" line, ChatGPT had already finished generating — treat this as a complete result and stop retrying, even if "status" says "rate_limited"/"timed_out"/etc (a UI-level banner can appear over an already-finished answer; the literal status field is NOT authoritative about whether real content exists). Only if response_text has NO parseable verdict line do you need to retry: if "status" is "rate_limited", ChatGPT is throttling conversation access — hammering it immediately makes this WORSE, so wait first using a small-increment loop in ONE Bash call (a bare `sleep 90` prefix gets blocked as chaining), e.g. `end=$(( $(date +%s) + 90 )); while [ $(date +%s) -lt $end ]; do sleep 5; done; node ...`. For any other non-completed, no-verdict status, retry immediately. Either way, retry the SAME chatgpt-review command, but REPLACE whatever `--session`/`--seed-from-session` flag it had with `--session <handle>` using the "session" field from the JSON (never keep --seed-from-session, and never pass both flags — the CLI rejects that) (again foreground, again --timeout 540, again Bash timeout 580000) — this resumes the same conversation instead of resubmitting the prompt (it may already have published the comment). Repeat for up to 4 total attempts. After 4 attempts with still no parseable verdict line, stop and treat it as incomplete.\n' +
+  'COUNT every real invocation of the chatgpt-review command below (the first one plus every retry) as you go — you will report this total as attemptsUsed. This matters because the CLI enforces a HARD 3-total-calls-per-session cap for pr mode across this session\'s entire life, not per /ship-labelled pass: if an earlier pass already needed a retry, this pass can start with fewer than 3 slots left, and if a call in THIS pass returns status "invalid_request" with a message containing "permit at most three total passes" (or the CLI exits nonzero before producing any response_text), that means the session\'s cap was already fully spent — STOP immediately, do not retry (retrying a call that already told you the session is exhausted will fail identically every time and only wastes time), set sessionExhausted=true and completed=false, and skip straight to mapping the output schema below.\n' +
+  'Read the output file (it is JSON). FIRST check response_text regardless of "status": if it already ends with exactly one well-formed "VERDICT: SHIP" or "VERDICT: REVISE" line, ChatGPT had already finished generating — treat this as a complete result and stop retrying, even if "status" says "rate_limited"/"timed_out"/etc (a UI-level banner can appear over an already-finished answer; the literal status field is NOT authoritative about whether real content exists). Only if response_text has NO parseable verdict line do you need to retry: if "status" is "rate_limited", ChatGPT is throttling conversation access — hammering it immediately makes this WORSE, so wait first using a small-increment loop in ONE Bash call (a bare `sleep 90` prefix gets blocked as chaining), e.g. `end=$(( $(date +%s) + 90 )); while [ $(date +%s) -lt $end ]; do sleep 5; done; node ...`. For any other non-completed, no-verdict status (other than the session-exhausted case above), retry immediately. Either way, retry the SAME chatgpt-review command, but REPLACE whatever `--session`/`--seed-from-session` flag it had with `--session <handle>` using the "session" field from the JSON (never keep --seed-from-session, and never pass both flags — the CLI rejects that) (again foreground, again --timeout 540, again Bash timeout 580000) — this resumes the same conversation instead of resubmitting the prompt (it may already have published the comment). Repeat for up to 4 total attempts. After 4 attempts with still no parseable verdict line, stop and treat it as incomplete.\n' +
   'Then map the final JSON to the output schema:\n' +
-  '- completed: true if response_text contains a real, parseable, single well-formed trailing VERDICT line — regardless of the literal "status" field; false only if no such line exists after all attempts;\n' +
-  '- verdict: the trailing "VERDICT: <word>" line of response_text — SHIP only for a single well-formed "VERDICT: SHIP"; anything absent, duplicated, or malformed is REVISE (fail-closed);\n' +
-  '- findings: every concrete actionable finding in the response, one entry each, claim self-contained;\n' +
-  '- session, conversationUrl, reviewedSha, commentUrl: from the returned JSON.\n' +
+  '- completed: true if response_text contains a real, parseable, single well-formed trailing VERDICT line — regardless of the literal "status" field; false if no such line exists after all attempts OR the session was exhausted;\n' +
+  '- verdict: the trailing "VERDICT: <word>" line of response_text — SHIP only for a single well-formed "VERDICT: SHIP"; anything absent, duplicated, or malformed is REVISE (fail-closed); if sessionExhausted, still return "REVISE" (required by the schema, but the coordinator will not act on it as a real review verdict);\n' +
+  '- findings: every concrete actionable finding in the response, one entry each, claim self-contained; if sessionExhausted, return a single synthetic finding here too describing exactly what happened (claim + where), so the information survives even if the coordinator only looks at findings;\n' +
+  '- attemptsUsed: the total real CLI calls you counted above;\n' +
+  '- sessionExhausted: as determined above (false in the normal case);\n' +
+  '- session, conversationUrl, reviewedSha, commentUrl: from the returned JSON (null/unavailable fields stay null).\n' +
   READ_ONLY,
   // effort intentionally NOT 'low': this agent must genuinely wait out a real
   // 10-25 minute external process. 'low' effort was observed capping the agent's
@@ -106,8 +111,16 @@ const review = await agent(
 )
 if (!review) return { status: 'error', reason: 'review-runner agent died', session: runArgs.session ?? null }
 const session = review.session ?? runArgs.session ?? null
+log(`Pass ${runArgs.pass}: ${review.attemptsUsed ?? '?'} real CLI call(s) used this pass`)
+if (review.sessionExhausted) {
+  // The CLI's 3-total-passes-per-session cap was already spent before this pass could
+  // even get a real review — usually because an EARLIER pass needed an internal retry
+  // that silently consumed an extra slot. Distinct from a generic incomplete/timeout:
+  // re-invoking this workflow with the same session will fail identically every time.
+  return { status: 'session-cap-exhausted', reason: 'session\'s 3 total pr-mode passes already spent', session, conversationUrl: review.conversationUrl, findings: review.findings, attemptsUsed: review.attemptsUsed }
+}
 if (!review.completed) {
-  return { status: 'needs_human', reason: 'review pass incomplete after one retry', session, conversationUrl: review.conversationUrl, commentUrl: review.commentUrl }
+  return { status: 'needs_human', reason: 'review pass incomplete after all retries', session, conversationUrl: review.conversationUrl, commentUrl: review.commentUrl, attemptsUsed: review.attemptsUsed }
 }
 
 const verified = (await parallel(review.findings.map((f, i) => () =>
@@ -123,7 +136,7 @@ const accepted = verified.filter(v => v.accepted)
 const rejected = verified.filter(v => !v.accepted)
 log(`Pass ${runArgs.pass}: verdict ${review.verdict} — ${accepted.length} accepted, ${rejected.length} rejected of ${review.findings.length} findings`)
 
-const meta_ = { session, conversationUrl: review.conversationUrl, reviewedSha: review.reviewedSha, commentUrl: review.commentUrl, accepted, rejected }
+const meta_ = { session, conversationUrl: review.conversationUrl, reviewedSha: review.reviewedSha, commentUrl: review.commentUrl, accepted, rejected, attemptsUsed: review.attemptsUsed }
 
 if (review.verdict === 'SHIP' && accepted.length === 0) {
   // Certification is still the coordinator's call: SHA match, green CI, branch protection.

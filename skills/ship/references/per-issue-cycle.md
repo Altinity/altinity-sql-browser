@@ -81,9 +81,10 @@ a defect, one relocation at a time.
 ### Plan review
 
 Every plan — regardless of risk — goes through the selected plan Workflow (`SKILL.md`
-step 2.2, `references/review-loops.md`, max 5 review passes). In the default mode a
-Fable/high planner writes and revises while ChatGPT reviews. With `--planner chatgpt`,
-ChatGPT writes and revises while Fable/high approves. The worker's part in default mode:
+step 2.2, `references/review-loops.md`, max 5 review passes). By default (`--planner
+chatgpt`), ChatGPT writes and revises the plan privately while Fable/high approves it
+read-only. With `--planner fable`, a Fable/high planner writes and revises while
+ChatGPT reviews. The worker's part in `--planner fable` mode:
 
 - write the plan to the exact file path the coordinator assigned, and return it —
   self-contained, because the loop's revise agent (not you) folds review findings into
@@ -93,9 +94,9 @@ ChatGPT writes and revises while Fable/high approves. The worker's part in defau
 - never invoke `chatgpt-review` yourself, and write no code before the coordinator
   reports the plan approved.
 
-In ChatGPT mode the author workflow fulfills the first bullet. The fresh implementation
-worker still re-reads the approved canonical plan and observes the same no-code-before-
-approval and no-`chatgpt-review` boundaries.
+In the default ChatGPT mode the author workflow fulfills the first bullet. The fresh
+implementation worker still re-reads the approved canonical plan and observes the same
+no-code-before-approval and no-`chatgpt-review` boundaries.
 
 ## 2 — Implement (inner loop)
 
@@ -190,7 +191,15 @@ Concentrate on:
    detect drift.
 5. Check whether each fix removes the defect or merely relocates it.
 6. Check compatibility, accessibility, cancellation, cleanup, and error paths.
-7. Report only concrete actionable issues.
+7. If this diff touches or adds a prefilter gating an expensive real-parser/
+   architecture check (e.g. anything in `build/check-boundaries.mjs` or
+   `build/lib/check-legacy-owners.mjs`), check every OTHER prefilter in the same file
+   for the identical unsound pattern (a bare `source.includes(name)` with no escape
+   awareness, or a resolved-path comparison with no `fs.realpathSync` symlink
+   canonicalization) — don't stop at the one being modified. This exact bug class
+   recurred at least 4 times across issue #630, twice on the same guard within one
+   phase, because each fix addressed only the flagged instance.
+8. Report only concrete actionable issues.
 
 Read-only. Do not edit files or mutate git, GitHub, tasks, or memory.
 ```

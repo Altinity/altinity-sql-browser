@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope into dependency-ordered units (a phase or a whole issue), then for each unit in turn author and approve its plan with the selected Fable or ChatGPT planner workflow (max 5 review passes), implement code and tests, open that unit's own PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds — auto-chaining to the next unit off the just-merged origin/main with no re-prompting. Stops the whole run only when a unit's plan or merge proof exhausts its review passes; stops only a gated unit's own spine — every other independent unit or spine still ships in the same run — when the issue explicitly gates further phases on a new decision. Invoke as `/ship ISSUE [--planner fable|chatgpt]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
+description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope into dependency-ordered units (a phase or a whole issue), then for each unit in turn author and approve its plan with the selected ChatGPT (default) or Fable planner workflow (max 5 review passes), implement code and tests, open that unit's own PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds — auto-chaining to the next unit off the just-merged origin/main with no re-prompting. Stops the whole run only when a unit's plan or merge proof exhausts its review passes; stops only a gated unit's own spine — every other independent unit or spine still ships in the same run — when the issue explicitly gates further phases on a new decision. Invoke as `/ship ISSUE [--planner chatgpt|fable]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
 ---
 
 # /ship — deliver altinity-sql-browser issues autonomously
@@ -98,6 +98,16 @@ This split is wired into `references/plan-review-loop.workflow.mjs`,
 `references/chatgpt-plan-author-loop.workflow.mjs`, and
 `references/code-review-pass.workflow.mjs`; keep it there when editing those scripts.
 
+**Planner default.** `--planner` defaults to `chatgpt`: ChatGPT authors and revises
+every plan draft privately, and Fable/high owns the read-only approval decision (see
+"Coding vs. planning model split" just above). Pass `--planner fable` to opt back into
+the original mode — a Fable/high planner writes and revises while ChatGPT reviews —
+for a unit where you specifically want Fable's own authorship (e.g. matching an
+existing plan-authoring style already established earlier in one issue's spine, or a
+unit small/well-specified enough that ChatGPT's extra planning depth isn't worth its
+slower per-pass wall-clock). Nothing about which loop runs at step 2.2 changes based on
+this default beyond which Workflow script gets invoked — both are described there.
+
 ### ChatGPT review loops
 
 - The selected plan loop and the code loop run as **Workflow scripts** —
@@ -142,11 +152,12 @@ accidental context sink in a run.
 | `/ship 447` | all remaining phases of #447, or the whole issue if unphased |
 | `/ship 447.2` | phase 2 of #447 only, forced |
 | `/ship 424,425` | several whole issues |
-| `/ship 447 --planner chatgpt` | same scope, with ChatGPT authoring/revising and Fable/high approving the plan |
+| `/ship 447 --planner fable` | same scope, with a Fable/high planner authoring/revising and ChatGPT reviewing the plan |
 
 Parse the invocation with `references/parse-invocation.mjs`. `--planner` accepts
-`fable` or `chatgpt` and defaults to `fable`, so every existing invocation remains
-behavior-compatible. The legacy word `unattended` is accepted and ignored.
+`chatgpt` or `fable` and defaults to `chatgpt` — every bare invocation now gets
+ChatGPT-authored plans unless `--planner fable` opts back into the original mode. The
+legacy word `unattended` is accepted and ignored.
 
 ## 1 — Orient and assemble the delivery contracts
 
@@ -267,9 +278,9 @@ For every planner mode, assign the exact path `$TMPDIR/plan-<ISSUE>p<N>.md` (or
 `$TMPDIR/plan-<ISSUE>.md` unphased). The path is part of the review-session identity;
 never move, rename, or substitute it during the loop.
 
-**Default `fable` planner:** spawn the plan-only agent below. **ChatGPT planner:** do
-not spawn this initial planner; step 2.2's dedicated workflow owns every draft and
-revision.
+**Default `chatgpt` planner:** do not spawn this initial planner; step 2.2's dedicated
+workflow owns every draft and revision. **`--planner fable`:** spawn the plan-only
+agent below.
 
 Fresh agent (`subagent_type: "general-purpose"`, **never `fork`** — a fork inherits
 this in-progress mutating workflow and can conclude it should finish the whole job).
@@ -308,24 +319,13 @@ loops. The plan file **path** is the review-session identity; never move or rena
 mid-loop (footguns).
 
 1. Write a context file to `$TMPDIR`: the issue URL, unit contract and acceptance
-   subset, and focused questions. For the default planner, also include the verdict
+   subset, and focused questions. For `--planner fable`, also include the verdict
    protocol — "End your review with exactly one line: `VERDICT: APPROVED` or
-   `VERDICT: REVISE`."
+   `VERDICT: REVISE`." (the default `chatgpt` planner's CLI supplies its own strict
+   READY/BLOCKED authoring protocol instead — do not add the VERDICT line to its
+   context file).
 2. Launch exactly one selected loop as a Workflow and wait for its task notification.
-   For the default `fable` planner:
-
-   ```
-   Workflow {
-     scriptPath: "skills/ship/references/plan-review-loop.workflow.mjs",
-     args: { planFile: "<abs>", contextFile: "<abs>", unitLabel: "#<ISSUE> phase <N>" }
-   }
-   ```
-
-   Inside, each pass runs one serialized `chatgpt-review plan` call, verifies every
-   finding with parallel read-only agents, and folds accepted findings into the plan
-   file in place (rejected ones become `## Review responses` rebuttals). The 5-pass
-   cap is a loop bound in the script, not an instruction.
-   For `--planner chatgpt`:
+   For the default `chatgpt` planner:
 
    ```
    Workflow {
@@ -344,6 +344,21 @@ mid-loop (footguns).
    `## Review responses`. The workflow performs at most five Fable review passes.
    ChatGPT alone owns drafts, revisions, and verifying findings against them; Fable/high
    alone owns approval.
+   For `--planner fable`:
+
+   ```
+   Workflow {
+     scriptPath: "skills/ship/references/plan-review-loop.workflow.mjs",
+     args: { planFile: "<abs>", contextFile: "<abs>", unitLabel: "#<ISSUE> phase <N>" }
+   }
+   ```
+
+   Inside, each pass runs one serialized `chatgpt-review plan` call, verifies every
+   finding with parallel read-only agents, and folds accepted findings into the plan
+   file in place (rejected ones become `## Review responses` rebuttals). The 5-pass
+   cap is a loop bound in the script, not an instruction. Here Fable/high authors and
+   revises while ChatGPT reviews and approves via the `VERDICT:` protocol — the
+   reverse of the default mode's ownership split above.
 3. `status: "approved"` → record the pass count and conversation URL for the ship log;
    proceed to 2.3.
 4. `status: "blocked"` → skip the unit and report the concrete missing decision; do
@@ -508,8 +523,15 @@ per the table in `references/review-loops.md`:
   pushed commit and separately labelled public review comment.
 - `no-accepted-findings` → append the rebuttals to the question file and re-invoke
   (spends a pass).
-- `fix-failed`, `needs_human`, `error` → treat as a failed proof condition at the gate
-  (2.7).
+- `session-cap-exhausted` → do NOT re-invoke this workflow with this session; switch
+  immediately to the manual continuation in `references/review-loops.md` (driving the
+  existing tab directly) — this is expected tooling behavior, not a failed proof
+  condition.
+- `needs_human` → first rule out the two recoverable causes in
+  `references/review-loops.md`'s "Recovering a stalled or hung generation" (a stuck
+  live generation; a complete response the runner failed to recognize) — only then
+  treat it as a failed proof condition at the gate (2.7).
+- `fix-failed`, `error` → treat as a failed proof condition at the gate (2.7).
 
 A **certified head** is a `certified-pending-proofs` return (completed pass, verdict
 `SHIP`, no accepted findings) whose reviewed SHA equals this unit's current PR head.
@@ -530,9 +552,23 @@ Merge automatically — no prompt — only when ALL hold at one exact head:
 - required CI checks green at that head;
 - branch protection permits the merge.
 
-Then `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit convention),
-verify the PR reports `MERGED`, fetch `origin/main` and verify the merge, and flip this
-unit's own ship-log row to `shipped`.
+Then `gh pr merge <PR> --merge --delete-branch` (the repo's merge-commit convention).
+`--delete-branch` makes `gh` check out the base branch (`main`) locally and try to
+fast-forward it to match — this can fail with "Diverging branches can't be
+fast-forwarded" even though the REMOTE merge already succeeded, if local `main` has
+ever drifted (e.g. one pre-existing unrelated commit from before this run started; a
+`/ship` run never advances local `main` itself, since every unit branches straight off
+`origin/main`). Treat that error as informational, not a failed merge: verify with
+`gh pr view <PR> --json state,mergedAt` before assuming anything went wrong. Then,
+regardless of whether that error appeared, explicitly check local `main` is not
+diverged — `git fetch origin && git rev-list --count main ^origin/main` — and if it's
+nonzero, confirm with `git status`/`git diff --stat` that there are no uncommitted
+tracked changes and the divergent commit(s) are unrelated pre-existing history
+(`git log --oneline main ^origin/main`), then repair the local ref with
+`git reset --hard origin/main` (a local-only ref fix, not the "never force-push or
+mutate main directly" remote rule above — the remote is untouched either way). Only
+after that, verify the merge landed on `origin/main` and flip this unit's own ship-log
+row to `shipped`.
 
 **Any condition fails** — no certified head after 3 passes, ChatGPT unreachable or a
 pass incomplete, SHA drift, CI red or pending, branch protection refusal — → **FULL
