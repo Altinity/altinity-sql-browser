@@ -78,13 +78,24 @@ test('prompts enforce investigation, trust, publication, and follow-up contracts
   assert.match(planRevision, /"## Review responses" section/);
   assert.match(planRevision, /explicitly engage with and refute its cited evidence/);
   assert.doesNotMatch(planRevision, /Critically review whether it closes the stated acceptance gap, respects the repository architecture and seams, has a safe migration order and rollback story, and includes adequate tests\. Identify omissions/);
-  const author = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 1, context: 'delivery contract' });
+  // plan-author uploads its question file rather than pasting it (chatgpt-review.mjs's
+  // prepare()/run() set uploadName from --question-file for this mode specifically) — the
+  // real production shape always has uploadName set and context empty; passing `context`
+  // here anyway proves it's ignored, never pasted, for this one mode.
+  const author = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 1, context: 'UNIQUE_CONTEXT_MARKER_SHOULD_NOT_BE_PASTED', uploadName: 'contract-pass1.md' });
   assert.match(author, /Browse the issue, the actual repository, CLAUDE\.md/);
   assert.match(author, /PLAN_STATUS: READY/);
   assert.match(author, /Do not write anything to GitHub/);
-  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2 });
+  assert.match(author, /attached as contract-pass1\.md/);
+  assert.doesNotMatch(author, /UNIQUE_CONTEXT_MARKER_SHOULD_NOT_BE_PASTED/);
+  const revision = buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2, uploadName: 'contract-pass2.md' });
   assert.match(revision, /that you produced in your own most recent message above in this conversation/);
-  assert.doesNotMatch(revision, /attached as/);
+  assert.match(revision, /attached as contract-pass2\.md/);
+  assert.match(revision, /rebuttals in the attached file/);
+  // If a caller somehow reaches buildPrompt with no uploadName at all (should not happen
+  // in real operation — the CLI requires --question-file for this mode), the reference
+  // is simply omitted rather than falling back to pasting context text.
+  assert.doesNotMatch(buildPrompt({ mode: 'plan-author', target: { canonicalUrl: 'https://github.com/o/r/issues/9' }, pass: 2 }), /attached as/);
   assert.match(buildPrompt({ mode: 'local', uploadName: 'local.diff' }), /only source for local-only state/);
 });
 
@@ -337,7 +348,14 @@ test('plan-author writes ready output atomically, reports blockers, and never pu
   const records = new Map();
   const store = memoryStore(records, '00000000-0000-4000-8000-000000000010');
   let observed;
-  const readyDriver = { async review(input) { observed = input; return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Complete plan\n\nSteps.\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/author' }; } };
+  let uploadedContentAtCallTime;
+  const readyDriver = { async review(input) {
+    observed = input;
+    // Read the upload's content NOW: it's a temp file cleaned up once run() returns, so
+    // it must be captured while still live, during the call itself.
+    uploadedContentAtCallTime = input.uploadPath ? await fs.readFile(input.uploadPath, 'utf8') : null;
+    return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Complete plan\n\nSteps.\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/author' };
+  } };
   const result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver: readyDriver });
   assert.equal(result.status, 'completed');
   assert.equal(result.plan_status, 'ready');
@@ -345,7 +363,11 @@ test('plan-author writes ready output atomically, reports blockers, and never pu
   assert.equal(result.blocker, null);
   assert.equal(result.requested_publication, false);
   assert.equal(observed.publish, false);
-  assert.equal(observed.uploadPath, undefined);
+  // The question file is uploaded (a pass-numbered copy, not the literal questionFile
+  // path — same convention as every other mode's own upload) rather than pasted, so
+  // the composer's typed prompt stays short regardless of the contract's size.
+  assert.equal(path.basename(observed.uploadPath), 'contract-pass1.md');
+  assert.equal(uploadedContentAtCallTime, 'delivery contract');
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Complete plan\n\nSteps.\n');
   assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp')), []);
 
@@ -373,9 +395,10 @@ test('invalid plan-author revisions preserve the last valid plan and keep the se
   const sessions = [];
   const driver = { async review(input) {
     sessions.push(input.session);
-    // No attachment: a revision is a follow-up message in the SAME conversation, not a
-    // re-supplied file.
-    assert.equal(input.uploadPath, undefined);
+    // The question file is uploaded fresh on every pass, including a revision — cheap
+    // (a file transfer, not retyped text), unlike the plan itself, which is never
+    // re-supplied since ChatGPT already wrote it in this same conversation.
+    assert.equal(path.basename(input.uploadPath), 'contract-pass1.md');
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/revision' };
   } };
   const result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', created.handle], { store, driver });
@@ -386,7 +409,7 @@ test('invalid plan-author revisions preserve the last valid plan and keep the se
   assert.ok(sessions[0]);
 });
 
-test('plan-author revisions reuse the conversation by session handle alone, without any attachment', async (t) => {
+test('plan-author revisions reuse the conversation by session handle alone, uploading a fresh copy of the question file each pass', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-passes-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const planFile = path.join(dir, 'canonical.md');
@@ -396,7 +419,7 @@ test('plan-author revisions reuse the conversation by session handle alone, with
   const store = memoryStore(records, '00000000-0000-4000-8000-000000000014');
   const calls = [];
   const driver = { async review(input) {
-    calls.push({ session: input.session?.handle ?? null, uploadPath: input.uploadPath ?? null });
+    calls.push({ session: input.session?.handle ?? null, uploadBasename: input.uploadPath ? path.basename(input.uploadPath) : null });
     const heading = calls.length === 1 ? 'Initial plan' : 'Replacement plan';
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# ${heading}\n${PLAN_END}`, conversationUrl: 'https://chatgpt.com/c/same' };
   } };
@@ -405,14 +428,17 @@ test('plan-author revisions reuse the conversation by session handle alone, with
   result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile, '--session', handle], { store, driver });
   assert.equal(result.session, handle);
   assert.equal(result.pass_number, 2);
+  // Same literal questionFile path both times, but a distinctly-pass-numbered upload copy
+  // each pass (never the same filename twice — matches every other mode's own upload
+  // convention, avoiding ChatGPT's own upload-UI collision-rename quirk).
   assert.deepEqual(calls, [
-    { session: null, uploadPath: null },
-    { session: handle, uploadPath: null },
+    { session: null, uploadBasename: 'contract-pass1.md' },
+    { session: handle, uploadBasename: 'contract-pass2.md' },
   ]);
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Replacement plan\n');
 });
 
-test('plan-author timeout resumes the same conversation on retry, without any attachment', async (t) => {
+test('plan-author timeout resumes the same conversation on retry, re-uploading the same-pass question file', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-timeout-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const planFile = path.join(dir, 'canonical.md');
@@ -428,7 +454,9 @@ test('plan-author timeout resumes the same conversation on retry, without any at
     calls += 1;
     if (calls === 1) throw timeout;
     assert.ok(input.session);
-    assert.equal(input.uploadPath, undefined);
+    // The retry never incremented passCount (the first attempt threw before completing),
+    // so it's still pass 1 -- and re-uploads that SAME pass's question file fresh.
+    assert.equal(path.basename(input.uploadPath), 'contract-pass1.md');
     return { responseText: `PLAN_STATUS: READY\n${PLAN_BEGIN}\n# Revised plan\n${PLAN_END}`, conversationUrl: timeout.conversationUrl };
   } };
   let result = await run(['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile], { store, driver });
