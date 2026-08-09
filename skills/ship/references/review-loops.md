@@ -117,6 +117,33 @@ its task notification; do not poll and do not start other review work meanwhile.
   Only after ruling out both (or after they fail to actually resolve it) does
   `SKILL.md`'s FULL STOP apply.
 
+- **Ad hoc consultation for a genuinely hard judgment call.** The two formal loops certify
+  a complete artifact against a verdict protocol — not the right tool for a single mid-cycle
+  question. When internal review (the risk-based budget in `per-issue-cycle.md` step 3, or
+  the coordinator's own judgment) genuinely cannot resolve a concrete tradeoff between two or
+  more approaches with no clear repo precedent — not a routine implementation choice, and not
+  a substitute for running that internal review first — the coordinator may ask ChatGPT one
+  self-contained question outside any pass-counted protocol:
+
+  1. By step 2.3, a ChatGPT conversation already exists for this unit (at minimum the
+     plan-review/plan-author session from 2.2) — always continue THAT conversation (or a
+     further-along code-review session), never open a new one, per "one unit, one ChatGPT
+     conversation" above.
+  2. Drive the existing tab directly (the same technique as the pass-cap and
+     stalled-generation procedures above). Frame it explicitly as an ad hoc consultation, not
+     a formal review — no `VERDICT:` line, just the concrete question, the specific approaches
+     under consideration, and why internal review didn't settle it.
+  3. **Verify the answer yourself before acting on it** — the same standing principle as every
+     formal finding, applied directly by the coordinator (read the real code/tests) since
+     there is no separate fact-check pass for an ad hoc exchange.
+  4. Record the question, the answer, and what was decided in the unit's ship-log entry under
+     "Decisions taken" (`per-issue-cycle.md` already asks for decisions made under ambiguity
+     there) — cite the conversation URL.
+
+  Never touches a pass counter (it isn't a `chatgpt-review plan`/`pr` CLI invocation) and is
+  coordinator-only, same as every other `chatgpt-review` touchpoint. One self-contained
+  question at a time, not an open-ended back-and-forth.
+
 ## Default plan loop — `plan-review-loop.workflow.mjs`
 
 ```

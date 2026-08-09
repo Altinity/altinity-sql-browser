@@ -137,6 +137,10 @@ this default beyond which Workflow script gets invoked — both are described th
   dropped: the default/code loops return `accepted` and `rejected` lists to record; the
   ChatGPT-author loop's rejections land as `## Review responses` entries in the plan
   itself, and a `needs_human` outcome there carries the round's raw `findings`.
+- Beyond the two formal loops, the coordinator may consult ChatGPT ad hoc for a
+  genuinely hard judgment call — never pass-counted (it isn't a `chatgpt-review`
+  invocation, so it doesn't conflict with the single-permitted-invocation rule above),
+  never a substitute for internal review; see `references/review-loops.md`.
 
 ### Output capture
 
