@@ -52,14 +52,35 @@ export async function connectToChrome(cdpUrl, importer = () => import('playwrigh
   }
 }
 
+// Sent at most once per waitForCompletion() call when generation has shown zero text
+// growth for noProgressStallMs while still "generating" — a live tool call stuck mid-turn
+// (observed repeatedly across issue #630, previously only recoverable by a human manually
+// clicking Stop and nudging the same conversation). Kept short and explicit so it reads
+// unambiguously as an automated recovery nudge, not a new question.
+export const RECOVERY_NUDGE = 'Please continue without further tool calls.';
+
 export class ChatGptBrowser {
-  constructor({ browser, stderr = process.stderr, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), stableMs = 7000, pollMs = 1000 }) {
+  constructor({
+    browser, stderr = process.stderr, now = Date.now,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    stableMs = 7000, pollMs = 1000,
+    // How long generation may show zero text growth while still "generating" before one
+    // automatic stop+nudge recovery attempt fires. 4 minutes is long enough that no normal
+    // slow-but-progressing tool call trips it, short enough to matter inside a 9-30 minute
+    // overall --timeout.
+    noProgressStallMs = 240_000,
+    // Throttle for onHeartbeat callbacks during waitForCompletion's poll loop — writing on
+    // every 1s poll would be excessive I/O for a call that can run 30 minutes.
+    heartbeatIntervalMs = 10_000,
+  }) {
     this.browser = browser;
     this.stderr = stderr;
     this.now = now;
     this.sleep = sleep;
     this.stableMs = stableMs;
     this.pollMs = pollMs;
+    this.noProgressStallMs = noProgressStallMs;
+    this.heartbeatIntervalMs = heartbeatIntervalMs;
   }
 
   async pageFor(session) {
@@ -84,17 +105,29 @@ export class ChatGptBrowser {
     return { page, checks: { cdp: true, login: true, composer: true, fileUpload: upload, predefinedModelAndEffort: true } };
   }
 
-  async review({ session, prompt, uploadPath, timeoutMs, target, publish, diagnosticsDir, mode }) {
+  async review({ session, prompt, uploadPath, timeoutMs, target, publish, diagnosticsDir, mode, onHeartbeat }) {
+    // ONE deadline for the whole call, not a separate independent worst-case allowance per
+    // phase. Before this, assertReady (~15s) + upload (~30s) + fillAndSend (up to 240s via
+    // its own retry) + waitForPermanentConversationUrl (~15s) were ALL uncounted
+    // against the caller's own --timeout, so the real worst-case wall time was `timeoutMs +
+    // ~300s` — not `timeoutMs` — and a caller budgeting its own outer process-kill ceiling
+    // from `timeoutMs` alone (as this skill's own ship-integration does) could get SIGKILLed
+    // mid-poll with zero output ever flushed. Confirmed live: 6 real `chatgpt-review`
+    // invocations across issue #630 left nothing but their initial progress line in the
+    // caller's captured output file. Each setup phase below still gets its own short,
+    // reasonable per-phase ceiling (so a stuck composer fails fast rather than silently
+    // eating the whole budget) — Math.min caps it at whichever is sooner.
+    const deadline = this.now() + timeoutMs;
     const { page, reopened } = await this.pageFor(session);
     try {
-      await this.assertReady(page);
+      await this.assertReady(page, Math.min(this.now() + 15_000, deadline));
       const generationActive = await anyVisible(page, SELECTORS.stop);
       const currentTail = await this.latestAssistantText(page);
       const recordedFingerprint = session?.lastResponseFingerprint ?? null;
       const hasUncollected = generationActive || (Boolean(currentTail) && fingerprintText(currentTail) !== recordedFingerprint);
       if (session && hasUncollected) {
         this.stderr.write('Recovering an uncollected ChatGPT response...\n');
-        const responseText = await this.waitForCompletion(page, { before: null, timeoutMs, target, publish, mode });
+        const responseText = await this.waitForCompletion(page, { before: null, deadline, target, publish, mode, onHeartbeat });
         // Fingerprint the plain rendered tail, not responseText (which may now be the
         // upgraded Markdown from copyLatestAssistantMarkdown) — a future call's staleness
         // check compares against THIS stored value using latestAssistantText's same plain
@@ -102,12 +135,12 @@ export class ChatGptBrowser {
         // message would make every later resume spuriously look "uncollected" forever.
         return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: true, responseFingerprint: fingerprintText(await this.latestAssistantText(page)) };
       }
-      if (uploadPath) await this.upload(page, uploadPath);
+      if (uploadPath) await this.upload(page, uploadPath, Math.min(this.now() + 30_000, deadline));
       const before = currentTail;
-      await this.fillAndSend(page, prompt);
-      await this.waitForPermanentConversationUrl(page);
+      await this.fillAndSend(page, prompt, Math.min(this.now() + 242_000, deadline));
+      await this.waitForPermanentConversationUrl(page, Math.min(this.now() + 15_000, deadline));
       this.stderr.write('Waiting for ChatGPT response...\n');
-      const responseText = await this.waitForCompletion(page, { before, timeoutMs, target, publish, mode });
+      const responseText = await this.waitForCompletion(page, { before, deadline, target, publish, mode, onHeartbeat });
       return { responseText, conversationUrl: page.url(), reopened, predefinedModelAndEffort: true, recovered: false, responseFingerprint: fingerprintText(await this.latestAssistantText(page)) };
     } catch (error) {
       error.conversationUrl = page.url();
@@ -116,9 +149,8 @@ export class ChatGptBrowser {
     }
   }
 
-  async assertReady(page) {
+  async assertReady(page, deadline = this.now() + 15_000) {
     await page.waitForLoadState?.('domcontentloaded').catch(() => {});
-    const deadline = this.now() + 15_000;
     while (this.now() < deadline) {
       if (await anyVisible(page, SELECTORS.composer)) return;
       if (await anyVisible(page, SELECTORS.login)) throw new ReviewError('login_required', 'ChatGPT is not logged in in the connected Chrome profile');
@@ -127,39 +159,62 @@ export class ChatGptBrowser {
     throw new ReviewError('ui_incompatible', 'Could not find the ChatGPT composer; the UI may have changed');
   }
 
-  async upload(page, uploadPath) {
+  async upload(page, uploadPath, deadline = this.now() + 30_000) {
     const input = await firstExisting(page, SELECTORS.fileInput);
     if (!input) throw new ReviewError('ui_incompatible', 'ChatGPT file upload input was not found');
     await input.setInputFiles(uploadPath);
     if (page.getByText) {
       const attachment = page.getByText(path.basename(uploadPath), { exact: false }).last();
-      try { await attachment.waitFor({ state: 'visible', timeout: 30_000 }); }
+      try { await attachment.waitFor({ state: 'visible', timeout: Math.max(1000, deadline - this.now()) }); }
       catch { throw new ReviewError('ui_incompatible', 'ChatGPT did not confirm the requested file upload'); }
     }
   }
 
-  async fillAndSend(page, prompt) {
+  // Inserts `value` into `element` (a composer or similar contenteditable) via the real DOM,
+  // in-page, bypassing Playwright's own actionability-checked .fill(). Measured live against
+  // the production ChatGPT composer: an 80KB insertText call lands in ~50ms regardless of
+  // size — .fill()'s slowness (below) is not about text volume. Returns false (never throws)
+  // on anything that goes wrong, so callers can fall back rather than fail outright: no real
+  // DOM (e.g. this skill's own mocked test harness), the element vanishing, or any other
+  // in-page error.
+  async insertNatively(element, value) {
+    try {
+      await element.click({ timeout: 5000 });
+      await element.evaluate((el, text) => {
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+        document.execCommand('insertText', false, text);
+        el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      }, value);
+      return true;
+    } catch { return false; }
+  }
+
+  async fillAndSend(page, prompt, deadline = this.now() + 242_000) {
     const composer = await firstVisible(page, SELECTORS.composer);
     if (!composer) throw new ReviewError('ui_incompatible', 'ChatGPT composer disappeared before submission');
-    // A large prompt (a full delivery contract plus accumulated review context can run
-    // tens of KB) reproducibly takes longer than Playwright's default 30s actionability
-    // wait for .fill() to insert into ChatGPT's rich-text composer — not a transient
-    // "busy" blip: three quick retries at the default timeout hit the identical timeout
-    // three times in a row (observed live, twice, on issue #585 phase 0's revision
-    // passes). Give the single attempt real headroom instead of retrying too fast to help.
-    let lastError;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try { await composer.fill(prompt, { timeout: 120_000 }); lastError = null; break; }
-      catch (error) { lastError = error; await this.sleep(2000); }
+    if (!(await this.insertNatively(composer, prompt))) {
+      // Fallback only: Playwright's own .fill() has been observed to still genuinely time
+      // out under real load even at 120s x 2 retries (issue #630, 246.9s elapsed, both
+      // attempts exhausted) — not a text-size effect (native insertion above is ~50ms
+      // regardless of size), most likely CPU contention from concurrent agents during a
+      // live /ship run. Bounded by whatever remains of the overall call's deadline, never an
+      // unconditional extra 240s tacked on top of it.
+      let lastError;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const remaining = Math.max(1000, deadline - this.now());
+        try { await composer.fill(prompt, { timeout: Math.min(remaining, 120_000) }); lastError = null; break; }
+        catch (error) { lastError = error; await this.sleep(Math.min(2000, Math.max(0, deadline - this.now()))); }
+      }
+      if (lastError) throw lastError;
     }
-    if (lastError) throw lastError;
     const send = await firstVisible(page, SELECTORS.send);
     if (send) await send.click();
     else await composer.press('Enter');
   }
 
-  async waitForPermanentConversationUrl(page) {
-    const deadline = this.now() + 15_000;
+  async waitForPermanentConversationUrl(page, deadline = this.now() + 15_000) {
     while (this.now() < deadline) {
       if (/^https:\/\/chatgpt\.com\/c\/(?!WEB:)[^/?#]+/i.test(page.url())) return true;
       await this.sleep(100);
@@ -203,11 +258,36 @@ export class ChatGptBrowser {
     } catch { return null; }
   }
 
-  async waitForCompletion(page, { before, timeoutMs, target, publish, mode }) {
+  // A single clipboard read can fail transiently (a permission race, one slow tick) — for
+  // every OTHER mode that's a soft quality loss (extraction regexes may miss a Markdown-
+  // formatted SHA/URL), but for plan-author it is FATAL: innerText can never contain the
+  // literal '#' parsePlanAuthorResponse's heading check requires, so a bare fallback is
+  // structurally guaranteed to fail that validation downstream in chatgpt-review.mjs's own
+  // run() — confirmed live: "The delimited plan is not complete Markdown with a heading"
+  // recurred 6 times across real issue #630/#585 invocations. Retrying a couple more times
+  // (each internally bounded to ~4s by copyLatestAssistantMarkdown's own race) is cheap
+  // insurance against surrendering to a fallback known to be doomed for this one mode.
+  async copyPreferredResponseText(page, mode) {
+    let markdown = await this.copyLatestAssistantMarkdown(page);
+    if (!markdown && mode === 'plan-author') {
+      for (let attempt = 0; attempt < 2 && !markdown; attempt += 1) {
+        await this.sleep(1000);
+        markdown = await this.copyLatestAssistantMarkdown(page);
+      }
+    }
+    return markdown;
+  }
+
+  async waitForCompletion(page, { before, timeoutMs, deadline, target, publish, mode, onHeartbeat }) {
+    // deadline (absolute, from review()'s unified budget) takes precedence; timeoutMs
+    // (relative, from callers/tests that predate the unified-budget fix) still works.
     const started = this.now();
+    const effectiveDeadline = deadline ?? (started + timeoutMs);
     let lastText = '';
     let stableSince = null;
     let streamRetries = 0;
+    let recoveryAttempted = false;
+    let lastHeartbeatAt = 0;
     // plan-author's protocol is a fixed-content island: once exactly one well-formed
     // PLAN_STATUS: READY/BLOCKED block appears, its content is final by construction
     // (parsePlanAuthorResponse requires exactly one delimiter pair) — anything ChatGPT
@@ -220,7 +300,7 @@ export class ChatGptBrowser {
     // already sitting in the DOM. For plan-author only, treat a validated match as done
     // immediately, without waiting for `generating` to clear.
     let planAuthorPendingConfirm = false;
-    while (this.now() - started < timeoutMs) {
+    while (this.now() < effectiveDeadline) {
       const streamError = await firstVisible(page, SELECTORS.streamError);
       const retry = streamError ? await firstVisible(page, SELECTORS.streamRetry) : null;
       if (retry) {
@@ -264,7 +344,7 @@ export class ChatGptBrowser {
           // validate against the authoritative clipboard-copied Markdown (innerText can
           // strip literal '#' heading syntax the parser's heading check requires) before
           // trusting it enough to return early while still generating.
-          const markdown = await this.copyLatestAssistantMarkdown(page);
+          const markdown = await this.copyPreferredResponseText(page, mode);
           if (markdown && hasCompletePlanAuthorProtocol(markdown)) return markdown;
           if (!generating) return markdown || text; // clipboard read failed, but the turn is genuinely done anyway
           // Clipboard copy disagreed while still generating (e.g. mid-stream race on a
@@ -279,9 +359,40 @@ export class ChatGptBrowser {
       }
       if (text && text === lastText) stableSince ??= this.now();
       else { lastText = text; stableSince = text ? this.now() : null; }
+      // One automatic stop+nudge recovery attempt if generation has shown ZERO text growth
+      // for noProgressStallMs while still "generating" — a live tool call stuck mid-turn.
+      // waitForCompletion's own DOM polling has no way to distinguish this from a slow-but-
+      // progressing tool call except elapsed time; previously this required a human to
+      // notice and manually intervene (documented in skills/ship/references/review-loops.md
+      // as a recurring, purely manual procedure across issue #630). Capped at one attempt
+      // per call so a conversation that is stuck for some other reason still times out
+      // normally instead of nudging forever.
+      if (!recoveryAttempted && generating && text && stableSince !== null && this.now() - stableSince >= this.noProgressStallMs) {
+        recoveryAttempted = true;
+        this.stderr.write(`No response growth for ${Math.round(this.noProgressStallMs / 1000)}s while ChatGPT is still "generating" — attempting one automatic stop+nudge recovery...\n`);
+        const stop = await firstVisible(page, SELECTORS.stop);
+        if (stop) await stop.click().catch(() => {});
+        await this.sleep(1000);
+        const composer = await firstVisible(page, SELECTORS.composer);
+        if (composer && (await this.insertNatively(composer, RECOVERY_NUDGE))) {
+          const send = await firstVisible(page, SELECTORS.send);
+          if (send) await send.click(); else await composer.press('Enter');
+        }
+        lastText = '';
+        stableSince = null;
+        planAuthorPendingConfirm = false;
+        await this.sleep(this.pollMs);
+        continue;
+      }
       if (text && !generating && stableSince !== null && this.now() - stableSince >= this.stableMs) {
-        const markdown = await this.copyLatestAssistantMarkdown(page);
+        const markdown = await this.copyPreferredResponseText(page, mode);
         return markdown || text;
+      }
+      if (onHeartbeat && this.now() - lastHeartbeatAt >= this.heartbeatIntervalMs) {
+        lastHeartbeatAt = this.now();
+        // Promise.resolve(...) tolerates a synchronous (non-Promise-returning) callback —
+        // calling .catch() directly on its return value would throw on undefined.
+        await Promise.resolve(onHeartbeat({ elapsedMs: this.now() - started, generating, textLength: text.length || lastText.length, recoveryAttempted })).catch(() => {});
       }
       await this.sleep(this.pollMs);
     }

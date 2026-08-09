@@ -164,6 +164,30 @@ test('state records are permission restricted, atomic, indexed, and sanitized', 
   assert.equal(defaultStateDir({ XDG_STATE_HOME: '/state' }, 'linux', '/u'), '/state/chatgpt-review');
 });
 
+test('heartbeat snapshots are permission-restricted, atomic, and separate from the durable session record', async (t) => {
+  // A process killed externally with zero stdout ever flushed (confirmed live 6 times
+  // across issue #630 — see browser.mjs's review() comment) still leaves this behind: was
+  // it alive, still generating, how much text had it seen. Written to its own directory,
+  // not the session record itself, since this is transient run state, not durable identity.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-review-heartbeat-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = new SessionStore(dir);
+  const record = await store.create({ mode: 'pr', targetIdentity: 'pr:o/r#1' });
+  await store.writeHeartbeat(record.handle, { elapsedMs: 12_345, generating: true, textLength: 40, recoveryAttempted: false });
+  const heartbeatPath = path.join(dir, 'heartbeat', `${record.handle}.json`);
+  const saved = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+  assert.equal(saved.handle, record.handle);
+  assert.equal(saved.elapsedMs, 12_345);
+  assert.equal(saved.generating, true);
+  assert.ok(saved.updatedAt);
+  assert.equal((await fs.stat(heartbeatPath)).mode & 0o777, 0o600);
+  assert.deepEqual((await fs.readdir(path.join(dir, 'heartbeat'))).filter((name) => name.endsWith('.tmp')), []);
+  // A second write overwrites in place — only the latest snapshot matters, not a growing log.
+  await store.writeHeartbeat(record.handle, { elapsedMs: 99_999, generating: false, textLength: 400, recoveryAttempted: true });
+  assert.equal(JSON.parse(await fs.readFile(heartbeatPath, 'utf8')).elapsedMs, 99_999);
+  await assert.rejects(() => store.writeHeartbeat('../bad', {}), CliError);
+});
+
 test('output schema is stable and statuses map to distinct exit codes', () => {
   const doc = resultDocument({ status: 'completed', response_text: 'ok' });
   assert.deepEqual(Object.keys(doc), ['status', 'response_text', 'session', 'conversation_url', 'elapsed_seconds', 'pass_number', 'requested_publication', 'reported_reviewed_sha', 'reported_github_comment_url', 'plan_status', 'plan_file', 'blocker', 'error']);
