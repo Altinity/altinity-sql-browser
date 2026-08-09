@@ -17,13 +17,14 @@ if (!runArgs || !runArgs.issueUrl || !runArgs.planFile || !runArgs.contextFile) 
 
 const AUTHOR_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['completed', 'planStatus', 'session', 'conversationUrl', 'blocker'],
+  required: ['completed', 'planStatus', 'session', 'conversationUrl', 'blocker', 'lastResponsePreview'],
   properties: {
     completed: { type: 'boolean' },
     planStatus: { type: 'string', enum: ['READY', 'BLOCKED', 'INVALID'] },
     session: { type: ['string', 'null'] },
     conversationUrl: { type: ['string', 'null'] },
     blocker: { type: ['string', 'null'] },
+    lastResponsePreview: { type: ['string', 'null'], description: 'if completed=false, the last ~500 chars of the FINAL attempt\'s response_text (even if empty/partial) — diagnostic only, so a future incomplete-with-real-content-present case (observed once on #630 phase 8, never root-caused) is easier to tell apart from a genuinely empty/stuck generation without re-deriving it from scratch. null when completed=true.' },
   },
 }
 const REVIEW_SCHEMA = {
@@ -55,13 +56,13 @@ for (let pass = 1; pass <= 5; pass++) {
   const authored = await agent(
     'Run the private ChatGPT plan-author command below in Bash IN THE FOREGROUND with the Bash timeout set to 580000, redirect stdout to a JSON file under $TMPDIR, and never use run_in_background:\n\n' +
     `node skills/chatgpt-review/scripts/chatgpt-review.mjs plan-author ${shellQuote(runArgs.issueUrl)} --output-file ${shellQuote(runArgs.planFile)} --question-file ${shellQuote(authorContextFile)} --timeout 540${sessionFlag}\n\n` +
-    'Read the JSON. A complete result has status=completed and plan_status=ready or blocked. For timed_out, rate_limited, invalid_response, or any other incomplete result, retry the same command with --session from the JSON for up to 4 total attempts; wait 90 seconds before a rate_limited retry using a small-increment loop. Never start a new conversation after a session handle exists. Map the last JSON to the schema: completed=true only for a complete ready/blocked protocol; planStatus from plan_status uppercased, otherwise INVALID; retain session, conversation_url, and blocker. The command is private and must never receive publication flags. ' + RUNNER_BOUNDARY,
+    'Read the JSON. A complete result has status=completed and plan_status=ready or blocked. For timed_out, rate_limited, invalid_response, or any other incomplete result, retry the same command with --session from the JSON for up to 4 total attempts; wait 90 seconds before a rate_limited retry using a small-increment loop. Never start a new conversation after a session handle exists. Map the last JSON to the schema: completed=true only for a complete ready/blocked protocol; planStatus from plan_status uppercased, otherwise INVALID; retain session, conversation_url, and blocker; lastResponsePreview = the last ~500 characters of the FINAL attempt\'s response_text field (even if it looks empty, partial, or truncated) when completed=false, otherwise null — this is diagnostic only, to help a future incomplete-with-real-content-present case get root-caused instead of just re-observed. The command is private and must never receive publication flags. ' + RUNNER_BOUNDARY,
     { label: `author plan ${pass}`, phase: 'Author', schema: AUTHOR_SCHEMA, model: 'sonnet' },
   )
   if (!authored) return { status: 'error', reason: 'plan-author runner agent died', pass, session, conversationUrl }
   session = authored.session ?? session
   conversationUrl = authored.conversationUrl ?? conversationUrl
-  if (!authored.completed) return { status: 'needs_human', reason: 'plan authoring remained incomplete after retries', pass, session, conversationUrl }
+  if (!authored.completed) return { status: 'needs_human', reason: 'plan authoring remained incomplete after retries', pass, session, conversationUrl, lastResponsePreview: authored.lastResponsePreview }
   if (authored.planStatus === 'BLOCKED') {
     return { status: 'blocked', reason: authored.blocker ?? 'ChatGPT identified an unrecorded decision', pass, session, conversationUrl }
   }

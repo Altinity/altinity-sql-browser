@@ -2,15 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseShipInvocation } from '../references/parse-invocation.mjs';
 
-test('existing /ship invocations retain the fable planner default', () => {
-  assert.deepEqual(parseShipInvocation('/ship 447'), { scope: '447', planner: 'fable' });
-  assert.deepEqual(parseShipInvocation('447.2 unattended'), { scope: '447.2', planner: 'fable' });
-  assert.deepEqual(parseShipInvocation('/ship 424,425'), { scope: '424,425', planner: 'fable' });
+test('existing /ship invocations default to the ChatGPT planner', () => {
+  assert.deepEqual(parseShipInvocation('/ship 447'), { scope: '447', planner: 'chatgpt' });
+  assert.deepEqual(parseShipInvocation('447.2 unattended'), { scope: '447.2', planner: 'chatgpt' });
+  assert.deepEqual(parseShipInvocation('/ship 424,425'), { scope: '424,425', planner: 'chatgpt' });
 });
 
-test('the ChatGPT planner is selected explicitly', () => {
-  assert.deepEqual(parseShipInvocation('/ship 447 --planner chatgpt'), { scope: '447', planner: 'chatgpt' });
-  assert.deepEqual(parseShipInvocation('447 --planner fable'), { scope: '447', planner: 'fable' });
+test('the Fable planner is selected explicitly (opt-out from the ChatGPT default)', () => {
+  assert.deepEqual(parseShipInvocation('/ship 447 --planner fable'), { scope: '447', planner: 'fable' });
+  assert.deepEqual(parseShipInvocation('447 --planner chatgpt'), { scope: '447', planner: 'chatgpt' });
 });
 
 test('invalid planner and scope arguments fail closed', () => {

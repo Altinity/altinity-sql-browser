@@ -91,6 +91,21 @@ repo; when one bites anyway, update this file in the same change.
 - A stale server already serving `dist/` picks up a fresh build per request — usually
   no restart is needed at all.
 
+## Architecture guards (`build/check-boundaries.mjs`)
+
+- A prefilter gating an expensive real-parser check (`findModuleSpecifiers`) must be
+  escape-aware (`mightReferencePackage`-style: any backslash routes the file through
+  the real parser) — a bare `source.includes(name)` prefilter silently skips the
+  parser for an escaped specifier that decodes to the same banned name. This recurred
+  at least 4 times across issue #630, twice on the *same* guard within one phase:
+  fixing the drift (production and its test mirror sharing one prefilter helper) is a
+  different fix from that shared helper actually being sound — don't conflate the two.
+- Any check comparing a resolved filesystem path against a forbidden directory prefix
+  must canonicalize with `fs.realpathSync` first: `node_modules/<workspace-package>`
+  is a real symlink (`package-lock.json`'s `"link": true` entries confirm which), and
+  a relative import routed through it resolves to a path that never matches the
+  forbidden prefix lexically even though it's the same file on disk.
+
 ## Issue and phase state
 
 - PR titles with phase counts (`(2/3)`) go stale when a phase count is re-scoped
