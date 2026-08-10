@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { ChatGptBrowser, ReviewError, RECOVERY_NUDGE, SELECTORS, classifyAlertText, classifyPermission, connectToChrome, fingerprintText } from '../scripts/lib/browser.mjs';
+
+const BROWSER_SOURCE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'browser.mjs');
 
 class Element {
   constructor({ text = '', visible = true, onClick, nested = {}, evaluate } = {}) { this.text = text; this.visible = visible; this.onClick = onClick; this.nested = nested; this._evaluate = evaluate; }
@@ -643,4 +648,39 @@ test('doctor validates all non-sending browser capabilities', async () => {
 
 test('CDP connection failures are typed as Chrome unavailable', async () => {
   await assert.rejects(() => connectToChrome('http://127.0.0.1:9222', async () => ({ chromium: { connectOverCDP: async () => { throw new Error('down'); } } })), (error) => error.status === 'chrome_unavailable');
+});
+
+test('SELECTORS.responseActions is the scoped accessible-group selector, not the stale/duplicate button-row selector', () => {
+  // Regression for a bug where SELECTORS defined `responseActions` TWICE in the object
+  // literal — a later duplicate key silently overwrites the earlier one with no error, no
+  // lint warning. copyLatestAssistantMarkdown() needs the properly-scoped accessible-group
+  // selector (the assistant turn's OWN action row, distinct from the user turn's "Your
+  // message actions" group); the shadowing definition was a page-wide button selector that
+  // was both wrong for that lookup (a locator().locator() search for a button selector
+  // INSIDE a button element never matches) and stale (ChatGPT's current UI has zero
+  // "Good response"/"Bad response" buttons at all). Asserting the runtime VALUE directly
+  // (independent of the source-text duplicate-key guard below) is what would have caught
+  // this bug immediately.
+  assert.deepEqual(SELECTORS.responseActions, ['[role="group"][aria-label="Response actions" i]']);
+});
+
+test('the SELECTORS object literal source has no duplicate top-level keys', async () => {
+  // A duplicate key in a JS object literal is not a SyntaxError and triggers no runtime
+  // warning — the second definition just silently wins. This project runs no ESLint (no
+  // config found anywhere in the repo, so no-dupe-keys or equivalent is not available to
+  // catch this class of bug), so guard it here by parsing the actual SELECTORS source text
+  // and asserting every top-level key name appears exactly once — independent of whichever
+  // value the constant happens to hold right now, so this can't become self-referentially
+  // vacuous the way the mock-based tests above are.
+  const source = await fs.readFile(BROWSER_SOURCE_PATH, 'utf8');
+  const start = source.indexOf('export const SELECTORS = Object.freeze({');
+  assert.ok(start >= 0, 'expected to find the `export const SELECTORS = Object.freeze({` literal in browser.mjs');
+  const end = source.indexOf('\n});', start);
+  assert.ok(end > start, 'expected to find the closing `});` for the SELECTORS object literal');
+  const block = source.slice(start, end);
+  const keys = [...block.matchAll(/^ {2}(\w+):/gm)].map((match) => match[1]);
+  assert.ok(keys.length > 5, `expected to have parsed multiple SELECTORS keys, got ${keys.length} — the extraction regex may be broken`);
+  const seen = new Set();
+  const duplicates = keys.filter((key) => (seen.has(key) ? true : (seen.add(key), false)));
+  assert.deepEqual(duplicates, [], `SELECTORS source defines duplicate top-level key(s): ${duplicates.join(', ')} — a later duplicate silently shadows the earlier definition with no error`);
 });
