@@ -54,15 +54,44 @@ export function buildPrompt({ mode, target, context = '', publish = false, pass 
 }
 
 export function extractReportedMetadata(text) {
-  const shaPatterns = [
-    /\bpass[-\s]?\d+\s+reviewed\s+(?:head(?:\s+sha)?|sha)\s*:\s*`?([0-9a-f]{40})\b/i,
-    /\b(?:current|new|updated|latest)\s+(?:reviewed\s+)?(?:head(?:\s+sha)?|sha)\s*:\s*`?([0-9a-f]{40})\b/i,
-    /^(?!\s*(?:previous(?:ly)?|prior|old|earlier)\b).*?\breviewed\s+(?:head(?:\s+sha)?|sha)\s*:\s*`?([0-9a-f]{40})\b/im,
-  ];
-  const labelledSha = shaPatterns
-    .map((pattern) => text.match(pattern)?.[1])
-    .find(Boolean);
-  const sha = (labelledSha ?? text.match(/\b[0-9a-f]{40}\b/i)?.[0])?.toLowerCase() ?? null;
+  // Issue #669 (plus a related word-order variant found live while fixing it) —
+  // ChatGPT's own phrasing for "which SHA did I just review" varies more than a
+  // small, fixed set of regexes can keep up with word-for-word. Real observed
+  // variants from actual /ship runs: "Pass-2 reviewed head: X" (pass-N before
+  // "reviewed"), "Reviewed pass-3 head: X" (pass-N between "reviewed" and
+  // "head"), either sometimes wrapped in Markdown emphasis ("**`X`**") between
+  // the label's colon and the backtick. Chasing each newly observed phrasing
+  // with one more regex is the same trap this project has already named
+  // elsewhere (build/lib/check-legacy-owners.mjs's #642 review-pass-1 comment,
+  // about hand-chasing trivia code points instead of matching what the grammar
+  // actually allows): every fix closes the one case it was written for and
+  // leaves the next phrasing variant open. Instead, find EVERY "[prefix] reviewed
+  // [pass-N] head/sha:" occurrence with one flexible pattern (word order and
+  // Markdown emphasis both tolerated), reject any whose OWN LINE also mentions a
+  // previous/prior/anchor/old/earlier qualifier (checked across the whole line,
+  // not only if that word happens to be first), and take the LAST surviving
+  // occurrence — every real multi-pass review observed states the earlier/anchor
+  // SHA before the current one, never after. Requiring the "reviewed ... head/
+  // sha:" label (rather than just scanning for the last bare 40-hex string in
+  // the whole text) still avoids being fooled by an unrelated commit SHA
+  // mentioned later in the same message for some other reason.
+  const OLD_QUALIFIER = /\b(?:previous(?:ly)?|prior|anchor|old|earlier)\b/i;
+  const labelledShaPattern = /\b(?:(?:current|new|updated|latest|pass[-\s]?\d+)\s+)?reviewed\s+(?:pass[-\s]?\d+\s+)?(?:head(?:\s+sha)?|sha)\s*:[\s*_]*`?([0-9a-f]{40})\b/gi;
+  const candidates = [...text.matchAll(labelledShaPattern)].filter((match) => {
+    // Only the text BEFORE the match, back to the start of its own line — never
+    // after. A qualifier describing THIS SHA always precedes it ("Previously
+    // reviewed SHA:", "Reviewed anchor SHA:"); a paragraph frequently keeps
+    // multiple sentences on one physical line with no newline between them, and
+    // a later, unrelated sentence on that same line can independently mention
+    // one of these words (observed live: "...it is one commit ahead of the
+    // requested anchor." following a valid, unqualified match earlier in the
+    // same line) — including text after the match would reject a good match for
+    // a reason that has nothing to do with it.
+    const lineStart = text.lastIndexOf('\n', match.index) + 1;
+    const precedingText = text.slice(lineStart, match.index);
+    return !OLD_QUALIFIER.test(precedingText);
+  });
+  const sha = (candidates.at(-1)?.[1] ?? text.match(/\b[0-9a-f]{40}\b/i)?.[0])?.toLowerCase() ?? null;
   const commentUrl = text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#(?:issuecomment|pullrequestreview)-\d+/i)?.[0] ?? null;
   return { reportedReviewedSha: sha, reportedGithubCommentUrl: commentUrl };
 }
