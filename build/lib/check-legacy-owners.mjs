@@ -446,6 +446,199 @@ export function findModuleSpecifiers(source, filename) {
   });
 }
 
+// ── Issue #642 — fail-closed dynamic-import classification ──────────────────
+//
+// `findModuleSpecifiers` above (and `findDeepImportSpecifiers`/
+// `findPackageImportUsages` before it) all share the same accepted
+// convention: a dynamic `import(...)` call whose first argument is not a
+// plain string/no-substitution-template literal contributes NOTHING to their
+// result — `specText`/`deepSpecifierText`/`isTargetSpecifier` all return
+// `null`/`false` for that shape, and the caller's `if (spec !== null)
+// push(...)` guard then silently drops it. That is the correct contract for
+// those checks (a computed dynamic import naming a package/deep-subpath
+// cannot be proven to reach that package, so it cannot be proven to violate
+// THEIR rule either) but it is exactly the wrong contract for the generic
+// `RULES` boundary in `build/check-boundaries.mjs`: that rule's whole point
+// is that an import whose target cannot be statically determined must fail,
+// not fall through as if it were absent. `findDynamicImportUsages` is a
+// SEPARATE entry point (never a modification of the four existing dynamic-
+// import branches above) that reports a discriminated union for every
+// dynamic-import call expression AND every TypeScript inline import-type
+// expression (`type T = import('x').Foo`, `typeof import('x')` — its own
+// `ImportTypeNode` grammar production, textually indistinguishable from a
+// dynamic-import call at the `import(...)` shape `mightContainDynamicImport`
+// gates on, but a structurally different AST node a plain
+// `is.isCallExpression`-only walk never visits), so nothing is ever silently
+// dropped: a `{ kind: 'static', spec }` where the caller's existing
+// resolution logic can treat `spec` exactly like an ordinary import, and a
+// `{ kind: 'uncheckable' }` that must always become a violation in a
+// generic-guarded file, regardless of what its argument might eventually
+// resolve to. A concatenated expression such as `import('../' + name)` is
+// `uncheckable` in full — never reduced to the quoted `'../'` prefix, since
+// that half alone proves nothing about the complete runtime specifier.
+//
+// Review pass 1 finding: an earlier revision of this function walked ONLY
+// `is.isCallExpression` nodes, so `type T = import('../workspace/model.js').
+// Foo` — an `ImportTypeNode`, never a `CallExpression` — contributed nothing
+// at all, silently exempting it from the generic `RULES` loop and Rule B even
+// though `mightContainDynamicImport`'s gate (a pure `import\b...\(` trivia
+// scan, blind to which AST shape follows) correctly let the file through to
+// this function. The RETIRED textual `extractSpecifiers` regex this issue
+// replaces (`/\bimport\s*\(\s*[`'"]([^`'"]+)[`'"]/g`) could not distinguish a
+// call from an inline type expression either — both are just "the word
+// `import` then a paren then a quote" to a regex — so it matched and reported
+// this form too, meaning the AST-based replacement had strictly LESS coverage
+// than the regex it retired for this one shape. Every import-type expression
+// is now classified through the exact same discriminated union as a dynamic
+// call: its argument is a `LiteralTypeNode` wrapping a string/no-substitution-
+// template literal for the ordinary case (`{ kind: 'static', spec }`); any
+// other argument shape (e.g. a bare type reference like `import(Bar).Baz`,
+// which parses but can never resolve to a real module specifier) is
+// `{ kind: 'uncheckable' }`, matching this function's own fail-closed
+// contract rather than silently contributing nothing the way
+// `findModuleSpecifiers`'s sibling `'import-type'` branch deliberately does.
+//
+// `mightContainDynamicImport` is the paired conservative pre-filter (the same
+// accepted-risk shape as `mightReferencePackage`/`mightReferenceForbiddenRelativeDir`
+// above): it decides whether a file is even worth handing to the expensive
+// real-parser call, and it must never inspect or match the module-specifier
+// text itself — only whether an `import` keyword could be followed by legal
+// trivia (whitespace, a line comment, or a block comment) and then `(`.
+// Ambiguity always resolves to `true` (send it to the parser); this is
+// deliberately looser than a real grammar check (e.g. it does not verify
+// `import` is being used as a call rather than, say, `import.meta`) because
+// this gate's only job is to avoid the parser for source that PROVABLY has no
+// dynamic import at all — any narrower attempt to also decide the argument's
+// shape textually would reopen exactly the lexical-bypass risk this module's
+// header comment already warns about.
+
+/**
+ * Classify every dynamic `import(...)` call expression AND every TypeScript
+ * inline import-type expression (`type T = import('x').Foo`, `typeof
+ * import('x')`) in `source` — a real TypeScript parse, never a
+ * specifier-text regex. Every such node contributes exactly one result; there
+ * is no `if (spec !== null) push(...)` shape here that could silently drop an
+ * unsupported argument (contrast `findModuleSpecifiers` above, whose whole
+ * point is the opposite: silently skip what it cannot resolve, because ITS
+ * callers have no fail-closed contract to uphold). The two node shapes are
+ * structurally distinct — a `CallExpression` whose callee is the bare
+ * `import` keyword token, versus its own `ImportTypeNode` grammar production
+ * — so both are matched explicitly; classification of the specifier argument
+ * (a `LiteralTypeNode`'s wrapped literal for the import-type case, in place
+ * of a call's own first argument) is otherwise identical for both.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated (used only
+ *   for the virtual-file basename/grammar selection)
+ * @returns {({kind: 'static', spec: string, pos: number} | {kind: 'uncheckable', pos: number})[]}
+ *   `pos` is the matched node's own start offset (`node.getStart(sourceFile)`)
+ *   — a stable identity a caller MAY use to de-duplicate the same occurrence
+ *   across overlapping guarded-directory rules; it is not a line/column and
+ *   is not required in any user-facing diagnostic.
+ */
+export function findDynamicImportUsages(source, filename) {
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = [];
+    // Shared classification for both node shapes' specifier-bearing argument:
+    // a plain string/no-substitution-template literal is `static`; every
+    // other shape — a missing argument, an Identifier, a template literal
+    // WITH a substitution, a binary concatenation, a call, a conditional, a
+    // parenthesized/computed expression, a bare type reference (the
+    // import-type case's own analogous "not actually a literal" shape,
+    // e.g. `import(Bar).Baz`), or any future shape this list does not name —
+    // is uncheckable. There is deliberately no partial extraction attempt
+    // (e.g. reading a template literal's first quasi span): that is precisely
+    // the class of bug this issue exists to close (`import('../' + name)`
+    // must never be treated as `'../'`).
+    const classify = (arg, pos) => {
+      if (
+        arg
+        && (arg.kind === SyntaxKind.StringLiteral || arg.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
+      ) {
+        found.push({ kind: 'static', spec: arg.text, pos });
+      } else {
+        found.push({ kind: 'uncheckable', pos });
+      }
+    };
+    const walk = (node) => {
+      if (
+        is.isCallExpression(node)
+        && node.expression
+        && node.expression.kind === SyntaxKind.ImportKeyword
+      ) {
+        classify(node.arguments[0], node.getStart(sourceFile));
+      } else if (is.isImportTypeNode(node)) {
+        // `node.argument` is expected to be a `LiteralTypeNode` wrapping the
+        // actual string/template literal (`.literal`); any other type-node
+        // shape there (e.g. a `TypeReferenceNode` from `import(Bar).Baz`)
+        // leaves `.literal` undefined, which `classify` already treats as
+        // uncheckable — no separate shape check needed here.
+        classify(node.argument && node.argument.literal, node.getStart(sourceFile));
+      }
+      node.forEachChild(walk);
+    };
+    walk(sourceFile);
+    return found;
+  });
+}
+
+/**
+ * Cheap, deliberately over-inclusive textual pre-filter gating the expensive
+ * `findDynamicImportUsages` parse: true whenever `source` MIGHT contain a
+ * dynamic `import(...)` call — an `import` keyword, at a word boundary on
+ * both sides (so it never matches inside a longer identifier like
+ * `importFoo`), followed by any amount of ordinary whitespace/line-comment/
+ * block-comment trivia and then an opening `(`. Never inspects or matches
+ * anything about the argument/specifier — that is exclusively
+ * `findDynamicImportUsages`'s job. A false positive (e.g. the literal text
+ * `"import("` sitting inside an unrelated string literal) merely costs one
+ * wasted parse that then correctly reports no dynamic-import call expression
+ * at all; a false negative would silently exempt a real dynamic import from
+ * ever reaching the parser, which this gate must never do.
+ *
+ * Issue #642 review — an earlier revision of this gate hand-rolled its trivia
+ * character classes (`[ \t\r\n]` for whitespace, `[^\n]*(?:\n|$)` for a
+ * line-comment's extent) and only covered the ASCII subset of what
+ * ECMAScript's own grammar treats as WhiteSpace/LineTerminator: real
+ * LineTerminators also include a bare CR (not followed by LF), U+2028 LINE
+ * SEPARATOR, and U+2029 PARAGRAPH SEPARATOR, and real WhiteSpace also
+ * includes VT (`\v`), FF (`\f`), NBSP, ZWNBSP, and every other Unicode
+ * `Space_Separator` code point — none of which `[ \t\r\n]`/`[^\n]` covered,
+ * so a comment or run of whitespace built from one of them made the gate
+ * return `false` for source the real parser (correctly) sees as containing a
+ * dynamic import, exempting that file from ever reaching the fail-closed
+ * check this issue exists to add. Rather than chase individual code points
+ * one at a time (the same trap that produced the gap), this uses regex `\s`
+ * for the whitespace/line-terminator alternative: `\s` is not an
+ * approximation here, it is ECMA-262-DEFINED to match exactly the union of
+ * WhiteSpace and LineTerminator code points (`\t\n\v\f\r` plus the space
+ * character, NBSP, ZWNBSP/BOM, U+2028, U+2029, and the rest of Unicode
+ * `Space_Separator`) regardless of the `u`/`v` flag, so it is sound by
+ * construction rather than by enumeration. The line-comment alternative
+ * separately needs its own explicit LineTerminator class, spelled with
+ * literal `\u2028`/`\u2029` regex escapes (never raw characters, so the
+ * source itself stays free of invisible/hard-to-diff code points) — at both
+ * its "not part of the comment" and "ends the comment" positions. `\s`
+ * itself is unsuitable there because it also matches plain whitespace (an
+ * ordinary space does NOT end a `//` comment, only a real LineTerminator
+ * does), so reusing `\s` for that spot would have plain spaces terminate
+ * the comment early instead of extending it. (There is no cheaper
+ * alternative to a regex here: this module's own header comment already
+ * establishes that typescript@7 ships no in-process JS scanner/parser to
+ * delegate trivia-skipping to — every parse, including a trivia-only one,
+ * would mean spawning the native `tsc` child process this gate exists
+ * specifically to avoid paying for on every file.)
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+const DYNAMIC_IMPORT_GATE =
+  /\bimport\b(?:\s|\/\/[^\n\r\u2028\u2029]*(?:[\n\r\u2028\u2029]|$)|\/\*[\s\S]*?\*\/)*\(/;
+
+export function mightContainDynamicImport(source) {
+  return DYNAMIC_IMPORT_GATE.test(source);
+}
+
 /** Issue #630 Phase 8 (plan §19.1) — the plan's own generic vocabulary for
  *  `findRetiredTopLevelApiViolations` above, which already generalizes over
  *  an explicit `names` argument (it is not hardcoded to the Phase 7 retired

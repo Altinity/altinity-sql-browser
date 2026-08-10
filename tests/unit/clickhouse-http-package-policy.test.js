@@ -71,6 +71,8 @@ import {
   findTransportSurfaceOwnershipViolations,
   PHASE8_TRANSPORT_SURFACE_NAMES,
   PHASE8_PARSER_SURFACE_NAMES,
+  findDynamicImportUsages,
+  mightContainDynamicImport,
 } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -92,21 +94,27 @@ function collectFiles(dir) {
   return out;
 }
 
-// Same four-pattern specifier scan as build/check-boundaries.mjs's own
-// `extractSpecifiers` (static import/export-from, bare side-effect import,
-// dynamic import) — independently implemented, not imported (importing the
+// Same three-pattern STATIC specifier scan as build/check-boundaries.mjs's
+// own `extractStaticSpecifiers` (static import/export-from, bare side-effect
+// import) — independently implemented, not imported (importing the
 // production script would run its whole top-level check-and-exit routine
-// inside this test process). The dynamic-import pattern also accepts a
-// backtick no-substitution template literal, matching the production
-// scanner (only a dynamic `import(...)` call can syntactically take one).
+// inside this test process).
+//
+// Issue #642 — the fourth pattern this array used to carry (a dynamic
+// `import(...)` regex) is gone: it could only ever match an argument that
+// LOOKED like a complete literal, silently missing a computed dynamic import
+// entirely or, on a concatenated expression, matching just its quoted prefix.
+// Rule A/Rule B below now classify every dynamic import through the shared
+// real-parser helper `findDynamicImportUsages` instead (see
+// `dynamicImportUsagesFor` just below), the same fail-closed contract
+// `build/check-boundaries.mjs`'s own generic RULES pre-pass now uses.
 const SPECIFIER_PATTERNS = [
   /\bimport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bexport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bimport\s*['"]([^'"]+)['"]/g,
-  /\bimport\s*\(\s*[`'"]([^`'"]+)[`'"]/g,
 ];
 
-function extractSpecifiers(source) {
+function extractStaticSpecifiers(source) {
   const specs = [];
   for (const pattern of SPECIFIER_PATTERNS) {
     pattern.lastIndex = 0;
@@ -114,6 +122,17 @@ function extractSpecifiers(source) {
     while ((match = pattern.exec(source))) specs.push(match[1]);
   }
   return specs;
+}
+
+// Issue #642 — the shared parser-backed dynamic-import classification, gated
+// by the same conservative textual pre-filter production uses
+// (`mightContainDynamicImport`), for Rule A/Rule B only (Rule C/Rule D below
+// already have their own dedicated real-parser dynamic-import handling and
+// are untouched by this issue). Returns `[]` (never calls the parser at all)
+// when the file provably contains no `import(...)` call.
+function dynamicImportUsagesFor(file, text, relFile) {
+  if (!mightContainDynamicImport(text)) return [];
+  return findDynamicImportUsages(text, relFile);
 }
 
 // Mirrors production's `resolveRelative` (`build/check-boundaries.mjs`),
@@ -153,20 +172,43 @@ function collectEntries(dir, virtualFiles = []) {
 
 // Rule A mirror: relative specifiers resolving into a forbidden directory.
 // Review pass 1: this regex-based mirror now covers ONLY Rule A (production
-// still legitimately scans that one with `extractSpecifiers`, same as the
-// other internal src-layering rules) — Rule C/Guard 2 moved to its own
+// still legitimately scans that one with `extractStaticSpecifiers`, same as
+// the other internal src-layering rules) — Rule C/Guard 2 moved to its own
 // dedicated real-parser block in production and has its own parser-backed
 // mirror, `relativeViolationsParserBacked`, below.
+//
+// Issue #642 — Rule A now also classifies every dynamic `import(...)` call
+// through the shared real-parser helper: a `static` one is resolved and
+// checked exactly like an ordinary static import; an `uncheckable` one
+// (identifier, computed template, concatenation, conditional, or any other
+// non-literal argument shape) is an unconditional finding on its own,
+// independent of where it might have resolved. `packages/clickhouse-http/src`
+// is itself a generic-guarded tree, so this is the "package-source computed
+// dynamic import" fail-closed proof for Rule A/Rule B (see the Assumption in
+// the approved plan: Rule B needs no independent uncheckable detection of its
+// own, since Rule A's mirror over the same directory already covers it).
 function relativeViolations(dir, forbidden, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
     const text = source ?? readFileSync(file, 'utf8');
-    for (const spec of extractSpecifiers(text)) {
+    const relFile = relative(repoRoot, file).split(sep).join('/');
+    for (const spec of extractStaticSpecifiers(text)) {
       if (!spec.startsWith('.')) continue;
       const resolved = resolveRelative(file, spec);
       const relResolved = relative(repoRoot, resolved).split(sep).join('/');
       const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
-      if (hit) found.push(`${relative(repoRoot, file).split(sep).join('/')} → ${spec} (resolved: ${relResolved})`);
+      if (hit) found.push(`${relFile} → ${spec} (resolved: ${relResolved})`);
+    }
+    for (const usage of dynamicImportUsagesFor(file, text, relFile)) {
+      if (usage.kind === 'uncheckable') {
+        found.push(`${relFile} → dynamic import(...) (uncheckable)`);
+        continue;
+      }
+      if (!usage.spec.startsWith('.')) continue;
+      const resolved = resolveRelative(file, usage.spec);
+      const relResolved = relative(repoRoot, resolved).split(sep).join('/');
+      const hit = forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+      if (hit) found.push(`${relFile} → ${usage.spec} (resolved: ${relResolved})`);
     }
   }
   return found;
@@ -174,14 +216,14 @@ function relativeViolations(dir, forbidden, virtualFiles = []) {
 
 // Rule C mirror (Guard 2, review pass 1): parser-backed (`findModuleSpecifiers`),
 // matching production's dedicated Guard 2 block in `build/check-boundaries.mjs`
-// — NOT `relativeViolations`'s `extractSpecifiers` regex above, which stayed
-// vulnerable to a comment sitting between `import`/`export` and the
+// — NOT `relativeViolations`'s `extractStaticSpecifiers` regex above, which
+// stayed vulnerable to a comment sitting between `import`/`export` and the
 // specifier, or an escaped string-literal segment spelling out a
 // `packages/clickhouse-http` path without ever containing that raw
-// substring: `extractSpecifiers` captures the raw, still-escaped/comment-
-// adjacent source text, which then fails to resolve into the forbidden
-// directory, so the escape silently slipped this guard entirely before this
-// fix. Memoized the on-disk component the same way `deepImportViolations`
+// substring: `extractStaticSpecifiers` captures the raw, still-escaped/
+// comment-adjacent source text, which then fails to resolve into the
+// forbidden directory, so the escape silently slipped this guard entirely
+// before this fix. Memoized the on-disk component the same way `deepImportViolations`
 // above is: the real `src/` tree never changes within one test-file run, but
 // every Rule C test below re-passes `join(repoRoot, 'src')` with a DIFFERENT
 // single virtual sabotage probe appended, and re-spawning the real
@@ -240,13 +282,25 @@ function relativeViolationsParserBacked(dir, forbidden, virtualFiles = []) {
 // violation (empty bare-specifier allowlist) — this also naturally catches
 // a browser-root-literal import like `/src/net/ch-client.js`, which is not
 // a relative specifier either.
+//
+// Issue #642 — Rule B needs no independent `uncheckable` detection: package
+// source is ALSO Rule A's guarded directory, so a computed dynamic import
+// there already fails closed via `relativeViolations` above (see that
+// function's own comment). What Rule B still owns is exactly the bare-vs-
+// relative policy decision for a dynamic import whose specifier IS statically
+// known — reusing the SAME shared classifier, not a second hand-rolled regex.
 function bareSpecifierViolations(dir, virtualFiles = []) {
   const found = [];
   for (const [file, source] of collectEntries(dir, virtualFiles)) {
     const text = source ?? readFileSync(file, 'utf8');
-    for (const spec of extractSpecifiers(text)) {
+    const relFile = relative(repoRoot, file).split(sep).join('/');
+    for (const spec of extractStaticSpecifiers(text)) {
       if (spec.startsWith('.')) continue;
-      found.push(`${relative(repoRoot, file).split(sep).join('/')} → ${spec}`);
+      found.push(`${relFile} → ${spec}`);
+    }
+    for (const usage of dynamicImportUsagesFor(file, text, relFile)) {
+      if (usage.kind !== 'static' || usage.spec.startsWith('.')) continue;
+      found.push(`${relFile} → ${usage.spec}`);
     }
   }
   return found;
@@ -447,6 +501,110 @@ describe('Rule A — package source imports no SQL Browser src/** (relative)', (
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630__') && line.includes('src/application'))).toBe(true);
   });
+
+  // Issue #642 — dynamic import(...) fails closed for Rule A too: package
+  // source is itself a generic-guarded tree. All three statically analyzable
+  // delimiter forms remain reachable through the ordinary relative/forbidden
+  // policy; anything else is uncheckable regardless of where it might resolve.
+  it('flags a single-quoted dynamic import reaching into src/application (issue #642, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_single__.ts',
+        "export async function f() { await import('../../../src/application/does-not-exist.js'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_single__') && line.includes('src/application'))).toBe(true);
+  });
+
+  it('flags a double-quoted dynamic import reaching into src/application (issue #642, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_double__.ts',
+        'export async function f() { await import("../../../src/application/does-not-exist.js"); }\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_double__') && line.includes('src/application'))).toBe(true);
+  });
+
+  it('flags a no-substitution-template dynamic import reaching into src/application (issue #642, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_template__.ts',
+        'export async function f() { await import(`../../../src/application/does-not-exist.js`); }\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_template__') && line.includes('src/application'))).toBe(true);
+  });
+
+  // The exact package-source computed-dynamic-import sabotage the approved
+  // plan requires: this mirror must not silently accept a computed dynamic
+  // import under packages/clickhouse-http/src/**.
+  it('flags a computed template-literal dynamic import in package source as uncheckable (issue #642, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_computed__.ts',
+        'export async function f(name) { await import(`../../../src/application/${name}.js`); }\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_computed__') && line.includes('uncheckable'))).toBe(true);
+  });
+
+  it('flags an identifier-argument dynamic import in package source as uncheckable (issue #642, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_identifier__.ts',
+        'export async function f(spec) { await import(spec); }\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_identifier__') && line.includes('uncheckable'))).toBe(true);
+  });
+
+  it('flags a concatenated dynamic import in package source as uncheckable — never reduced to its quoted prefix (issue #642, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_concat__.ts',
+        "export async function f(name) { await import('../../../src/' + name); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_concat__') && line.includes('uncheckable'))).toBe(true);
+    expect(found.some((line) => line.includes('__boundary_probe_642_concat__') && line.includes("→ '../../../src/'"))).toBe(false);
+  });
+
+  it('does not flag a legal relative dynamic import within the package itself (issue #642)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_legal__.ts',
+        "export async function f() { await import('./client.js'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_legal__'))).toBe(false);
+  });
+
+  // Review pass 1 finding: an earlier revision of `findDynamicImportUsages`
+  // never walked `ImportTypeNode`, so this exact form (a structurally
+  // distinct grammar production, textually identical to a dynamic-import
+  // call at the `import(...)` shape `mightContainDynamicImport`'s gate
+  // matches) silently bypassed Rule A entirely — the RETIRED regex this issue
+  // replaces caught it (it can't distinguish a call from an import-type
+  // expression either), so the AST-based classifier regressed coverage for
+  // this one shape until this fix.
+  it('flags an inline import-type expression reaching into src/application (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype__.ts',
+        "export type Foo = import('../../../src/application/does-not-exist.js').Foo;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype__') && line.includes('src/application'))).toBe(true);
+  });
+
+  it('flags a typeof import-type expression reaching into src/application (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_typeof__.ts',
+        "export type Foo = typeof import('../../../src/application/does-not-exist.js');\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_typeof__') && line.includes('src/application'))).toBe(true);
+  });
+
+  it('flags a bare type-reference import-type argument as uncheckable (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_bare__.ts',
+        'type Bar = string;\nexport type Foo = import(Bar).Baz;\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_bare__') && line.includes('uncheckable'))).toBe(true);
+  });
+
+  it('does not flag a legal relative import-type expression within the package itself (issue #642 review)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_legal__.ts',
+        "export type Foo = import('./client.js').Foo;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_legal__'))).toBe(false);
+  });
 });
 
 describe('Rule B — package source has zero bare specifiers (empty allowlist)', () => {
@@ -473,6 +631,38 @@ describe('Rule B — package source has zero bare specifiers (empty allowlist)',
         "import { authedFetch } from '/src/net/ch-client.js';\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_630_literal__') && line.includes('/src/net/ch-client.js'))).toBe(true);
+  });
+
+  // Issue #642 — Rule B still owns the bare-vs-relative policy decision for a
+  // dynamic import whose specifier IS statically known (the old dynamic regex
+  // arm this replaces used to catch exactly this case).
+  it('flags a bare dynamic import of a package specifier (static form, issue #642, sabotage probe, not written to disk)', () => {
+    const found = bareSpecifierViolations(PACKAGE_SRC_DIR, [
+      ['packages/clickhouse-http/src/__boundary_probe_642_baredynamic__.ts',
+        "export async function f() { await import('left-pad'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_baredynamic__') && line.includes('left-pad'))).toBe(true);
+  });
+
+  it('does not flag a relative dynamic import (governed by Rule A instead, issue #642)', () => {
+    const found = bareSpecifierViolations(PACKAGE_SRC_DIR, [
+      ['packages/clickhouse-http/src/__boundary_probe_642_bare_relative__.ts',
+        "export async function f() { await import('./client.js'); }\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_bare_relative__'))).toBe(false);
+  });
+
+  // Review pass 1 finding: an earlier revision of `findDynamicImportUsages`
+  // never walked `ImportTypeNode`, so a bare-specifier import-type expression
+  // silently bypassed Rule B too — the same regression as Rule A's own
+  // import-type sabotage cases above, for the bare-vs-relative half instead
+  // of the forbidden-directory half.
+  it('flags a bare import-type expression naming a package specifier (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = bareSpecifierViolations(PACKAGE_SRC_DIR, [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_bare_pkg__.ts',
+        "export type Foo = import('left-pad').Foo;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_bare_pkg__') && line.includes('left-pad'))).toBe(true);
   });
 });
 
@@ -1198,6 +1388,31 @@ describe('build/check-boundaries.mjs still declares the Rules A-D this spec mirr
   it('declares Rule B (zero bare specifiers under packages/clickhouse-http/src)', () => {
     expect(checkerSource).toMatch(/PACKAGE_SRC_DIR/);
     expect(checkerSource).toMatch(/clickhouse-http has zero bare package imports/);
+  });
+
+  // Issue #642 — the generic RULES loop (which Rule A above lives inside)
+  // and Rule B must both classify dynamic imports through the shared
+  // parser-backed helper and its conservative gate, and the old dynamic-
+  // import regex arm that used to live in the checker's SPECIFIER_PATTERNS
+  // must be gone entirely — not just from Rule A/B's own blocks, but from the
+  // whole file (there is no legitimate reason for it to survive anywhere,
+  // since every dynamic import in a generic-guarded file is now classified
+  // by the real parser).
+  it('the generic RULES loop and Rule B fail closed on computed dynamic imports via the shared classifier, not a reintroduced regex (issue #642)', () => {
+    const importBlock = checkerSource.match(/import \{([^}]*)\} from '\.\/lib\/check-legacy-owners\.mjs';/);
+    expect(importBlock, 'check-legacy-owners import block missing from build/check-boundaries.mjs').not.toBeNull();
+    expect(importBlock[1]).toMatch(/\bfindDynamicImportUsages\b/);
+    expect(importBlock[1]).toMatch(/\bmightContainDynamicImport\b/);
+    expect(checkerSource).toMatch(/findDynamicImportUsages\(/);
+    expect(checkerSource).toMatch(/mightContainDynamicImport\(/);
+    expect(checkerSource).toMatch(/cannot be statically checked against the architecture boundary/);
+    // The renamed static-only scanner replaces the old `extractSpecifiers`
+    // name everywhere in production; the removed dynamic-import regex
+    // pattern (`[`'"]([^`'"]+)[`'"]` following an `import\s*\(` prefix) must
+    // not exist anywhere in the file, not merely be absent from Rule A/B.
+    expect(checkerSource).toMatch(/function extractStaticSpecifiers\(/);
+    expect(checkerSource).not.toMatch(/function extractSpecifiers\(/);
+    expect(checkerSource.includes("[`'\"]([^`'\"]+)[`'\"]")).toBe(false);
   });
 
   // Issue #630 Phase 8 (plan §21, Guard 2) broadened Rule C's forbidden

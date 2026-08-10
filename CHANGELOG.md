@@ -448,6 +448,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   throughout: `src/net/ch-client.ts` remains authoritative; no `src/**` code
   changed at any point across either amendment.
 
+### Fixed
+- **#642: `check:arch`'s generic layering rules (and Rule B) now fail closed
+  on a computed dynamic `import(...)` instead of silently skipping it.**
+  `extractSpecifiers` (renamed `extractStaticSpecifiers`) used to include a
+  dynamic-import regex arm that could only ever extract an argument that
+  already looked like a complete literal — a computed expression such as
+  `import('../' + name)` either matched nothing (exempting it from every
+  `RULES` boundary entirely) or risked being partially matched into just its
+  quoted prefix. Every dynamic import under a guarded directory is now
+  classified by a new shared, parser-backed helper
+  (`findDynamicImportUsages`/`mightContainDynamicImport`,
+  `build/lib/check-legacy-owners.mjs`): a single-quoted, double-quoted, or
+  no-substitution-template-literal argument remains statically analyzable and
+  flows through the same relative-resolution/forbidden-prefix logic as an
+  ordinary static import; every other argument shape (identifier, computed
+  template, concatenation, conditional, or otherwise) is an unconditional
+  violation. No product/runtime behavior changed — this hardens the
+  architecture gate's own soundness, not the policy it enforces.
+
 ## [0.7.3] - 2026-08-06
 
 ### Added
