@@ -12,7 +12,7 @@ class Element {
   async isVisible() { return this.visible; }
   async count() { return 1; }
   async innerText() { return this.text; }
-  async click() { this.onClick?.(this); }
+  async click(options) { this.clickOptions = options; this.onClick?.(this); }
   async fill(value) { this.value = value; }
   async press(value) { this.pressed = value; }
   async setInputFiles(value) { this.files = value; }
@@ -315,6 +315,27 @@ test('plan-author early-exit requires the clipboard-copied Markdown to confirm t
     () => driver.waitForCompletion(page, { before: '', timeoutMs: 20, publish: false, mode: 'plan-author' }),
     (error) => error.status === 'timed_out',
   );
+});
+
+test('copyLatestAssistantMarkdown clicks the copy button with force:true and a short bounded timeout, not a bare untimed click', async () => {
+  // Confirmed live: the real copy button resolves, is visible/enabled/stable, but a
+  // page-layout spacer element sits on top of it at the exact click point, so Playwright's
+  // default "receives pointer events" actionability check fails and retries for the FULL
+  // 30s default before throwing — silently swallowed by this method's own outer catch, so
+  // every caller fell back to innerText (which can never contain the literal Markdown this
+  // exists to fetch). force:true must be passed to skip exactly that check, and the timeout
+  // must stay well under Playwright's 30s default so a genuinely broken button still fails
+  // fast instead of letting copyPreferredResponseText's retries burn 90+ seconds.
+  const copyButton = new Element();
+  const responseGroup = new Element({ nested: { [SELECTORS.responseCopyButton[0]]: [copyButton] } });
+  const page = readyPage({
+    [SELECTORS.responseActions[0]]: [responseGroup],
+  }, { evaluate: () => 'PLAN_STATUS: READY\n<<<CHATGPT_PLAN_BEGIN>>>\n# Heading\n<<<CHATGPT_PLAN_END>>>' });
+  const driver = driverWith(page);
+  await driver.copyLatestAssistantMarkdown(page);
+  assert.equal(copyButton.clickOptions?.force, true, 'expected click({ force: true, ... }) to skip the pointer-interception actionability check');
+  assert.ok(typeof copyButton.clickOptions?.timeout === 'number' && copyButton.clickOptions.timeout <= 5000,
+    `expected a short bounded click timeout (<=5000ms), got ${copyButton.clickOptions?.timeout}`);
 });
 
 test('missing copy control, denied permission, or a hung clipboard read fall back to the rendered text without hanging', async () => {
