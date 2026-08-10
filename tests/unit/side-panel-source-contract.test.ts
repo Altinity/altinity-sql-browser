@@ -42,6 +42,20 @@ function violations(source: string, filename: string): SourceContractViolation[]
   return findSidePanelSourceContractViolations(source, filename);
 }
 
+// #643 review follow-up: mirrors `surface-lifecycle-arch.test.ts`'s own
+// `rulesOf` helper. Nearly every sabotage case below expects EXACTLY one
+// violation, so `rulesOf(...).toEqual([...])` is the single assertion that
+// pins both the count and the exact rule code(s) — no separate `.rule`
+// assertion needed. This matters because several of the guarded files
+// dispatch to MULTIPLE distinct rule codes from the same
+// `findSidePanelSourceContractViolations` call (`app-shell.ts` alone can
+// report `app-shell-panel-def`, `app-shell-panel-id`, or
+// `app-shell-host-accessor`) — a bug that swapped two of those rule-code
+// strings in the dispatch table would still pass a bare `.toHaveLength(1)`.
+function rulesOf(vs: SourceContractViolation[]): string[] {
+  return vs.map((v) => v.rule);
+}
+
 const WORKBENCH_SESSION = 'src/ui/workbench/workbench-session.ts';
 const APP_PREFERENCES = 'src/application/app-preferences.ts';
 const STATE = 'src/state.ts';
@@ -105,32 +119,32 @@ describe('required lexical sabotage matrix (both analyzers share this shape)', (
 
   it('a `//` comment mentioning a glob-like path does not hide the real violation that follows', () => {
     const source = '// src/core/**\nconst sidePanelViolation = 1;\n';
-    expect(violations(source, WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations(source, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
   });
 
   it('a legal block comment does not hide the real violation that follows', () => {
     const source = '/* a normal, legal block comment */\nconst sidePanelViolation = 1;\n';
-    expect(violations(source, WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations(source, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
   });
 
   it('comment-shaped text inside a string literal does not hide the real violation that follows', () => {
     const source = "const s = 'comment-shaped /* text';\nconst sidePanelViolation = 1;\n";
-    expect(violations(source, WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations(source, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
   });
 
   it('comment-shaped text inside a template literal does not hide the real violation that follows', () => {
     const source = 'const t = `comment-shaped /* text`;\nconst sidePanelViolation = 1;\n';
-    expect(violations(source, WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations(source, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
   });
 
   it('a parser-valid regex literal containing comment-shaped characters does not hide the real violation that follows', () => {
     const source = 'const r = /a\\/\\*b/;\nconst sidePanelViolation = 1;\n';
-    expect(violations(source, WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations(source, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
   });
 
   it('a real forbidden construct immediately following a lexical trap is still caught', () => {
     const source = '/*c*/const sidePanelViolation = 1;\n';
-    expect(violations(source, WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations(source, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
   });
 
   it('forbidden vocabulary appearing only in comments stays clean', () => {
@@ -154,7 +168,7 @@ describe('additional side-panel sabotage: workbench breadth', () => {
   ];
   for (const [label, code] of cases) {
     it(`${label} is a violation`, () => {
-      expect(violations(code, WORKBENCH_SESSION)).toHaveLength(1);
+      expect(rulesOf(violations(code, WORKBENCH_SESSION))).toEqual(['workbench-sidepanel-mention']);
     });
   }
 
@@ -172,10 +186,10 @@ describe('additional side-panel sabotage: workbench breadth', () => {
   });
 
   it('the history comparison rule supports both operand orders and every quote style', () => {
-    expect(violations("value === 'history';", WORKBENCH_SESSION)).toHaveLength(1);
-    expect(violations("'history' === value;", WORKBENCH_SESSION)).toHaveLength(1);
-    expect(violations('value === "history";', WORKBENCH_SESSION)).toHaveLength(1);
-    expect(violations('value === `history`;', WORKBENCH_SESSION)).toHaveLength(1);
+    expect(rulesOf(violations("value === 'history';", WORKBENCH_SESSION))).toEqual(['workbench-history-compare']);
+    expect(rulesOf(violations("'history' === value;", WORKBENCH_SESSION))).toEqual(['workbench-history-compare']);
+    expect(rulesOf(violations('value === "history";', WORKBENCH_SESSION))).toEqual(['workbench-history-compare']);
+    expect(rulesOf(violations('value === `history`;', WORKBENCH_SESSION))).toEqual(['workbench-history-compare']);
   });
 
   it('a string literal that merely LOOKS like the history comparison (not a real equality) stays clean', () => {
@@ -186,18 +200,18 @@ describe('additional side-panel sabotage: workbench breadth', () => {
 
 describe('additional side-panel sabotage: literal-value precision (app-preferences/state/app-shell ids)', () => {
   it('app-preferences.ts: an exact protected id literal fails, in every quote style, but a longer literal merely containing one stays clean', () => {
-    expect(violations('const id = "library";', APP_PREFERENCES)).toHaveLength(1);
-    expect(violations('const id = `library`;', APP_PREFERENCES)).toHaveLength(1);
+    expect(rulesOf(violations('const id = "library";', APP_PREFERENCES))).toEqual(['app-preferences-panel-id']);
+    expect(rulesOf(violations('const id = `library`;', APP_PREFERENCES))).toEqual(['app-preferences-panel-id']);
     expect(violations("const note = \"pick 'library' now\";", APP_PREFERENCES)).toEqual([]);
   });
 
   it('state.ts: an exact protected label literal fails, but a longer literal merely containing one stays clean', () => {
-    expect(violations('const label = "History";', STATE)).toHaveLength(1);
+    expect(rulesOf(violations('const label = "History";', STATE))).toEqual(['state-panel-label']);
     expect(violations("const note2 = \"old 'History' label\";", STATE)).toEqual([]);
   });
 
   it('app-shell.ts panel ids: an exact protected id literal fails, but a longer literal merely containing one stays clean', () => {
-    expect(violations('const panel = `databases`;', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('const panel = `databases`;', APP_SHELL))).toEqual(['app-shell-panel-id']);
     expect(violations("const note3 = \"pick 'databases'\";", APP_SHELL)).toEqual([]);
   });
 
@@ -211,24 +225,24 @@ describe('additional side-panel sabotage: literal-value precision (app-preferenc
   // `LiteralTypeNode`'s own literal) is caught on exactly the same terms as
   // an expression-position one.
   it('app-preferences.ts: a TYPE-position literal ("type Pref = \'library\';") still fails', () => {
-    expect(violations("type Pref = 'library';", APP_PREFERENCES)).toHaveLength(1);
+    expect(rulesOf(violations("type Pref = 'library';", APP_PREFERENCES))).toEqual(['app-preferences-panel-id']);
   });
 
   it('state.ts: a TYPE-position literal ("type X = \'History\';") still fails', () => {
-    expect(violations("type X = 'History';", STATE)).toHaveLength(1);
+    expect(rulesOf(violations("type X = 'History';", STATE))).toEqual(['state-panel-label']);
   });
 
   it('app-shell.ts panel ids: a TYPE-position literal ("type X = \'databases\';") still fails', () => {
-    expect(violations("type X = 'databases';", APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations("type X = 'databases';", APP_SHELL))).toEqual(['app-shell-panel-id']);
   });
 });
 
 describe('additional side-panel sabotage: app.ts comparison', () => {
   it('supports the full receiver chain, both operand orders, and every quote style', () => {
-    expect(violations("app.shell.sidePanel.value === 'saved';", APP)).toHaveLength(1);
-    expect(violations("'saved' === app.shell.sidePanel.value;", APP)).toHaveLength(1);
-    expect(violations('sidePanel.value === "history";', APP)).toHaveLength(1);
-    expect(violations('sidePanel.value === `library`;', APP)).toHaveLength(1);
+    expect(rulesOf(violations("app.shell.sidePanel.value === 'saved';", APP))).toEqual(['app-side-panel-comparison']);
+    expect(rulesOf(violations("'saved' === app.shell.sidePanel.value;", APP))).toEqual(['app-side-panel-comparison']);
+    expect(rulesOf(violations('sidePanel.value === "history";', APP))).toEqual(['app-side-panel-comparison']);
+    expect(rulesOf(violations('sidePanel.value === `library`;', APP))).toEqual(['app-side-panel-comparison']);
   });
 
   it('a string literal that merely LOOKS like the comparison (not a real equality) stays clean', () => {
@@ -239,11 +253,11 @@ describe('additional side-panel sabotage: app.ts comparison', () => {
 
 describe('additional side-panel sabotage: panel defs and hosts (app-shell.ts)', () => {
   it('a concrete panel-def identifier reference is a violation', () => {
-    expect(violations('const x = databasesPanelDef;', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('const x = databasesPanelDef;', APP_SHELL))).toEqual(['app-shell-panel-def']);
   });
 
   it('a concrete panel-def spelling in a real literal token is a violation', () => {
-    expect(violations('const x = "dashboardsPanelDef";', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('const x = "dashboardsPanelDef";', APP_SHELL))).toEqual(['app-shell-panel-def']);
   });
 
   it('a comment naming a panel-def symbol stays clean', () => {
@@ -251,27 +265,29 @@ describe('additional side-panel sabotage: panel defs and hosts (app-shell.ts)', 
   });
 
   it('dot host access is a violation', () => {
-    expect(violations('host.databasesHost;', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('host.databasesHost;', APP_SHELL))).toEqual(['app-shell-host-accessor']);
   });
 
   it('optional host access is a violation', () => {
-    expect(violations('host?.dashboardsHost;', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('host?.dashboardsHost;', APP_SHELL))).toEqual(['app-shell-host-accessor']);
   });
 
   it('destructuring a host name is a violation', () => {
-    expect(violations('const { databasesHost } = hosts;', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('const { databasesHost } = hosts;', APP_SHELL))).toEqual(['app-shell-host-accessor']);
   });
 
   it('string element access naming a host is a violation', () => {
-    expect(violations("host['dashboardsHost'];", APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations("host['dashboardsHost'];", APP_SHELL))).toEqual(['app-shell-host-accessor']);
   });
 
   it('template element access naming a host is a violation', () => {
-    expect(violations('host[`databasesHost`];', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('host[`databasesHost`];', APP_SHELL))).toEqual(['app-shell-host-accessor']);
   });
 
   it('a contiguous ".databasesHost" spelling inside a literal token is a violation (preserving today\'s broad substring behavior)', () => {
-    expect(violations('const msg = "call host.databasesHost please";', APP_SHELL)).toHaveLength(1);
+    expect(rulesOf(violations('const msg = "call host.databasesHost please";', APP_SHELL))).toEqual([
+      'app-shell-host-accessor',
+    ]);
   });
 
   it('a comment-only host spelling stays clean', () => {
@@ -291,7 +307,7 @@ describe('additional side-panel sabotage: side-panels.ts type aliases', () => {
   });
 
   it('a plain protected literal in a type alias fails', () => {
-    expect(violations("type Probe = 'library';", SIDE_PANELS_CORE)).toHaveLength(1);
+    expect(rulesOf(violations("type Probe = 'library';", SIDE_PANELS_CORE))).toEqual(['side-panels-type-alias']);
   });
 
   it('a file with zero type alias declarations at all is itself a violation (a total-removal regression must not read as clean)', () => {
