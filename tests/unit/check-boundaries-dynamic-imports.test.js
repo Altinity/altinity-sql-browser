@@ -169,3 +169,54 @@ describe('mightContainDynamicImport — conservative gate, never inspects the ar
     expect(findDynamicImportUsages('const s = "please call import(fn) sometime";\n', FILE)).toEqual([]);
   });
 });
+
+describe('mightContainDynamicImport — real ECMAScript trivia beyond ASCII space/tab/CR/LF', () => {
+  // Issue #642 review — the gate's original regex only recognized ASCII
+  // space/tab/CR/LF as whitespace and only `\n` as a line-comment
+  // terminator. Real ECMAScript trivia is broader: LineTerminator also
+  // includes a bare CR (not followed by LF), U+2028 LINE SEPARATOR, and
+  // U+2029 PARAGRAPH SEPARATOR; WhiteSpace also includes `\v`, `\f`, and
+  // other Unicode space separators. Each case below is a shape the real
+  // parser (`findDynamicImportUsages`) correctly classifies as a dynamic
+  // import — the gate must never return `false` for source it is fed,
+  // or `check-boundaries.mjs`'s pre-pass silently skips the parser call
+  // entirely and the file escapes the fail-closed check outright.
+
+  it('returns true for a bare-CR-terminated line comment between "import" and its call parens (not CRLF)', () => {
+    const src = 'export async function f(specifier) { await import //c\r(specifier); }\n';
+    expect(mightContainDynamicImport(src)).toBe(true);
+    // Cross-check against the real parser, matching this issue's own live
+    // reproduction: it must find a real (uncheckable) dynamic import here.
+    expect(findDynamicImportUsages(src, FILE)).toEqual([{ kind: 'uncheckable', pos: expect.any(Number) }]);
+  });
+
+  it('returns true for U+2028 LINE SEPARATOR as whitespace between "import" and its call parens', () => {
+    const src = `export async function f() { await import${'\u2028'}('../x.js'); }\n`;
+    expect(mightContainDynamicImport(src)).toBe(true);
+    expect(findDynamicImportUsages(src, FILE)).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('returns true for U+2029 PARAGRAPH SEPARATOR as whitespace between "import" and its call parens', () => {
+    const src = `export async function f() { await import${'\u2029'}('../x.js'); }\n`;
+    expect(mightContainDynamicImport(src)).toBe(true);
+    expect(findDynamicImportUsages(src, FILE)).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('returns true for a vertical tab (\\v) as whitespace between "import" and its call parens', () => {
+    const src = `export async function f() { await import${'\v'}('../x.js'); }\n`;
+    expect(mightContainDynamicImport(src)).toBe(true);
+    expect(findDynamicImportUsages(src, FILE)).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('returns true for a form feed (\\f) as whitespace between "import" and its call parens', () => {
+    const src = `export async function f() { await import${'\f'}('../x.js'); }\n`;
+    expect(mightContainDynamicImport(src)).toBe(true);
+    expect(findDynamicImportUsages(src, FILE)).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('still terminates a line comment at U+2028, not just \\n, so a call after it is still seen', () => {
+    const src = `export async function f() { await import //c${'\u2028'}('../x.js'); }\n`;
+    expect(mightContainDynamicImport(src)).toBe(true);
+    expect(findDynamicImportUsages(src, FILE)).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+});

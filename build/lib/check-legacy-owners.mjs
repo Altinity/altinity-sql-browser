@@ -553,10 +553,44 @@ export function findDynamicImportUsages(source, filename) {
  * at all; a false negative would silently exempt a real dynamic import from
  * ever reaching the parser, which this gate must never do.
  *
+ * Issue #642 review — an earlier revision of this gate hand-rolled its trivia
+ * character classes (`[ \t\r\n]` for whitespace, `[^\n]*(?:\n|$)` for a
+ * line-comment's extent) and only covered the ASCII subset of what
+ * ECMAScript's own grammar treats as WhiteSpace/LineTerminator: real
+ * LineTerminators also include a bare CR (not followed by LF), U+2028 LINE
+ * SEPARATOR, and U+2029 PARAGRAPH SEPARATOR, and real WhiteSpace also
+ * includes VT (`\v`), FF (`\f`), NBSP, ZWNBSP, and every other Unicode
+ * `Space_Separator` code point — none of which `[ \t\r\n]`/`[^\n]` covered,
+ * so a comment or run of whitespace built from one of them made the gate
+ * return `false` for source the real parser (correctly) sees as containing a
+ * dynamic import, exempting that file from ever reaching the fail-closed
+ * check this issue exists to add. Rather than chase individual code points
+ * one at a time (the same trap that produced the gap), this uses regex `\s`
+ * for the whitespace/line-terminator alternative: `\s` is not an
+ * approximation here, it is ECMA-262-DEFINED to match exactly the union of
+ * WhiteSpace and LineTerminator code points (`\t\n\v\f\r` plus the space
+ * character, NBSP, ZWNBSP/BOM, U+2028, U+2029, and the rest of Unicode
+ * `Space_Separator`) regardless of the `u`/`v` flag, so it is sound by
+ * construction rather than by enumeration. The line-comment alternative
+ * separately needs its own explicit LineTerminator class, spelled with
+ * literal `\u2028`/`\u2029` regex escapes (never raw characters, so the
+ * source itself stays free of invisible/hard-to-diff code points) — at both
+ * its "not part of the comment" and "ends the comment" positions. `\s`
+ * itself is unsuitable there because it also matches plain whitespace (an
+ * ordinary space does NOT end a `//` comment, only a real LineTerminator
+ * does), so reusing `\s` for that spot would have plain spaces terminate
+ * the comment early instead of extending it. (There is no cheaper
+ * alternative to a regex here: this module's own header comment already
+ * establishes that typescript@7 ships no in-process JS scanner/parser to
+ * delegate trivia-skipping to — every parse, including a trivia-only one,
+ * would mean spawning the native `tsc` child process this gate exists
+ * specifically to avoid paying for on every file.)
+ *
  * @param {string} source
  * @returns {boolean}
  */
-const DYNAMIC_IMPORT_GATE = /\bimport\b(?:[ \t\r\n]|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*\(/;
+const DYNAMIC_IMPORT_GATE =
+  /\bimport\b(?:\s|\/\/[^\n\r\u2028\u2029]*(?:[\n\r\u2028\u2029]|$)|\/\*[\s\S]*?\*\/)*\(/;
 
 export function mightContainDynamicImport(source) {
   return DYNAMIC_IMPORT_GATE.test(source);
