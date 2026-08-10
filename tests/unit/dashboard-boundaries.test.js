@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findDynamicImportUsages, mightContainDynamicImport } from '../../build/lib/check-legacy-owners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
@@ -78,6 +79,26 @@ function violations(dir, forbidden = FORBIDDEN, virtualFiles = []) {
       const hit = forbidden.find((f) => resolved === f || resolved.startsWith(`${f}/`));
       if (hit) found.push(`${relative(repoRoot, file)} → ${spec} (${hit})`);
     }
+    // Issue #642: combine the existing static relative-specifier path above
+    // with the shared parser-backed dynamic-import classifier — a `static`
+    // dynamic import is resolved and checked exactly like an ordinary
+    // relative import; an `uncheckable` one (identifier, computed template,
+    // concatenation, conditional, or any other non-literal argument shape)
+    // is an explicit, unconditional finding, independent of where it might
+    // have resolved.
+    const text = source ?? readFileSync(file, 'utf8');
+    if (!mightContainDynamicImport(text)) continue;
+    const relFile = relative(repoRoot, file).split('\\').join('/');
+    for (const usage of findDynamicImportUsages(text, relFile)) {
+      if (usage.kind === 'uncheckable') {
+        found.push(`${relative(repoRoot, file)} → dynamic import(...) (uncheckable)`);
+        continue;
+      }
+      if (!usage.spec.startsWith('.')) continue; // bare/package specifiers can't reach the forbidden dirs
+      const resolved = resolveSpec(file, usage.spec);
+      const hit = forbidden.find((f) => resolved === f || resolved.startsWith(`${f}/`));
+      if (hit) found.push(`${relative(repoRoot, file)} → ${usage.spec} (${hit})`);
+    }
   }
   return found;
 }
@@ -143,6 +164,120 @@ describe('dashboard dependency boundaries', () => {
     expect(entry, "build/check-boundaries.mjs has no `dir: 'src/core'` rule — #455 regressed").not.toBeNull();
     const forbidden = [...entry[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
     expect(forbidden.slice().sort()).toEqual(FORBIDDEN_CORE.slice().sort());
+  });
+
+  // Issue #642 — computed/non-static dynamic imports must fail closed under
+  // the same generic guarded-directory rule a static import already obeys.
+  // Every probe below is virtual (never written to disk), matching this
+  // file's own #554 convention.
+  describe('issue #642 — dynamic import(...) fails closed for src/core (mirrors build/check-boundaries.mjs)', () => {
+    it('flags a single-quoted dynamic import into src/workspace', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_single__.ts',
+          "export async function f() { await import('../workspace/does-not-exist.js'); }\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_single__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('flags a double-quoted dynamic import into src/workspace', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_double__.ts',
+          'export async function f() { await import("../workspace/does-not-exist.js"); }\n'],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_double__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('flags a no-substitution-template dynamic import into src/workspace', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_template__.ts',
+          'export async function f() { await import(`../workspace/does-not-exist.js`); }\n'],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_template__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('rejects a computed template-literal dynamic import as uncheckable', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_computed__.ts',
+          'export async function f(name) { await import(`../workspace/${name}.js`); }\n'],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_computed__') && line.includes('uncheckable'))).toBe(true);
+    });
+
+    it('rejects an identifier-argument dynamic import as uncheckable', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_identifier__.ts',
+          'export async function f(specifier) { await import(specifier); }\n'],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_identifier__') && line.includes('uncheckable'))).toBe(true);
+    });
+
+    it('rejects a concatenated dynamic import as uncheckable — never reduced to its quoted prefix', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_concat__.ts',
+          "export async function f(name) { await import('../workspace/' + name); }\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_concat__') && line.includes('uncheckable'))).toBe(true);
+      // Regression: must never resolve to (or report) the quoted prefix alone.
+      expect(found.some((line) => line.includes('__boundary_probe_642_concat__') && line.includes("→ '../workspace/'"))).toBe(false);
+    });
+
+    it('rejects a conditional-expression dynamic import as uncheckable', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_conditional__.ts',
+          "export async function f(cond) { await import(cond ? '../workspace/a.js' : '../workspace/b.js'); }\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_conditional__') && line.includes('uncheckable'))).toBe(true);
+    });
+
+    it('accepts a direct dynamic import resolving within an allowed layer', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_legal__.ts',
+          "export async function f() { await import('./format.js'); }\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_legal__'))).toBe(false);
+    });
+
+    // Regression coverage for the required static export forms — these must
+    // continue through the existing static fast path, not the new dynamic
+    // parser helper, and must still be rejected when they cross the boundary.
+    it('flags export * from crossing a forbidden boundary (regression)', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_exportstar__.ts', "export * from '../workspace/does-not-exist.js';\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_exportstar__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('flags export { name } from crossing a forbidden boundary (regression)', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_exportnamed__.ts', "export { nothing } from '../workspace/does-not-exist.js';\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_exportnamed__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('flags export * as ns from crossing a forbidden boundary (regression)', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_exportnamespace__.ts', "export * as ns from '../workspace/does-not-exist.js';\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_exportnamespace__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    // Drift bind: proves `build/check-boundaries.mjs` itself — not just this
+    // mirror — actually classifies dynamic imports through the shared
+    // real-parser helpers and no longer carries the old dynamic-import regex
+    // arm this issue retires.
+    it('build/check-boundaries.mjs classifies dynamic imports via the shared parser-backed helper and fails closed (#642)', () => {
+      const checkerSource = readFileSync(join(repoRoot, 'build/check-boundaries.mjs'), 'utf8');
+      const importBlock = checkerSource.match(/import \{([^}]*)\} from '\.\/lib\/check-legacy-owners\.mjs';/);
+      expect(importBlock, 'check-legacy-owners import block missing from build/check-boundaries.mjs').not.toBeNull();
+      expect(importBlock[1]).toMatch(/\bfindDynamicImportUsages\b/);
+      expect(importBlock[1]).toMatch(/\bmightContainDynamicImport\b/);
+      expect(checkerSource).toMatch(/findDynamicImportUsages\(/);
+      expect(checkerSource).toMatch(/mightContainDynamicImport\(/);
+      expect(checkerSource).toMatch(/cannot be statically checked against the architecture boundary/);
+      // The old dynamic-import regex arm (matching a `` ` ``/'/" -delimited
+      // argument directly against a `\bimport\s*\(` prefix) must be gone.
+      expect(checkerSource.includes("[`'\"]([^`'\"]+)[`'\"]")).toBe(false);
+    });
   });
 
   it('does not restore the retired saved-query repair planner or its vocabulary', () => {

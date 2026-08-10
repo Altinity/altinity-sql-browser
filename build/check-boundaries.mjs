@@ -14,21 +14,21 @@
 // second script.
 //
 // Hand-rolled regex scan for the internal src-layering rules (RULES below)
-// and Rule B's zero-bare-specifier check: the codebase has no exotic import
-// syntax there, so scanning for import/export specifiers is enough and keeps
-// those rules a zero-dependency, sub-second pretest step. The exceptions are
-// the former-owner rules, Rule C (the package relative-deep-import ban,
-// Guard 2 — issue #630 Phase 8, review pass 1), BOTH halves of the revised
-// package Rule D (the deep-import-subpath ban and the bare-specifier
-// name/shape check), and the `@clickhouse/client-web` reintroduction ban
-// (Guard 5) below — all of which need identifier/import-shape-level (not
-// specifier-text-level) detection and therefore delegate to a real
-// TypeScript parse in `build/lib/check-legacy-owners.mjs` — see that module
-// for why textual matching was retired there (issue #630 Phase 3), and why
-// the same real-parser mechanism (not a new hand-rolled scanner) was
-// required again for issue #630 Phase 5's revised Rule D, and again for
-// issue #630 Phase 8's Rule C/Guard 2 broadening and Guard 5: a comment
-// sitting between `import`/`export` and the specifier, or an escaped
+// and Rule B's zero-bare-specifier check: the codebase has no exotic STATIC
+// import syntax there, so scanning for static import/export specifiers is
+// enough and keeps those rules a zero-dependency, sub-second pretest step for
+// their static forms. The exceptions are the former-owner rules, Rule C (the
+// package relative-deep-import ban, Guard 2 — issue #630 Phase 8, review pass
+// 1), BOTH halves of the revised package Rule D (the deep-import-subpath ban
+// and the bare-specifier name/shape check), and the `@clickhouse/client-web`
+// reintroduction ban (Guard 5) below — all of which need identifier/
+// import-shape-level (not specifier-text-level) detection and therefore
+// delegate to a real TypeScript parse in `build/lib/check-legacy-owners.mjs`
+// — see that module for why textual matching was retired there (issue #630
+// Phase 3), and why the same real-parser mechanism (not a new hand-rolled
+// scanner) was required again for issue #630 Phase 5's revised Rule D, and
+// again for issue #630 Phase 8's Rule C/Guard 2 broadening and Guard 5: a
+// comment sitting between `import`/`export` and the specifier, or an escaped
 // string-literal segment, defeats a regex (however far its
 // whitespace/delimiter patterns are widened) but is ordinary parser
 // trivia/decoded text to a real parse — review pass 1 confirmed Rule C's
@@ -36,6 +36,35 @@
 // this file's own stated Phase 8 design goal, while its unit-test mirror
 // independently reimplemented the identical regex rather than calling the
 // real parser.
+//
+// Issue #642 — dynamic `import(...)` calls under the generic `RULES` loop
+// (and Rule B) are a FOURTH exception, on top of the three above, for a
+// different reason: the former dynamic-import arm of the regex below
+// (`extractSpecifiers`, now renamed `extractStaticSpecifiers` to make its
+// narrowed role explicit) could only ever extract a specifier that LOOKED
+// like a complete literal — a computed expression such as
+// `import('../' + name)` either matched nothing (silently exempting it from
+// every rule below) or, worse, could be partially matched into just its
+// quoted prefix. Neither is acceptable for a boundary check: an import whose
+// target cannot be statically proven must fail, not fall through as if it
+// were absent. Every generic-guarded file is now additionally classified by
+// the shared real-parser helpers `findDynamicImportUsages`/
+// `mightContainDynamicImport` below — `mightContainDynamicImport` gates the
+// cheap case (a file that provably contains no `import(...)` call skips the
+// parser entirely, preserving the ordinary static fast path for files with no
+// dynamic import at all); `findDynamicImportUsages` then classifies every
+// dynamic-import call expression in a matched file as `{ kind: 'static',
+// spec }` (a plain string/no-substitution-template-literal argument, fed
+// through the exact same relative-resolution/forbidden-prefix logic as an
+// ordinary static import) or `{ kind: 'uncheckable' }` (everything else —
+// identifier, computed template, concatenation, conditional, or any other
+// expression shape — an UNCONDITIONAL violation, independent of which rule
+// eventually would have matched the file). Computed/non-static dynamic
+// imports are forbidden in every source file covered by at least one generic
+// `RULES` entry; Rule C/Rule D and the other already-parser-backed package
+// guards are untouched by this — they already classify their own dynamic
+// imports through the real parser and #630/#646/#653's package-guard work is
+// not being redone here.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -64,6 +93,8 @@ import {
   manifestDependencyFields,
   lockHasPackage,
   retiredClientSpikeScriptNames,
+  findDynamicImportUsages,
+  mightContainDynamicImport,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -221,31 +252,35 @@ function collectFiles(target) {
 }
 
 // Matches, in order: static `import ... from '...'` (incl. `import type`),
-// `export ... from '...'` (incl. `export type`), a bare side-effect
-// `import '...'`, and dynamic `import('...')`. Each pattern requires only
-// identifier/brace/comma/whitespace characters between the keyword and
-// `from`, so it can't skip past a from-less import into a later statement's
-// clause, and `\b` keeps it off the word "import" inside an identifier.
-// Used only by the checks named in the comment above (internal src layering,
-// the @clickhouse/client-web ban, Rule B) — NEITHER half of Rule D's
-// `@altinity/clickhouse-http` check calls this anymore (both now delegate to
-// the real-parser helpers in `build/lib/check-legacy-owners.mjs`, below).
+// `export ... from '...'` (incl. `export type`), and a bare side-effect
+// `import '...'`. Each pattern requires only identifier/brace/comma/
+// whitespace characters between the keyword and `from`, so it can't skip
+// past a from-less import into a later statement's clause, and `\b` keeps it
+// off the word "import" inside an identifier. Used only by the checks named
+// in the comment above (internal src layering, the @clickhouse/client-web
+// ban, Rule B) — NEITHER half of Rule D's `@altinity/clickhouse-http` check
+// calls this anymore (both now delegate to the real-parser helpers in
+// `build/lib/check-legacy-owners.mjs`, below).
 //
-// Only the dynamic-import pattern also accepts a backtick-delimited
-// no-substitution template literal (`` import(`pkg`) ``): a static
-// import/export declaration's module specifier and a bare side-effect
-// import's specifier must be a plain string literal per grammar — only a
-// dynamic `import(...)` call can take a template literal argument — so
-// widening the other three patterns to backticks would only ever match
-// syntax that can't occur.
+// Issue #642 — the FOURTH pattern this array used to carry (a dynamic
+// `import(...)` call) is gone: it could only ever extract a specifier that
+// LOOKED like a complete literal, so a computed dynamic import either
+// matched nothing (silently exempting it from every rule below) or, on a
+// concatenated expression like `import('../' + name)`, could be partially
+// matched into just its quoted prefix — the exact "reduced to the quoted
+// prefix" bug this issue closes. `extractStaticSpecifiers` (renamed from
+// `extractSpecifiers` to make its narrowed role explicit) now handles ONLY
+// the three ordinary static forms above; every dynamic `import(...)` call in
+// a generic-guarded file is classified separately, by the real-parser helpers
+// `findDynamicImportUsages`/`mightContainDynamicImport`, in the fail-closed
+// pre-pass right before the `RULES` loop below.
 const SPECIFIER_PATTERNS = [
   /\bimport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bexport\s+[\w*{}\s,]+\s+from\s*['"]([^'"]+)['"]/g,
   /\bimport\s*['"]([^'"]+)['"]/g,
-  /\bimport\s*\(\s*[`'"]([^`'"]+)[`'"]/g,
 ];
 
-function extractSpecifiers(source) {
+function extractStaticSpecifiers(source) {
   const specs = [];
   for (const pattern of SPECIFIER_PATTERNS) {
     pattern.lastIndex = 0;
@@ -293,15 +328,61 @@ function resolveRelative(fromFile, spec) {
 const violations = [];
 let checkedFiles = 0;
 let activeRules = 0;
+
+// Issue #642 — collect the FULL set of files covered by at least one generic
+// RULES entry, deduplicated by absolute path, before evaluating any single
+// rule. This matters because rule directories can nest (e.g. `src/dashboard`
+// and `src/dashboard/application`: `collectFiles` on the outer dir already
+// walks the inner one), so a naive per-rule loop would otherwise hand the
+// same file's dynamic imports to the real parser once per matching rule and
+// — if not careful — report the same uncheckable occurrence more than once.
+// Each file's source is read exactly once here and reused by every rule below
+// instead of re-reading it per rule.
+const guardedFileSources = new Map(); // absolute path -> source text
+const ruleFileLists = []; // { rule, files: absolute path[] }
 for (const rule of RULES) {
   const ruleDir = path.join(repoRoot, rule.dir);
   const files = fs.existsSync(ruleDir) ? collectFiles(ruleDir) : [];
+  ruleFileLists.push({ rule, files });
+  for (const file of files) {
+    if (!guardedFileSources.has(file)) guardedFileSources.set(file, fs.readFileSync(file, 'utf8'));
+  }
+}
+
+// Issue #642 — fail-closed dynamic-import pre-pass, run ONCE per unique
+// guarded file (see the dedup rationale above), strictly before any
+// individual RULES entry is evaluated: every `uncheckable` dynamic import
+// (an identifier, a computed template, a concatenation, a conditional, or any
+// other non-literal argument shape) is an unconditional violation, regardless
+// of which rule(s) would otherwise have matched the file and regardless of
+// where the import might have actually resolved — inability to prove that
+// statically is itself the violation. `mightContainDynamicImport` gates the
+// expensive real-parser call so a file that provably has no `import(...)`
+// call anywhere never pays for it; a `static` result (a plain string or
+// no-substitution-template-literal argument) is cached here and consumed by
+// the RULES loop below exactly like an ordinary static import.
+const guardedFileDynamicImports = new Map(); // absolute path -> DynamicImportUsage[]
+for (const [file, source] of guardedFileSources) {
+  if (!mightContainDynamicImport(source)) continue;
+  const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+  const usages = findDynamicImportUsages(source, relFile);
+  guardedFileDynamicImports.set(file, usages);
+  for (const usage of usages) {
+    if (usage.kind !== 'uncheckable') continue;
+    violations.push(`${relFile} → dynamic import(...) cannot be statically checked against the architecture boundary (issue #642: only a single-quoted, double-quoted, or no-substitution-template-literal specifier is statically analyzable)`);
+  }
+}
+
+for (const { rule, files } of ruleFileLists) {
   if (files.length === 0) continue; // directory not born yet — rule activates with it
   activeRules += 1;
   checkedFiles += files.length;
   for (const file of files) {
-    const source = fs.readFileSync(file, 'utf8');
-    for (const spec of extractSpecifiers(source)) {
+    const source = guardedFileSources.get(file);
+    const dynamicStaticSpecs = (guardedFileDynamicImports.get(file) ?? [])
+      .filter((usage) => usage.kind === 'static')
+      .map((usage) => usage.spec);
+    for (const spec of [...extractStaticSpecifiers(source), ...dynamicStaticSpecs]) {
       if (!spec.startsWith('.')) continue; // bare/package specifiers can't reach src dirs
       const resolved = resolveRelative(file, spec);
       const relResolved = path.relative(repoRoot, resolved).split(path.sep).join('/');
@@ -460,13 +541,27 @@ if (fs.existsSync(lockPath)) {
 // with '.', so a literal absolute-looking path would otherwise slip past
 // Rule A undetected — everything that isn't a relative specifier is a
 // violation here, with no exceptions.
+//
+// Issue #642 — this block used to independently re-run the (now-removed)
+// dynamic-import arm of `extractSpecifiers`. It no longer needs any dynamic-
+// import handling of its own: `packages/clickhouse-http/src` is ALSO a
+// generic RULES entry (Rule A, above), so a COMPUTED dynamic import here
+// already failed the fail-closed pre-pass before this block ever runs. What
+// remains for Rule B is exactly the bare-vs-relative policy decision for a
+// dynamic import whose specifier IS statically known — reusing the same
+// cached source and cached `{ kind: 'static', spec }` results Rule A already
+// produced, rather than re-reading the file or re-deriving the classification
+// a second time.
 const PACKAGE_SRC_DIR = path.join(repoRoot, 'packages/clickhouse-http/src');
 if (fs.existsSync(PACKAGE_SRC_DIR)) {
   for (const file of collectFiles(PACKAGE_SRC_DIR)) {
     const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
     checkedFiles += 1;
-    const source = fs.readFileSync(file, 'utf8');
-    for (const spec of extractSpecifiers(source)) {
+    const source = guardedFileSources.get(file) ?? fs.readFileSync(file, 'utf8');
+    const dynamicStaticSpecs = (guardedFileDynamicImports.get(file) ?? [])
+      .filter((usage) => usage.kind === 'static')
+      .map((usage) => usage.spec);
+    for (const spec of [...extractStaticSpecifiers(source), ...dynamicStaticSpecs]) {
       if (spec.startsWith('.')) continue; // relative — governed by Rule A above
       violations.push(`${relFile} → ${spec} (issue #630 Phase 2: clickhouse-http has zero bare package imports)`);
     }

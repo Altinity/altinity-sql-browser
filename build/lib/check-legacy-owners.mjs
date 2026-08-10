@@ -446,6 +446,122 @@ export function findModuleSpecifiers(source, filename) {
   });
 }
 
+// ── Issue #642 — fail-closed dynamic-import classification ──────────────────
+//
+// `findModuleSpecifiers` above (and `findDeepImportSpecifiers`/
+// `findPackageImportUsages` before it) all share the same accepted
+// convention: a dynamic `import(...)` call whose first argument is not a
+// plain string/no-substitution-template literal contributes NOTHING to their
+// result — `specText`/`deepSpecifierText`/`isTargetSpecifier` all return
+// `null`/`false` for that shape, and the caller's `if (spec !== null)
+// push(...)` guard then silently drops it. That is the correct contract for
+// those checks (a computed dynamic import naming a package/deep-subpath
+// cannot be proven to reach that package, so it cannot be proven to violate
+// THEIR rule either) but it is exactly the wrong contract for the generic
+// `RULES` boundary in `build/check-boundaries.mjs`: that rule's whole point
+// is that an import whose target cannot be statically determined must fail,
+// not fall through as if it were absent. `findDynamicImportUsages` is a
+// SEPARATE entry point (never a modification of the four existing dynamic-
+// import branches above) that reports a discriminated union for every
+// dynamic-import call expression, so nothing is ever silently dropped: a
+// `{ kind: 'static', spec }` where the caller's existing resolution logic can
+// treat `spec` exactly like an ordinary import, and a `{ kind: 'uncheckable'
+// }` that must always become a violation in a generic-guarded file,
+// regardless of what its argument might eventually resolve to. A concatenated
+// expression such as `import('../' + name)` is `uncheckable` in full — never
+// reduced to the quoted `'../'` prefix, since that half alone proves nothing
+// about the complete runtime specifier.
+//
+// `mightContainDynamicImport` is the paired conservative pre-filter (the same
+// accepted-risk shape as `mightReferencePackage`/`mightReferenceForbiddenRelativeDir`
+// above): it decides whether a file is even worth handing to the expensive
+// real-parser call, and it must never inspect or match the module-specifier
+// text itself — only whether an `import` keyword could be followed by legal
+// trivia (whitespace, a line comment, or a block comment) and then `(`.
+// Ambiguity always resolves to `true` (send it to the parser); this is
+// deliberately looser than a real grammar check (e.g. it does not verify
+// `import` is being used as a call rather than, say, `import.meta`) because
+// this gate's only job is to avoid the parser for source that PROVABLY has no
+// dynamic import at all — any narrower attempt to also decide the argument's
+// shape textually would reopen exactly the lexical-bypass risk this module's
+// header comment already warns about.
+
+/**
+ * Classify every dynamic `import(...)` call expression in `source` — a real
+ * TypeScript parse, never a specifier-text regex. Every call expression whose
+ * callee is the bare `import` keyword contributes exactly one result; there
+ * is no `if (spec !== null) push(...)` shape here that could silently drop an
+ * unsupported argument (contrast `findModuleSpecifiers` above, whose whole
+ * point is the opposite: silently skip what it cannot resolve, because ITS
+ * callers have no fail-closed contract to uphold).
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated (used only
+ *   for the virtual-file basename/grammar selection)
+ * @returns {({kind: 'static', spec: string, pos: number} | {kind: 'uncheckable', pos: number})[]}
+ *   `pos` is the call expression's own start offset (`node.getStart(sourceFile)`)
+ *   — a stable identity a caller MAY use to de-duplicate the same occurrence
+ *   across overlapping guarded-directory rules; it is not a line/column and
+ *   is not required in any user-facing diagnostic.
+ */
+export function findDynamicImportUsages(source, filename) {
+  return withParsedSource(source, filename, (sourceFile) => {
+    const found = [];
+    const walk = (node) => {
+      if (
+        is.isCallExpression(node)
+        && node.expression
+        && node.expression.kind === SyntaxKind.ImportKeyword
+      ) {
+        const pos = node.getStart(sourceFile);
+        const arg = node.arguments[0];
+        if (
+          arg
+          && (arg.kind === SyntaxKind.StringLiteral || arg.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
+        ) {
+          found.push({ kind: 'static', spec: arg.text, pos });
+        } else {
+          // Every other shape — a missing argument, an Identifier, a
+          // template literal WITH a substitution, a binary concatenation, a
+          // call, a conditional, a parenthesized/computed expression, or any
+          // future shape this list does not name — is uncheckable. There is
+          // deliberately no partial extraction attempt (e.g. reading a
+          // template literal's first quasi span): that is precisely the class
+          // of bug this issue exists to close (`import('../' + name)` must
+          // never be treated as `'../'`).
+          found.push({ kind: 'uncheckable', pos });
+        }
+      }
+      node.forEachChild(walk);
+    };
+    walk(sourceFile);
+    return found;
+  });
+}
+
+/**
+ * Cheap, deliberately over-inclusive textual pre-filter gating the expensive
+ * `findDynamicImportUsages` parse: true whenever `source` MIGHT contain a
+ * dynamic `import(...)` call — an `import` keyword, at a word boundary on
+ * both sides (so it never matches inside a longer identifier like
+ * `importFoo`), followed by any amount of ordinary whitespace/line-comment/
+ * block-comment trivia and then an opening `(`. Never inspects or matches
+ * anything about the argument/specifier — that is exclusively
+ * `findDynamicImportUsages`'s job. A false positive (e.g. the literal text
+ * `"import("` sitting inside an unrelated string literal) merely costs one
+ * wasted parse that then correctly reports no dynamic-import call expression
+ * at all; a false negative would silently exempt a real dynamic import from
+ * ever reaching the parser, which this gate must never do.
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+const DYNAMIC_IMPORT_GATE = /\bimport\b(?:[ \t\r\n]|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*\(/;
+
+export function mightContainDynamicImport(source) {
+  return DYNAMIC_IMPORT_GATE.test(source);
+}
+
 /** Issue #630 Phase 8 (plan §19.1) — the plan's own generic vocabulary for
  *  `findRetiredTopLevelApiViolations` above, which already generalizes over
  *  an explicit `names` argument (it is not hardcoded to the Phase 7 retired
