@@ -23,7 +23,6 @@ export const SELECTORS = Object.freeze({
   responseCopyButton: ['[data-testid="copy-turn-action-button"]', 'button[aria-label*="Copy" i]'],
   stop: ['[data-testid="stop-button"]', 'button[aria-label*="Stop"]'],
   continue: ['button:has-text("Continue generating")', 'button:has-text("Continue")'],
-  responseActions: ['button[aria-label*="Good response"]', 'button[aria-label*="Bad response"]', 'button[aria-label*="Copy"]'],
   streamError: ['text=/^Error in message stream$/i'],
   streamRetry: ['button:has-text("Retry")'],
   login: ['a[href*="auth/login"]', 'button:has-text("Log in")', 'button:has-text("Sign up")'],
