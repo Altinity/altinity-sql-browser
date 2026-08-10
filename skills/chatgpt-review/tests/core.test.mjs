@@ -101,6 +101,13 @@ test('prompts enforce investigation, trust, publication, and follow-up contracts
   assert.match(author, /Do not write anything to GitHub/);
   assert.match(author, /attached as contract-context-pass1\.md/);
   assert.doesNotMatch(author, /new findings from an independent reviewer/);
+  // Confirmed live 7/7 times across two real /ship dry runs (issue #639): ChatGPT reads the
+  // "# Complete standalone Markdown plan" template line as illustrative scaffolding, not a
+  // literal syntactic requirement, and writes plain-text section titles with no leading "#"
+  // — which parsePlanAuthorResponse's heading regex then rejects. The protocol block now
+  // states the heading requirement as an explicit, unmissable RULE, not just an example line.
+  assert.match(author, /RULE: the plan body must include at least one literal Markdown heading/);
+  assert.match(author, /Plain-text section titles, bold text, or any other formatting without a leading "#" do not satisfy this and will be rejected/);
   // On a REAL revision (pass 2+), a genuinely new, small delta of findings from an
   // independent reviewer IS pasted, alongside the still-uploaded (fresh copy) contract —
   // unlike the contract, it's new each time and small enough that pasting isn't wasteful.
@@ -118,6 +125,13 @@ test('prompts enforce investigation, trust, publication, and follow-up contracts
   const local = buildPrompt({ mode: 'local', uploadName: 'local.diff', contextUploadName: 'question.md' });
   assert.match(local, /only source for local-only state/);
   assert.match(local, /attached as question\.md/);
+
+  // The explicit Markdown-heading RULE is plan-author's own fix for a plan-author-only
+  // parser requirement (parsePlanAuthorResponse's heading regex); no other mode parses a
+  // delimited plan body, so none of their prompts should carry this sentence.
+  for (const other of [initial, followup, buildPrompt({ mode: 'issue', target: { ...target, canonicalUrl: 'https://github.com/o/r/issues/9' }, publish: false, pass: 1, contextUploadName: 'question-pass1.md' }), plan, planRevision, local]) {
+    assert.doesNotMatch(other, /RULE: the plan body must include at least one literal Markdown heading/);
+  }
 });
 
 test('reported SHA and comment URL are extracted', () => {
