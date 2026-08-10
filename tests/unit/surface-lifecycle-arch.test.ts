@@ -448,6 +448,73 @@ describe('coordinator boundary classification', () => {
     );
     expect(found.some((v) => v.rule === 'surface-protected-declaration')).toBe(true);
   });
+
+  // Pass-1 review finding: the ABOVE straddle test happens to keep the
+  // `VariableDeclaration` node's own start (the binding identifier,
+  // `disposeShell`) before the marker in both halves — the `const` keyword
+  // and the identifier are never on opposite sides of the marker there, so
+  // it never exercised the identifier-vs-keyword position gap. THIS test
+  // does: the `const` keyword sits before the marker, and the binding
+  // identifier plus the rest of the declaration sit after it — a real
+  // straddle (keyword outside, binding inside) that a check anchored at the
+  // identifier's own start would misclassify as fully 'inside' the
+  // coordinator (since the identifier's start is >= coordinatorStart and its
+  // end is <= coordinatorEnd), silently letting the sabotage through.
+  it('a declaration whose "const" keyword sits before the BEGIN marker and whose binding sits after it is a straddle, not "inside"', () => {
+    const appSource = [
+      'const',
+      '// #590-COORDINATOR-BEGIN',
+      'disposeShell = () => {};',
+      'const disposeCurrentSurface = () => {};',
+      'const committedWorkspaceSignal = { value: null };',
+      'const mainSurfaceSignal = { value: null };',
+      '// #590-COORDINATOR-END',
+    ].join('\n');
+    const beginIndex = appSource.indexOf(BEGIN_MARKER);
+    const endIndex = appSource.indexOf(END_MARKER);
+    const found = findSurfaceLifecycleSourceContractViolations(
+      [{ filename: APP_TS, source: appSource }],
+      { appFile: APP_TS, coordinatorStart: beginIndex, coordinatorEnd: endIndex },
+    );
+    expect(found.some((v) => v.rule === 'surface-protected-declaration')).toBe(true);
+  });
+});
+
+describe('coordinator declarations must specifically be `const` (pass-1 finding)', () => {
+  // The retired regex test asserted `toMatch(/\bconst\s+disposeShell\s*=/)`
+  // etc. for all four names — `const` was part of the invariant, and #643's
+  // parser port silently dropped that requirement. Table-driven over all
+  // four protected names and both non-const keywords: a `let`/`var` rewrite,
+  // still positioned exactly where the real `const` declaration was (fully
+  // inside the coordinator region), must still fail this guard.
+  const NAMES = ['disposeShell', 'disposeCurrentSurface', 'committedWorkspaceSignal', 'mainSurfaceSignal'];
+  const KEYWORDS = ['let', 'var'] as const;
+
+  function coordinatorWith(sabotagedName: string, keyword: string): string {
+    const decls = [
+      ['disposeShell', 'const disposeShell = () => {};'],
+      ['disposeCurrentSurface', 'const disposeCurrentSurface = () => {};'],
+      ['committedWorkspaceSignal', 'const committedWorkspaceSignal = { value: null };'],
+      ['mainSurfaceSignal', 'const mainSurfaceSignal = { value: null };'],
+    ] as const;
+    const lines = decls.map(([name, decl]) => (name === sabotagedName ? decl.replace('const', keyword) : decl));
+    return ['// #590-COORDINATOR-BEGIN', ...lines, '// #590-COORDINATOR-END'].join('\n');
+  }
+
+  for (const name of NAMES) {
+    for (const keyword of KEYWORDS) {
+      it(`"${keyword} ${name}" inside the coordinator region still fails ("${name}" must be const)`, () => {
+        const appSource = coordinatorWith(name, keyword);
+        const beginIndex = appSource.indexOf(BEGIN_MARKER);
+        const endIndex = appSource.indexOf(END_MARKER);
+        const found = findSurfaceLifecycleSourceContractViolations(
+          [{ filename: APP_TS, source: appSource }],
+          { appFile: APP_TS, coordinatorStart: beginIndex, coordinatorEnd: endIndex },
+        );
+        expect(found.some((v) => v.rule === 'surface-protected-declaration')).toBe(true);
+      });
+    }
+  }
 });
 
 describe('fail-loud contract', () => {

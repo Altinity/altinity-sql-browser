@@ -60,7 +60,7 @@
 import path from 'node:path';
 import { API } from 'typescript/unstable/sync';
 import { createVirtualFileSystem } from 'typescript/unstable/fs';
-import { SyntaxKind } from 'typescript/unstable/ast';
+import { NodeFlags, SyntaxKind } from 'typescript/unstable/ast';
 import * as is from 'typescript/unstable/ast/is';
 
 /** Every symbol Phase 3 moved out of the legacy owners into the package
@@ -1513,23 +1513,24 @@ function appShellHostAccessorViolations(sourceFile, filename) {
  *  one alias to exist at all (a total-removal regression — deleting every
  *  derived pane-id type alias — must not silently read as "zero violations
  *  found"), and flags any protected literal panel id sitting anywhere in an
- *  alias's OWN `.type` subtree — deliberately scoped to that subtree, not
- *  the whole file, because the file's real, authoritative `SIDE_PANELS`
- *  manifest array legitimately spells these exact literals (`{ id:
- *  'databases', pane: 'upper' }`) outside any type alias, and must stay
- *  clean. A defaulted generic type parameter (`type Probe<T = SidePanelId> =
- *  T | 'databases';`) does not exempt the alias from either check — the walk
- *  finds the `TypeAliasDeclaration` node itself regardless of its type
- *  parameters, then walks its `.type` unconditionally. */
+ *  alias's `.type` subtree OR its `.typeParameters` subtree (each type
+ *  parameter's own `extends`/default clause) — deliberately scoped to those
+ *  two subtrees, not the whole file, because the file's real, authoritative
+ *  `SIDE_PANELS` manifest array legitimately spells these exact literals
+ *  (`{ id: 'databases', pane: 'upper' }`) outside any type alias, and must
+ *  stay clean. A defaulted generic type parameter (`type Probe<T =
+ *  SidePanelId> = T | 'databases';`) does not exempt the alias from either
+ *  check, and neither does a literal sitting ONLY inside a type parameter's
+ *  own constraint/default and never in `.type` at all (`type Probe<T extends
+ *  'databases'> = T;`) — pass-2 finding: the original walk covered `.type`
+ *  but never `.typeParameters`, so a constraint-only literal was invisible. */
 function sidePanelsTypeAliasViolations(sourceFile, filename) {
   const targets = new Set(SIDE_PANEL_TYPE_ALIAS_IDS);
   const violations = [];
   let aliasCount = 0;
-  walkTree(sourceFile, (node) => {
-    if (node.kind !== SyntaxKind.TypeAliasDeclaration) return;
-    aliasCount += 1;
-    const aliasName = node.name.text;
-    walkTree(node.type, (inner) => {
+  const scanSubtree = (root, aliasName) => {
+    if (!root) return;
+    walkTree(root, (inner) => {
       if (exactLiteralMatch(inner, targets)) {
         violations.push(makeViolation(
           'side-panels-type-alias', filename, inner.getStart(sourceFile),
@@ -1537,6 +1538,17 @@ function sidePanelsTypeAliasViolations(sourceFile, filename) {
         ));
       }
     });
+  };
+  walkTree(sourceFile, (node) => {
+    if (node.kind !== SyntaxKind.TypeAliasDeclaration) return;
+    aliasCount += 1;
+    const aliasName = node.name.text;
+    scanSubtree(node.type, aliasName);
+    if (node.typeParameters) {
+      for (const typeParam of node.typeParameters) {
+        scanSubtree(typeParam, aliasName);
+      }
+    }
   });
   if (aliasCount === 0) {
     violations.push(makeViolation(
@@ -1624,10 +1636,21 @@ function coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd) {
  *  `toMatch(inside)`/`not.toMatch(outside)` pair: a symbol that disappears
  *  from the file ENTIRELY must not silently read as "zero violations", the
  *  same reasoning `sidePanelsTypeAliasViolations`'s alias-count guard
- *  applies above. */
+ *  applies above. Each must ALSO specifically be a `const` (pass-1 finding):
+ *  the retired regex test asserted `toMatch(/\bconst\s+disposeShell\s*=/)`
+ *  etc. — `const` was part of the invariant, not incidental — so a
+ *  `let`/`var` rewrite of any of these four must fail exactly like a wrong
+ *  location would. */
 const PROTECTED_DECLARATION_NAMES = Object.freeze([
   'disposeShell', 'disposeCurrentSurface', 'committedWorkspaceSignal', 'mainSurfaceSignal',
 ]);
+
+/** The non-`const` keyword an offending `VariableDeclarationList`'s flags
+ *  spell — `NodeFlags.Let` set means `let`, otherwise (no block-scoped flag
+ *  at all) it's `var`. Never called for a `const` list. */
+function nonConstDeclarationKeyword(declarationListFlags) {
+  return (declarationListFlags & NodeFlags.Let) !== 0 ? 'let' : 'var';
+}
 
 function protectedDeclarationViolations(appSourceFile, appFile, coordinatorStart, coordinatorEnd) {
   const violations = [];
@@ -1636,17 +1659,28 @@ function protectedDeclarationViolations(appSourceFile, appFile, coordinatorStart
     if (node.kind !== SyntaxKind.VariableDeclaration || node.name.kind !== SyntaxKind.Identifier) return;
     const name = node.name.text;
     if (!PROTECTED_DECLARATION_NAMES.includes(name)) return;
-    const start = node.getStart(appSourceFile);
+    const declarationList = node.parent;
+    const hasDeclarationList = declarationList != null && declarationList.kind === SyntaxKind.VariableDeclarationList;
+    const isConst = hasDeclarationList && (declarationList.flags & NodeFlags.Const) !== 0;
+    // Anchor the checked range at the declaration list's OWN start — which
+    // IS the `const`/`let`/`var` keyword's position — never at the
+    // `VariableDeclaration` node's own start (the binding identifier, which
+    // begins strictly AFTER the keyword): otherwise a straddle whose keyword
+    // sits outside the coordinator and whose binding sits inside would
+    // misclassify as fully 'inside' (pass-1 finding).
+    const start = hasDeclarationList ? declarationList.getStart(appSourceFile) : node.getStart(appSourceFile);
     const end = node.getEnd();
     const placement = coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd);
-    if (placement === 'inside') {
+    if (placement === 'inside' && isConst) {
       foundInside.add(name);
-    } else {
-      violations.push(makeViolation(
-        'surface-protected-declaration', appFile, start,
-        `"${name}" is declared ${placement} the coordinator region`,
-      ));
+      return;
     }
+    const detail = isConst
+      ? `"${name}" is declared ${placement} the coordinator region`
+      : `"${name}" must be declared "const", not "${
+          hasDeclarationList ? nonConstDeclarationKeyword(declarationList.flags) : 'a non-declaration-list binding'
+        }"`;
+    violations.push(makeViolation('surface-protected-declaration', appFile, start, detail));
   });
   for (const name of PROTECTED_DECLARATION_NAMES) {
     if (!foundInside.has(name)) {

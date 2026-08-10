@@ -306,6 +306,25 @@ describe('additional side-panel sabotage: side-panels.ts type aliases', () => {
     expect(found[0]!.rule).toBe('side-panels-type-alias');
   });
 
+  // Pass-2 review finding: a protected literal confined ENTIRELY to a type
+  // parameter's own `extends` constraint (never appearing in the alias's
+  // `.type` RHS at all) functions as a hand-written panel-id allowlist
+  // bypass exactly like a literal in the RHS does — the guarded file itself
+  // uses this exact `<P extends SidePanelPane>` shape in production
+  // (src/core/side-panels.ts's `PanelIdInPane`), so this is a realistic
+  // revert shape, not a contrived one.
+  it('a protected literal confined to a type parameter\'s own extends-constraint is not exempt either', () => {
+    const found = violations("type Probe<T extends 'databases'> = T;", SIDE_PANELS_CORE);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('side-panels-type-alias');
+  });
+
+  it('a protected literal confined to a type parameter\'s own default clause is not exempt either', () => {
+    const found = violations("type Probe<T = 'library'> = T;", SIDE_PANELS_CORE);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('side-panels-type-alias');
+  });
+
   it('a plain protected literal in a type alias fails', () => {
     expect(rulesOf(violations("type Probe = 'library';", SIDE_PANELS_CORE))).toEqual(['side-panels-type-alias']);
   });
