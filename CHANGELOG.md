@@ -466,6 +466,36 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   template, concatenation, conditional, or otherwise) is an unconditional
   violation. No product/runtime behavior changed — this hardens the
   architecture gate's own soundness, not the policy it enforces.
+- **#643: `tests/unit/side-panel-source-contract.test.ts` and
+  `tests/unit/surface-lifecycle-arch.test.ts` now use real TypeScript syntax
+  instead of unsafe comment preprocessing.** Both suites used to run a
+  two-pass regex comment stripper (block comments removed before line
+  comments) ahead of their own textual assertions — unsound in the direction
+  that matters most for an architecture guard: a `/*`-shaped substring
+  sitting inside a real `//` comment could make the block-comment pass
+  consume real code through the next genuine `*/`, hiding a violation before
+  either suite's assertions ever ran. Both now call two new named analyzers
+  in `build/lib/check-legacy-owners.mjs` (`findSidePanelSourceContractViolations`/
+  `findSurfaceLifecycleSourceContractViolations`, backed by the same shared
+  real-TypeScript-parser infrastructure #630/#642 already use, extended with
+  an internal `withParsedSources` batch primitive so the whole-tree surface
+  scan shares one native parser process rather than spawning one per file)
+  and a new `.d.mts` plain-data declaration boundary. Several rules
+  deliberately gained precision along the way (documented in each rule's own
+  test comments): the exact-value panel-id/label checks (app-preferences.ts,
+  state.ts, app-shell.ts panel ids) no longer false-positive on a longer
+  literal merely containing a protected id (`"pick 'library' now"` stays
+  clean) while gaining multi-quote-style coverage for the actual protected
+  value, including a TYPE-position literal (`type Pref = 'library'`); the
+  `history`/`sidePanel.value` comparison rules now support both operand
+  orders; the surface suite's ordering scopes now also recognize
+  return-annotated function declarations (a real gap in the retired textual
+  opener) while explicitly preserving its accidental treatment of
+  parenthesized control-flow blocks (`if`/`for`/`while`/`switch`/`catch (e)`)
+  as independent ordering scopes; and `currentWorkspace = null ?? fallback`
+  is now deliberately treated as clean (a `??` introduces real
+  conditional/fallback semantics a bare null-equivalent write does not have).
+  No production `src/**` code, dependency, or runtime behavior changed.
 
 ## [0.7.3] - 2026-08-06
 

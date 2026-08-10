@@ -22,19 +22,28 @@
 // build/test tooling only and must never be imported by `src/**` or
 // `packages/clickhouse-http/**` runtime code.
 //
-// Scope stays deliberately narrow (this is NOT a generic static-analysis
-// framework): exactly the former production owners of moved
-// progress-stream/exception-parsing/quoting primitives, and exactly the
-// identifier/property names each phase moved into `@altinity/clickhouse-http`
-// (plus, for Rule D, exactly which of the package's OWN export names are
-// pure-language vs. transport/protocol). An AST walk flags any Identifier
-// with a moved name — a declaration, an import/export specifier, a member
-// reference — and any string-literal property/member name (`{ "streamLines":
-// … }`), so a second implementation and a forwarding wrapper both fail.
-// Intentionally obfuscated constructs (computed strings, dynamically built
-// property names) are outside this check's threat model. Comments and JSDoc
-// are trivia to the parser, so prose narrating the move can never
-// false-positive.
+// Scope (post-#643): a shared, narrowly-scoped real-TypeScript-parser
+// architecture-source utility module — NOT a generic static-analysis
+// framework. It originated with #630's legacy-owner/package-boundary checks
+// (below) and, since #643, also hosts two further explicit, named
+// source-contract analyzers: `findSidePanelSourceContractViolations` (the
+// #587 side-panel registry contract) and
+// `findSurfaceLifecycleSourceContractViolations` (the #590 surface-retirement
+// coordinator contract). Every exported analyzer in this module owns one
+// named, bounded architecture contract; none of them generalizes into a
+// vocabulary any caller can extend ad hoc. The paragraph below — computed
+// strings/dynamically built property names sitting outside this check's
+// threat model — describes `findNamedIdentifierViolations`'s own contract
+// specifically (the #630 owner/name-list checks and the thin wrappers over
+// it), not a blanket statement about every analyzer this module exports: the
+// #643 analyzers' own doc comments state their own (different, narrower or
+// broader as appropriate) obfuscation boundaries.
+//
+// An AST walk flags any Identifier with a moved name — a declaration, an
+// import/export specifier, a member reference — and any string-literal
+// property/member name (`{ "streamLines": … }`), so a second implementation
+// and a forwarding wrapper both fail. Comments and JSDoc are trivia to the
+// parser, so prose narrating the move can never false-positive.
 //
 // Issue #630 Phase 5 — generalized into a small shared AST utility (plan
 // §8.3): the Phase 3 owner/name-list check below is now a thin wrapper over
@@ -144,30 +153,66 @@ export const PHASE8_NARROW_RULE_D_EXCEPTIONS = Object.freeze({
 
 // ── Shared real-parser plumbing ─────────────────────────────────────────────
 
-// Parse `source` (claiming to be the repo-relative `filename`) with the real
-// TypeScript parser and hand back its root AST node. Always used inside a
-// try/finally that calls `api.close()` — the native child process must
-// always be reaped, on every return path including a thrown parse failure.
-function withParsedSource(source, filename, fn) {
-  // The virtual path keeps the real basename so the parser applies the right
-  // grammar for the file's extension (.ts here; never .tsx among any of the
-  // owner files or import-usage callers below).
-  const virtualPath = `/legacy-owner-check/${path.posix.basename(filename)}`;
-  const api = new API({ fs: createVirtualFileSystem({ [virtualPath]: source }) });
-  try {
-    const snapshot = api.updateSnapshot({ openFiles: [virtualPath] });
-    const sourceFile = snapshot
-      .getDefaultProjectForFile(virtualPath)
-      ?.program.getSourceFile(virtualPath);
-    if (!sourceFile) {
-      // Fail loud, never silently-clean: an unparseable probe must not read
-      // as "no violations".
-      throw new Error(`check-legacy-owners: could not parse ${filename}`);
-    }
-    return fn(sourceFile);
-  } finally {
-    api.close(); // always reap the native child process
+// Issue #643 — one real parser session per CALL, not per FILE. Every prior
+// caller of `withParsedSource` (the #630/#642 helpers above/below) parses
+// exactly one source at a time, so spawning one native `tsc` child process
+// per call was never wasteful for THEM. #643's own surface-lifecycle
+// analyzer instead needs one violation pass over the ENTIRE scanned
+// `src/**` tree (a hundred-plus files) — one process per file there would
+// multiply this module's own documented startup cost by the file count, the
+// exact CI-timeout-pressure shape `mightReferencePackage`'s/
+// `mightReferenceForbiddenRelativeDir`'s own doc comments already warn
+// about for a *parse* (not just a pre-filter) granularity. `withParsedSources`
+// is the batch primitive both cases now share: one `API`/one virtual
+// filesystem for an arbitrary number of (source, filename) entries, all
+// recovered from the SAME parsed snapshot. `withParsedSource` becomes a
+// one-entry compatibility wrapper over it — every existing #630/#642 caller
+// keeps its original 3-argument call shape and `fn(sourceFile)` callback
+// unchanged.
+//
+// Virtual paths are the entry's own repo-relative path (forward-slash,
+// preserving its real extension so the parser selects the right grammar),
+// rooted under `/legacy-owner-check/` — collision-proof by construction: two
+// distinct real (or synthetic-but-caller-distinct) repo-relative paths can
+// never collide, unlike the single-file wrapper's now-removed
+// basename-only scheme, which relied on there only ever being one entry to
+// namespace at all.
+function withParsedSources(entries, fn) {
+  const virtualPaths = new Map(); // filename -> virtualPath
+  const files = {};
+  for (const { source, filename } of entries) {
+    const virtualPath = path.posix.join('/legacy-owner-check', filename);
+    virtualPaths.set(filename, virtualPath);
+    files[virtualPath] = source;
   }
+  const api = new API({ fs: createVirtualFileSystem(files) });
+  try {
+    const snapshot = api.updateSnapshot({ openFiles: [...virtualPaths.values()] });
+    const sourceFiles = new Map(); // filename -> SourceFile
+    for (const [filename, virtualPath] of virtualPaths) {
+      const sourceFile = snapshot
+        .getDefaultProjectForFile(virtualPath)
+        ?.program.getSourceFile(virtualPath);
+      if (!sourceFile) {
+        // Fail loud, never silently-clean: an unparseable probe must not read
+        // as "no violations".
+        throw new Error(`check-legacy-owners: could not parse ${filename}`);
+      }
+      sourceFiles.set(filename, sourceFile);
+    }
+    return fn(sourceFiles);
+  } finally {
+    api.close(); // always reap the native child process, on every return path
+  }
+}
+
+// Parse `source` (claiming to be the repo-relative `filename`) with the real
+// TypeScript parser and hand back its root AST node — the original #630
+// single-source entry point, now a thin one-entry wrapper over
+// `withParsedSources` above. Every existing caller's behavior (including the
+// thrown-on-unparseable-source contract) is unchanged.
+function withParsedSource(source, filename, fn) {
+  return withParsedSources([{ source, filename }], (sourceFiles) => fn(sourceFiles.get(filename)));
 }
 
 /**
@@ -1084,4 +1129,804 @@ export function lockHasPackage(lock, specifier) {
  *  any `test:client-spike*` variant) — empty when none remain. */
 export function retiredClientSpikeScriptNames(scripts) {
   return Object.keys(scripts ?? {}).filter((s) => s === 'check:client-spike:evidence' || s.startsWith('test:client-spike'));
+}
+
+// ── Issue #643 — parser-backed side-panel / surface-lifecycle source
+// contracts ───────────────────────────────────────────────────────────────
+//
+// `tests/unit/side-panel-source-contract.test.ts` and
+// `tests/unit/surface-lifecycle-arch.test.ts` used to preprocess source with
+// a hand-rolled two-pass regex comment stripper
+// (`/\*[\s\S]*?\*\//g` then `/(^|[^:"'`])\/\/.*$/gm`) before applying their
+// own textual assertions. That stripper is unsound in the direction that
+// matters most for an architecture GUARD: the block-comment pass runs
+// BEFORE line-comment removal, so a `/*`-shaped substring sitting inside a
+// real `//` comment (e.g. `// documentation mentioning src/core/**`) can
+// make the block pass consume every real line of code up to the next
+// genuine `*/`, deleting a real violation before either test's assertions
+// ever see it — exactly backwards for a check whose entire job is to catch
+// code a reviewer might miss. Below replaces both stripping/scanning
+// implementations with real-TypeScript-parser-backed analyzers, sharing the
+// same `withParsedSources`/`withParsedSource` plumbing the #630/#642 checks
+// above already use — comments, strings, template literals, and
+// regex-vs-division are resolved by the actual grammar, so none of the
+// stripper's lexical-bypass shapes is even representable in the AST these
+// analyzers walk.
+//
+// `findSidePanelSourceContractViolations` and
+// `findSurfaceLifecycleSourceContractViolations` are the two public
+// entrypoints (mirroring the `SidePanelRule`/`SurfaceLifecycleRule` unions
+// `build/lib/check-legacy-owners.d.mts` declares); every other export in
+// this section is an internal building block composed differently by each
+// rule — per this module's own stated policy, they are NOT collapsed into
+// one generic vocabulary matcher, because the six side-panel rule groups and
+// the five surface-lifecycle rule groups each have genuinely different
+// literal/structural semantics (exact-value literal comparison vs. broad
+// contiguous-substring detection vs. structural chain/call-shape matching).
+
+/** Every AST node kind whose `.text` is a real decoded source string this
+ *  module's broad-substring/exact-value checks may safely inspect. This is a
+ *  DELIBERATE allowlist, not "every node with a `.text` field": `SourceFile`
+ *  itself also carries a `.text` property (the file's entire raw content,
+ *  comments included) — checking it unconditionally would silently
+ *  reintroduce exactly the "matches inside a comment" defect this whole
+ *  migration exists to close, since it sits above and outside the parser's
+ *  own trivia/AST distinction. Restricting to these leaf literal/identifier
+ *  kinds means every match found this way is provably a real code token, not
+ *  raw file text. */
+const TEXTUAL_LEAF_KINDS = new Set([
+  SyntaxKind.Identifier,
+  SyntaxKind.PrivateIdentifier,
+  SyntaxKind.StringLiteral,
+  SyntaxKind.NoSubstitutionTemplateLiteral,
+  SyntaxKind.RegularExpressionLiteral,
+  SyntaxKind.TemplateHead,
+  SyntaxKind.TemplateMiddle,
+  SyntaxKind.TemplateTail,
+]);
+
+/** The two literal kinds a "complete parser value equals X" exact-match rule
+ *  ever accepts — a plain string literal or a no-substitution template
+ *  literal (`` `library` ``), matching every sibling exact-value check
+ *  elsewhere in this module (e.g. `findNamedIdentifierViolations`'s own
+ *  quoted-property-name arm). A substitution template (`` `${x}` ``) is
+ *  never one node with one decoded `.text` — it has no single "complete
+ *  value" a parser can hand back — so it is correctly never eligible here. */
+const EXACT_LITERAL_KINDS = new Set([SyntaxKind.StringLiteral, SyntaxKind.NoSubstitutionTemplateLiteral]);
+
+/** Depth-first pre-order walk of `root` and every descendant, calling
+ *  `visit(node)` once per node (including `root` itself). Deliberately
+ *  unconditional — `visit`'s return value never prunes recursion — because
+ *  every #643 rule below wants "the whole subtree", never "the whole
+ *  subtree except nodes underneath the first match": e.g. the ordering
+ *  rule's own nested-scope requirement (a retirement call visible to BOTH
+ *  its own enclosing scope and every scope that contains it) depends on
+ *  this never stopping early. */
+function walkTree(root, visit) {
+  const step = (node) => {
+    visit(node);
+    node.forEachChild(step);
+  };
+  step(root);
+}
+
+/** True when `node` is one of `EXACT_LITERAL_KINDS` and its complete decoded
+ *  value is exactly one of `targets` (a `Set<string>`). Because this checks
+ *  the AST NODE KIND, not the node's syntactic position, it identically
+ *  matches an expression-position literal (`const id = "library"`) and a
+ *  type-position one (`type Pref = 'library'`, a `StringLiteral` sitting
+ *  inside a `LiteralTypeNode`) — a plain unscoped tree walk reaches both, so
+ *  none of the exact-value rules below need (or have) a separate
+ *  type-position branch: restricting a walk to "expression-context nodes
+ *  only" is precisely the narrowing this helper's callers must avoid. */
+function exactLiteralMatch(node, targets) {
+  return !!node && EXACT_LITERAL_KINDS.has(node.kind) && targets.has(node.text);
+}
+
+/** True when `node` is a plain (non-private) identifier whose complete text
+ *  is exactly one of `targets`. Matches a declaration, a reference, a
+ *  property-access `.name`, or a destructuring binding's `.name` identically
+ *  — they are all the same AST node kind to this check, by construction of
+ *  a blanket tree walk. */
+function exactIdentifierMatch(node, targets) {
+  return !!node
+    && (node.kind === SyntaxKind.Identifier || node.kind === SyntaxKind.PrivateIdentifier)
+    && targets.has(node.text);
+}
+
+/**
+ * The last (innermost-to-outermost, i.e. rightmost-in-source) `count`
+ * identifier names of a property-access chain ending at `expr` — e.g. for
+ * `app.shell.sidePanel.value`, `terminalNames(expr, 2)` returns
+ * `['sidePanel', 'value']` regardless of how many segments precede them.
+ * Stops (returning fewer than `count` names) the moment the chain hits
+ * anything other than a `PropertyAccessExpression` or a terminal
+ * `Identifier`/`PrivateIdentifier` — an `ElementAccessExpression`, a call, a
+ * parenthesized expression, etc. — so a computed/dynamic segment anywhere in
+ * the chain correctly makes the match fail rather than guessing past it.
+ * Shared by every #643 rule that cares only about a chain's OWN terminal
+ * segments, not its full length or receiver (member-terminal matching):
+ * teardown calls, the private-signal `.value` write rule, and the
+ * `app.ts` side-panel comparison rule.
+ *
+ * @param {object} expr
+ * @param {number} count
+ * @returns {string[]}
+ */
+function terminalNames(expr, count) {
+  const names = [];
+  let current = expr;
+  while (current && names.length < count) {
+    if (current.kind === SyntaxKind.PropertyAccessExpression) {
+      names.unshift(current.name.text);
+      current = current.expression;
+    } else if (current.kind === SyntaxKind.Identifier || current.kind === SyntaxKind.PrivateIdentifier) {
+      names.unshift(current.text);
+      current = null;
+    } else {
+      current = null;
+    }
+  }
+  return names;
+}
+
+/** Unwrap every transparent cast/assertion wrapper the plan names around a
+ *  `currentWorkspace = null` RHS — `ParenthesizedExpression`, `AsExpression`
+ *  (`null as never`), `SatisfiesExpression` (`null satisfies never`),
+ *  `NonNullExpression` (`null!`), and `TypeAssertionExpression`
+ *  (`<never>null`) — returning the innermost expression a cast-bypassing
+ *  write can never hide behind. Deliberately does NOT unwrap a
+ *  `BinaryExpression` (`null ?? fallback`): that operator introduces genuine
+ *  conditional/fallback semantics, so the actual invariant this rule
+ *  enforces — "this property was set to a bare null-equivalent value" — no
+ *  longer holds once a `??` is present, and treating it as transparent would
+ *  be a correctness bug, not extra coverage. */
+function unwrapNullEquivalentWrappers(expr) {
+  let current = expr;
+  while (current) {
+    if (
+      current.kind === SyntaxKind.ParenthesizedExpression
+      || current.kind === SyntaxKind.AsExpression
+      || current.kind === SyntaxKind.SatisfiesExpression
+      || current.kind === SyntaxKind.NonNullExpression
+      || current.kind === SyntaxKind.TypeAssertionExpression
+    ) {
+      current = current.expression;
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+/** One violation both #643 analyzers report — matches
+ *  `build/lib/check-legacy-owners.d.mts`'s `SourceContractViolation` DTO
+ *  exactly (a plain-data shape, no `SourceFile`/`Node` ever crosses this
+ *  boundary). `pos` is the offending node's own `getStart(sourceFile)` (or
+ *  `0` for a whole-file "required construct is entirely absent" finding,
+ *  which names no single node) — a stable, deterministic identity, not a
+ *  line/column. */
+function makeViolation(rule, filename, pos, detail) {
+  return { rule, filename, pos, detail };
+}
+
+// ── Side-panel source contract (#587 AC5 regression backstop) ──────────────
+
+const WORKBENCH_SESSION_FILE = 'src/ui/workbench/workbench-session.ts';
+const APP_PREFERENCES_FILE = 'src/application/app-preferences.ts';
+const STATE_FILE = 'src/state.ts';
+const APP_FILE = 'src/ui/app.ts';
+const APP_SHELL_FILE = 'src/ui/app-shell.ts';
+const SIDE_PANELS_CORE_FILE = 'src/core/side-panels.ts';
+
+/** #276/#587 — `app-preferences.ts` may never hard-code one of the registry's
+ *  own panel-id literals; its `sidePanel` preference stays typed as
+ *  `SidePanelKey`, derived from the manifest. */
+export const SIDE_PANEL_APP_PREFERENCES_IDS = Object.freeze(['library', 'databases', 'dashboards']);
+/** #587 — `state.ts` may never hard-code one of the registry's own display
+ *  labels; labels belong to the registry, not the state model. */
+export const SIDE_PANEL_STATE_LABELS = Object.freeze(['Databases', 'Dashboards', 'Library', 'History']);
+/** #587/#600 — `app-shell.ts` may never hard-code one of the registry's own
+ *  panel ids as a literal. */
+export const SIDE_PANEL_APP_SHELL_IDS = Object.freeze(['databases', 'dashboards', 'library', 'history']);
+/** #600 — `app-shell.ts` may never name one of the four concrete panel-def
+ *  symbols the registry composes instead. */
+export const SIDE_PANEL_APP_SHELL_DEFS = Object.freeze([
+  'databasesPanelDef', 'dashboardsPanelDef', 'libraryPanelDef', 'historyPanelDef',
+]);
+/** #600 (round 2) — `app-shell.ts` may never name one of the two concrete
+ *  upper-pane host accessors the registry's own `entries` should supply
+ *  instead. */
+export const SIDE_PANEL_APP_SHELL_HOSTS = Object.freeze(['databasesHost', 'dashboardsHost']);
+/** #587 — `side-panels.ts`'s own derived pane-id type aliases
+ *  (`UpperPanelId`/`LowerPanelId`/etc.) may never contain a hand-written
+ *  protected literal panel id — the whole point of deriving them from
+ *  `SIDE_PANELS` is that adding a manifest row is the only thing that grows
+ *  either union. */
+export const SIDE_PANEL_TYPE_ALIAS_IDS = Object.freeze(['databases', 'dashboards', 'library', 'history']);
+/** #587 — `app.ts` may never directly string-compare `sidePanel.value`; it
+ *  must address panels only through `app.shell.sidePanels`. */
+export const SIDE_PANEL_APP_COMPARISON_VALUES = Object.freeze(['saved', 'history', 'library']);
+
+/** #587 AC5 — `workbench-session.ts` must never spell the contiguous raw
+ *  string `sidePanel` in real code: not as an identifier, a string/template
+ *  literal, a regex literal, or a computed-element-access argument. This is
+ *  DELIBERATELY a broad contiguous-substring check (not an exact-value
+ *  check like the panel-id/label rules below) — it preserves today's
+ *  `/sidePanel/` raw-regex contract, which flags ANY occurrence containing
+ *  that spelling, e.g. `sidePanelAlias`, not only the bare word. Comments
+ *  are trivia the parser never hands to `TEXTUAL_LEAF_KINDS`, so prose
+ *  explaining the invariant can never false-positive. */
+function workbenchSidePanelMentionViolations(sourceFile, filename) {
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (TEXTUAL_LEAF_KINDS.has(node.kind) && typeof node.text === 'string' && node.text.includes('sidePanel')) {
+      violations.push(makeViolation(
+        'workbench-sidepanel-mention', filename, node.getStart(sourceFile),
+        'contiguous "sidePanel" spelling found in real code (identifier/string/template/regex/computed-access)',
+      ));
+    }
+  });
+  return violations;
+}
+
+/**
+ * A real strict-equality (`===`) `BinaryExpression` where one operand is an
+ * exact-value literal in `literalTargets` and the other satisfies
+ * `chainPredicate` — in EITHER operand order (`value === 'x'` and
+ * `'x' === value` both match), and under any quote style (a string vs. a
+ * no-substitution template literal decode to the identical `.text`, so
+ * quote-style support falls out of the AST representation for free — no
+ * separate quote-style branch is needed or present). Shared by the
+ * workbench `history`-comparison rule (`chainPredicate` always true — ANY
+ * other operand counts) and the `app.ts` `sidePanel.value` comparison rule
+ * (`chainPredicate` requires the terminal two-segment chain). This is a
+ * deliberate STRENGTHENING over today's one-directional, single-quote-only
+ * regexes (`/===\s*'history'/`, `/sidePanel\.value\s*===\s*'(saved|history|
+ * library)'/`) — not a preservation of an existing bidirectional/
+ * multi-quote-style contract, since neither existed before.
+ *
+ * @param {object} sourceFile
+ * @param {string} filename
+ * @param {string} rule
+ * @param {readonly string[]} literalTargets
+ * @param {(expr: object) => boolean} chainPredicate
+ * @param {(literalText: string) => string} detailFor
+ * @returns {object[]}
+ */
+function strictEqualityLiteralViolations(sourceFile, filename, rule, literalTargets, chainPredicate, detailFor) {
+  const targets = new Set(literalTargets);
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsEqualsEqualsToken) return;
+    let literalSide = null;
+    let otherSide = null;
+    if (exactLiteralMatch(node.left, targets)) {
+      literalSide = node.left;
+      otherSide = node.right;
+    } else if (exactLiteralMatch(node.right, targets)) {
+      literalSide = node.right;
+      otherSide = node.left;
+    } else {
+      return;
+    }
+    if (!chainPredicate(otherSide)) return;
+    violations.push(makeViolation(rule, filename, node.getStart(sourceFile), detailFor(literalSide.text)));
+  });
+  return violations;
+}
+
+/** Every node in `EXACT_LITERAL_KINDS` whose complete value is exactly one of
+ *  `targetsArr` is a violation of `rule` — the shared implementation behind
+ *  the app-preferences/state/app-shell-panel-id exact-value rules (#643
+ *  mandatory addition 1: because this is an UNSCOPED tree walk, it matches a
+ *  type-position literal, e.g. `type Pref = 'library'`, on exactly the same
+ *  terms as an expression-position one, e.g. `const id = "library"` — see
+ *  `exactLiteralMatch`'s own doc comment). Deliberately does NOT flag a
+ *  longer literal merely CONTAINING one of `targetsArr` as a substring
+ *  (`"pick 'library' now"` stays clean) — the precision change every one of
+ *  these rules' plan sections documents relative to today's raw
+ *  single-quoted substring regexes. */
+function exactLiteralRuleViolations(sourceFile, filename, rule, targetsArr) {
+  const targets = new Set(targetsArr);
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (exactLiteralMatch(node, targets)) {
+      violations.push(makeViolation(rule, filename, node.getStart(sourceFile), `protected literal value "${node.text}"`));
+    }
+  });
+  return violations;
+}
+
+/** Every node that is either an exact-value identifier OR an exact-value
+ *  literal spelling one of `targetsArr` is a violation of `rule` — the
+ *  app-shell panel-DEFINITION rule ("a real identifier or parser-recognized
+ *  literal token spelling the concrete symbol remains a violation"), unlike
+ *  the literal-only exact-value rule above. */
+function exactIdentifierOrLiteralRuleViolations(sourceFile, filename, rule, targetsArr) {
+  const targets = new Set(targetsArr);
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (exactIdentifierMatch(node, targets) || exactLiteralMatch(node, targets)) {
+      violations.push(makeViolation(rule, filename, node.getStart(sourceFile), `concrete symbol "${node.text}" referenced in real code`));
+    }
+  });
+  return violations;
+}
+
+/** `app-shell.ts`'s concrete-host rule — `databasesHost`/`dashboardsHost`
+ *  must never be named. Combines three independent shapes into one rule
+ *  (plan §"concrete hosts"): (1) an exact-value identifier — covers dot
+ *  access (`host.databasesHost`), optional access (`host?.dashboardsHost`),
+ *  and destructuring (`const { databasesHost } = hosts`), since all three
+ *  are the SAME AST node kind (a plain `Identifier`) to an unscoped walk;
+ *  (2) an `ElementAccessExpression` whose argument is an exact-value
+ *  string/no-substitution-template literal — `host['dashboardsHost']` /
+ *  `` host[`databasesHost`] ``, the two forms `findNamedIdentifierViolations`
+ *  intentionally does not cover (this rule extends coverage for exactly
+ *  these two names, without changing that shared helper globally — plan
+ *  ruling); (3) preserving today's broad CONTIGUOUS `.databasesHost`/
+ *  `.dashboardsHost` literal-code substring behavior, but now scoped to an
+ *  actual literal TOKEN rather than the whole raw file text — a string/
+ *  template literal whose value happens to contain the dotted spelling
+ *  (e.g. prose mentioning `.databasesHost`) still trips this rule, exactly
+ *  as today's substring regex would, while a comment saying the same thing
+ *  does not (trivia). Dynamic construction (`host[prefix + 'Host']`) stays
+ *  provably out of scope: it is neither an exact-value identifier nor an
+ *  `ElementAccessExpression` with a literal argument, and no constant
+ *  folding is attempted. */
+function appShellHostAccessorViolations(sourceFile, filename) {
+  const targets = new Set(SIDE_PANEL_APP_SHELL_HOSTS);
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (exactIdentifierMatch(node, targets)) {
+      violations.push(makeViolation(
+        'app-shell-host-accessor', filename, node.getStart(sourceFile),
+        `concrete host accessor "${node.text}" named directly`,
+      ));
+      return;
+    }
+    if (node.kind === SyntaxKind.ElementAccessExpression && exactLiteralMatch(node.argumentExpression, targets)) {
+      violations.push(makeViolation(
+        'app-shell-host-accessor', filename, node.getStart(sourceFile),
+        `concrete host accessor "${node.argumentExpression.text}" named via computed element access`,
+      ));
+      return;
+    }
+    if (TEXTUAL_LEAF_KINDS.has(node.kind) && typeof node.text === 'string') {
+      for (const name of targets) {
+        if (node.text.includes(`.${name}`)) {
+          violations.push(makeViolation(
+            'app-shell-host-accessor', filename, node.getStart(sourceFile),
+            `literal token spells the contiguous accessor ".${name}"`,
+          ));
+          break;
+        }
+      }
+    }
+  });
+  return violations;
+}
+
+/** `side-panels.ts`'s type-alias rule: walk actual `TypeAliasDeclaration`
+ *  nodes (never the retired type-alias-extraction regex). Requires at least
+ *  one alias to exist at all (a total-removal regression — deleting every
+ *  derived pane-id type alias — must not silently read as "zero violations
+ *  found"), and flags any protected literal panel id sitting anywhere in an
+ *  alias's OWN `.type` subtree — deliberately scoped to that subtree, not
+ *  the whole file, because the file's real, authoritative `SIDE_PANELS`
+ *  manifest array legitimately spells these exact literals (`{ id:
+ *  'databases', pane: 'upper' }`) outside any type alias, and must stay
+ *  clean. A defaulted generic type parameter (`type Probe<T = SidePanelId> =
+ *  T | 'databases';`) does not exempt the alias from either check — the walk
+ *  finds the `TypeAliasDeclaration` node itself regardless of its type
+ *  parameters, then walks its `.type` unconditionally. */
+function sidePanelsTypeAliasViolations(sourceFile, filename) {
+  const targets = new Set(SIDE_PANEL_TYPE_ALIAS_IDS);
+  const violations = [];
+  let aliasCount = 0;
+  walkTree(sourceFile, (node) => {
+    if (node.kind !== SyntaxKind.TypeAliasDeclaration) return;
+    aliasCount += 1;
+    const aliasName = node.name.text;
+    walkTree(node.type, (inner) => {
+      if (exactLiteralMatch(inner, targets)) {
+        violations.push(makeViolation(
+          'side-panels-type-alias', filename, inner.getStart(sourceFile),
+          `type alias "${aliasName}" contains protected literal panel id "${inner.text}"`,
+        ));
+      }
+    });
+  });
+  if (aliasCount === 0) {
+    violations.push(makeViolation(
+      'side-panels-type-alias', filename, 0,
+      'no type alias declarations found at all — the derived pane-id unions must stay derived from the manifest',
+    ));
+  }
+  return violations;
+}
+
+/** Terminal two-segment chain predicate for the `app.ts` comparison rule:
+ *  the receiver expression's own last two identifier segments must be
+ *  exactly `sidePanel`, then `value` — `sidePanel.value`,
+ *  `app.shell.sidePanel.value`, etc. all match; a shorter or differently
+ *  named chain does not. */
+function isSidePanelValueChain(expr) {
+  const names = terminalNames(expr, 2);
+  return names.length === 2 && names[0] === 'sidePanel' && names[1] === 'value';
+}
+
+const SIDE_PANEL_RULE_DISPATCH = Object.freeze({
+  [WORKBENCH_SESSION_FILE]: (sourceFile, filename) => [
+    ...workbenchSidePanelMentionViolations(sourceFile, filename),
+    ...strictEqualityLiteralViolations(
+      sourceFile, filename, 'workbench-history-compare', ['history'], () => true,
+      (value) => `strict equality against literal "${value}"`,
+    ),
+  ],
+  [APP_PREFERENCES_FILE]: (sourceFile, filename) =>
+    exactLiteralRuleViolations(sourceFile, filename, 'app-preferences-panel-id', SIDE_PANEL_APP_PREFERENCES_IDS),
+  [STATE_FILE]: (sourceFile, filename) =>
+    exactLiteralRuleViolations(sourceFile, filename, 'state-panel-label', SIDE_PANEL_STATE_LABELS),
+  [APP_FILE]: (sourceFile, filename) => strictEqualityLiteralViolations(
+    sourceFile, filename, 'app-side-panel-comparison', SIDE_PANEL_APP_COMPARISON_VALUES, isSidePanelValueChain,
+    (value) => `sidePanel.value strictly compared against literal "${value}"`,
+  ),
+  [APP_SHELL_FILE]: (sourceFile, filename) => [
+    ...exactIdentifierOrLiteralRuleViolations(sourceFile, filename, 'app-shell-panel-def', SIDE_PANEL_APP_SHELL_DEFS),
+    ...exactLiteralRuleViolations(sourceFile, filename, 'app-shell-panel-id', SIDE_PANEL_APP_SHELL_IDS),
+    ...appShellHostAccessorViolations(sourceFile, filename),
+  ],
+  [SIDE_PANELS_CORE_FILE]: (sourceFile, filename) => sidePanelsTypeAliasViolations(sourceFile, filename),
+});
+
+/**
+ * Issue #643 — the #587 AC5 side-panel source contract, real-parser-backed.
+ * `filename` selects which (if any) of the six rule groups above apply — a
+ * file outside `SIDE_PANEL_RULE_DISPATCH`'s six keys returns `[]` without
+ * even being parsed, matching every other owner-scoped helper in this
+ * module (`findNamedIdentifierViolations` et al.). Different rule groups
+ * intentionally use different literal semantics (broad contiguous-substring
+ * detection vs. exact-value comparison vs. structural chain/identifier
+ * matching) — this dispatcher composes them, it does not collapse them into
+ * one generic vocabulary matcher.
+ *
+ * @param {string} source
+ * @param {string} filename repo-relative, forward-slash separated
+ * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
+ */
+export function findSidePanelSourceContractViolations(source, filename) {
+  const dispatch = SIDE_PANEL_RULE_DISPATCH[filename];
+  if (!dispatch) return [];
+  return withParsedSource(source, filename, (sourceFile) => dispatch(sourceFile, filename));
+}
+
+// ── Surface-lifecycle source contract (#590 invariant (k)) ──────────────────
+
+/** Classify `[start, end)` against `[coordinatorStart, coordinatorEnd)`:
+ *  `'inside'` when it lies entirely within, `'outside'` when it lies
+ *  entirely outside (on either side), and `'straddle'` for the one shape no
+ *  compile-time mechanism can foreclose either — a range that crosses a
+ *  marker boundary. A `'straddle'` is always treated as a violation by every
+ *  caller below (never silently passed), matching the plan's own
+ *  "deterministic boundary violation" wording. */
+function coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd) {
+  if (start >= coordinatorStart && end <= coordinatorEnd) return 'inside';
+  if (end <= coordinatorStart || start >= coordinatorEnd) return 'outside';
+  return 'straddle';
+}
+
+/** The four coordinator-owned declarations `app.ts` must declare EXACTLY
+ *  inside the marked region — both directions enforced (a name missing from
+ *  inside is flagged exactly like an occurrence found outside), mirroring
+ *  the retired regex test's own two-sided
+ *  `toMatch(inside)`/`not.toMatch(outside)` pair: a symbol that disappears
+ *  from the file ENTIRELY must not silently read as "zero violations", the
+ *  same reasoning `sidePanelsTypeAliasViolations`'s alias-count guard
+ *  applies above. */
+const PROTECTED_DECLARATION_NAMES = Object.freeze([
+  'disposeShell', 'disposeCurrentSurface', 'committedWorkspaceSignal', 'mainSurfaceSignal',
+]);
+
+function protectedDeclarationViolations(appSourceFile, appFile, coordinatorStart, coordinatorEnd) {
+  const violations = [];
+  const foundInside = new Set();
+  walkTree(appSourceFile, (node) => {
+    if (node.kind !== SyntaxKind.VariableDeclaration || node.name.kind !== SyntaxKind.Identifier) return;
+    const name = node.name.text;
+    if (!PROTECTED_DECLARATION_NAMES.includes(name)) return;
+    const start = node.getStart(appSourceFile);
+    const end = node.getEnd();
+    const placement = coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd);
+    if (placement === 'inside') {
+      foundInside.add(name);
+    } else {
+      violations.push(makeViolation(
+        'surface-protected-declaration', appFile, start,
+        `"${name}" is declared ${placement} the coordinator region`,
+      ));
+    }
+  });
+  for (const name of PROTECTED_DECLARATION_NAMES) {
+    if (!foundInside.has(name)) {
+      violations.push(makeViolation(
+        'surface-protected-declaration', appFile, 0,
+        `"${name}" has no declaration inside the coordinator region`,
+      ));
+    }
+  }
+  return violations;
+}
+
+/** `app.ts`'s teardown-call rule, outside the coordinator only. A real
+ *  `CallExpression` violates when its callee's own terminal ONE segment is
+ *  `disposeShell`/`disposeCurrentSurface` (bare or member-prefixed —
+ *  `disposeShell()`, `owner.disposeShell()` both match, since
+ *  `terminalNames` only inspects the LAST segment) or its terminal TWO
+ *  segments are exactly `shell`, `dispose` (`shell.dispose()`,
+ *  `app.shell.dispose()`, and — because optional-chained property access is
+ *  the SAME `PropertyAccessExpression` AST kind, just with a
+ *  `questionDotToken` set — `shell?.dispose()` too, with no separate
+ *  branch needed). */
+const TEARDOWN_SINGLE_SEGMENT_NAMES = new Set(['disposeShell', 'disposeCurrentSurface']);
+
+function teardownCallViolations(appSourceFile, appFile, coordinatorStart, coordinatorEnd) {
+  const violations = [];
+  walkTree(appSourceFile, (node) => {
+    if (node.kind !== SyntaxKind.CallExpression) return;
+    const single = terminalNames(node.expression, 1);
+    const double = terminalNames(node.expression, 2);
+    const isSingleMatch = single.length === 1 && TEARDOWN_SINGLE_SEGMENT_NAMES.has(single[0]);
+    const isShellDisposeMatch = double.length === 2 && double[0] === 'shell' && double[1] === 'dispose';
+    if (!isSingleMatch && !isShellDisposeMatch) return;
+    const start = node.getStart(appSourceFile);
+    const end = node.getEnd();
+    const placement = coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd);
+    if (placement !== 'inside') {
+      violations.push(makeViolation(
+        'surface-teardown-call', appFile, start,
+        `a teardown call sits ${placement} the coordinator region`,
+      ));
+    }
+  });
+  return violations;
+}
+
+/** The two private signal identifiers a plain `.value =` write may never
+ *  target outside the coordinator, tree-wide (`app.ts` gets the coordinator
+ *  exception; every other file never legally names either identifier at
+ *  all, since they are not exported). */
+const SURFACE_SIGNAL_NAMES = Object.freeze(['committedWorkspaceSignal', 'mainSurfaceSignal']);
+
+function signalWriteViolations(sourceFile, filename, isAppFile, coordinatorStart, coordinatorEnd) {
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsToken) return;
+    const left = node.left;
+    if (left.kind !== SyntaxKind.PropertyAccessExpression || left.name.text !== 'value') return;
+    const owner = terminalNames(left.expression, 1);
+    if (owner.length !== 1 || !SURFACE_SIGNAL_NAMES.includes(owner[0])) return;
+    const start = node.getStart(sourceFile);
+    const end = node.getEnd();
+    if (isAppFile && coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd) === 'inside') return;
+    violations.push(makeViolation(
+      'surface-signal-write', filename, start,
+      `"${owner[0]}.value" is written outside the coordinator region`,
+    ));
+  });
+  return violations;
+}
+
+/**
+ * `currentWorkspace = null` (and every transparent cast/assertion wrapper
+ * around the `null`) outside the coordinator, tree-wide (`app.ts` gets the
+ * coordinator exception). The left side must be an actual property access
+ * ending in `.currentWorkspace` (a bare, receiver-less `currentWorkspace =
+ * null` was never in scope for today's `\.currentWorkspace` regex either,
+ * and stays out of scope here). `null ?? fallback` is a deliberate,
+ * documented exclusion — see `unwrapNullEquivalentWrappers`'s own doc
+ * comment for why `??` is not a transparent wrapper.
+ */
+function currentWorkspaceNullViolations(sourceFile, filename, isAppFile, coordinatorStart, coordinatorEnd) {
+  const violations = [];
+  walkTree(sourceFile, (node) => {
+    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsToken) return;
+    const left = node.left;
+    if (left.kind !== SyntaxKind.PropertyAccessExpression || left.name.text !== 'currentWorkspace') return;
+    const resolved = unwrapNullEquivalentWrappers(node.right);
+    if (!resolved || resolved.kind !== SyntaxKind.NullKeyword) return;
+    const start = node.getStart(sourceFile);
+    const end = node.getEnd();
+    if (isAppFile && coordinatorPlacement(start, end, coordinatorStart, coordinatorEnd) === 'inside') return;
+    violations.push(makeViolation(
+      'surface-current-workspace-null', filename, start,
+      '"currentWorkspace" is assigned a null-equivalent value outside the coordinator region',
+    ));
+  });
+  return violations;
+}
+
+/** Every function-like AST kind whose `.body` may be a `Block` — including
+ *  return-annotated declarations (`function f(): T { ... }`), which the
+ *  retired textual opener (`/(?:=>|\))\s*\{/`) could never recognize because
+ *  the return-type annotation's text sits between the parameter list's `)`
+ *  and the body's `{`. Deliberately excludes concise (non-block) arrow
+ *  bodies (`() => expr`) — there is no `Block` there to scope. */
+const FUNCTION_LIKE_KINDS = new Set([
+  SyntaxKind.FunctionDeclaration,
+  SyntaxKind.FunctionExpression,
+  SyntaxKind.ArrowFunction,
+  SyntaxKind.MethodDeclaration,
+  SyntaxKind.GetAccessor,
+  SyntaxKind.SetAccessor,
+  SyntaxKind.Constructor,
+]);
+
+/**
+ * Every "ordering scope" in `sourceFile` — a `Block`/`CaseBlock` node whose
+ * enclosing construct the plan's own ordering-scope table names: every
+ * block-bodied function-like node (see `FUNCTION_LIKE_KINDS`), PLUS exactly
+ * the parenthesized control-flow forms the retired `) {` textual opener
+ * happened to also treat as independent scopes — `if`'s then-block, a
+ * `for`/`for-in`/`for-of`/`while`/`with` body when it is itself a `Block`,
+ * a `switch`'s whole `CaseBlock` (one scope for every case together, not
+ * one per case — matching the opener's single `switch (...) {` match), and
+ * a `catch` block ONLY when it has the parenthesized binding form
+ * (`catch (e) { ... }`, never binding-less `catch { ... }`, which the old
+ * opener's `)` requirement also never matched). Deliberately does NOT add
+ * `else`/`do`/`try`/`finally`/binding-less-`catch`/a bare standalone block as
+ * independent scopes — the old opener never recognized those either, and
+ * they remain reachable (and checked) only through whichever enclosing
+ * scope from this list actually contains them.
+ *
+ * @param {object} sourceFile
+ * @returns {object[]} `Block`/`CaseBlock` nodes, one per ordering scope
+ */
+function collectOrderingScopes(sourceFile) {
+  const scopes = [];
+  walkTree(sourceFile, (node) => {
+    if (FUNCTION_LIKE_KINDS.has(node.kind) && node.body && node.body.kind === SyntaxKind.Block) {
+      scopes.push(node.body);
+      return;
+    }
+    if (node.kind === SyntaxKind.IfStatement && node.thenStatement && node.thenStatement.kind === SyntaxKind.Block) {
+      scopes.push(node.thenStatement);
+      return;
+    }
+    if (
+      (node.kind === SyntaxKind.ForStatement
+        || node.kind === SyntaxKind.ForInStatement
+        || node.kind === SyntaxKind.ForOfStatement
+        || node.kind === SyntaxKind.WhileStatement
+        || node.kind === SyntaxKind.WithStatement)
+      && node.statement && node.statement.kind === SyntaxKind.Block
+    ) {
+      scopes.push(node.statement);
+      return;
+    }
+    if (node.kind === SyntaxKind.SwitchStatement) {
+      scopes.push(node.caseBlock);
+      return;
+    }
+    if (node.kind === SyntaxKind.CatchClause && node.variableDeclaration && node.block) {
+      scopes.push(node.block);
+    }
+  });
+  return scopes;
+}
+
+/** True for a plain `=` write whose left side is a property access ending in
+ *  `.mainSurface` or `.currentWorkspace` — the ordering rule's OWN "protected
+ *  write" shape, deliberately independent of (broader than in file scope,
+ *  narrower in property-name scope than) the tree-wide null/signal rules
+ *  above: this fires regardless of the RHS value, matching today's
+ *  `/\.(?:mainSurface|currentWorkspace)\s*=(?!=)/` identifier-anchored
+ *  regex. */
+function isProtectedOrderingWrite(node) {
+  return node.kind === SyntaxKind.BinaryExpression
+    && node.operatorToken.kind === SyntaxKind.EqualsToken
+    && node.left.kind === SyntaxKind.PropertyAccessExpression
+    && (node.left.name.text === 'mainSurface' || node.left.name.text === 'currentWorkspace');
+}
+
+const RETIRE_CALL_NAME_PATTERN = /^retireTo/;
+
+/** True for a real call whose callee's own terminal (last) identifier
+ *  segment matches `retireTo*` — bare or member-prefixed, matching today's
+ *  `/\bretireTo\w*\s*\(/` textual pattern's own breadth. */
+function isRetirementCall(node) {
+  if (node.kind !== SyntaxKind.CallExpression) return false;
+  const names = terminalNames(node.expression, 1);
+  return names.length === 1 && RETIRE_CALL_NAME_PATTERN.test(names[0]);
+}
+
+/** The earliest `getStart(sourceFile)` position, among every descendant of
+ *  `scopeNode` (scopeNode itself included) for which `predicate` is true —
+ *  or `null` when none match. Deliberately walks the WHOLE subtree
+ *  unconditionally (never stopping at a nested scope's own boundary), which
+ *  is exactly how "nested descendants remain visible to their enclosing
+ *  scope" (today's conservative lexical model) is preserved: a retirement
+ *  call three functions deep still counts for every scope that contains it. */
+function firstMatchStart(scopeNode, sourceFile, predicate) {
+  let best = null;
+  walkTree(scopeNode, (node) => {
+    if (!predicate(node)) return;
+    const pos = node.getStart(sourceFile);
+    if (best === null || pos < best) best = pos;
+  });
+  return best;
+}
+
+/**
+ * The retirement-ordering rule, tree-wide, unconditional on the coordinator
+ * (the plan's own rule-scope matrix names no coordinator carve-out for
+ * ordering, matching the retired implementation, which applied
+ * `functionBodies`/its regex identically to every scanned file with no
+ * app.ts-specific branch at all). For every ordering scope
+ * (`collectOrderingScopes`), find the scope's own first protected write and
+ * first retirement call (both possibly satisfied by a nested descendant —
+ * see `firstMatchStart`) and flag the scope only when a write precedes a
+ * retirement call that also exists in that same scope; a scope with a write
+ * but no retirement call anywhere within it is clean (today's "retire before
+ * write" and "no retire at all" cases were never distinguished, and stay
+ * that way).
+ *
+ * @param {object} sourceFile
+ * @param {string} filename
+ * @returns {object[]}
+ */
+function retirementOrderingViolations(sourceFile, filename) {
+  const violations = [];
+  for (const scope of collectOrderingScopes(sourceFile)) {
+    const writeStart = firstMatchStart(scope, sourceFile, isProtectedOrderingWrite);
+    if (writeStart === null) continue;
+    const retireStart = firstMatchStart(scope, sourceFile, isRetirementCall);
+    if (retireStart !== null && writeStart < retireStart) {
+      violations.push(makeViolation(
+        'surface-retirement-ordering', filename, writeStart,
+        `a mainSurface/currentWorkspace write at ${writeStart} precedes a retireTo*() call at ${retireStart} within one ordering scope`,
+      ));
+    }
+  }
+  return violations;
+}
+
+/**
+ * Issue #643 — the #590 invariant (k) surface-lifecycle source contract,
+ * real-parser-backed, over the COMPLETE scanned `src/**` source set in one
+ * shared parser batch (`withParsedSources`, never one process per file — see
+ * that function's own doc comment for why this matters at this tree's
+ * file count). `sources` supplies every currently scanned file's raw text
+ * unchanged (comments included — the coordinator markers themselves are
+ * `//` line comments the caller locates in the SAME raw text before calling
+ * this, and their byte offsets align exactly with this function's AST node
+ * positions because neither side strips or reconstructs anything).
+ * `coordinatorStart`/`coordinatorEnd` are those two raw offsets in
+ * `appFile`'s own source; `appFile` must be one of the filenames in
+ * `sources`, or this throws (fail loud, matching every other "could not
+ * resolve the source I was asked to check" case in this module).
+ *
+ * @param {readonly {filename: string, source: string}[]} sources
+ * @param {{appFile: string, coordinatorStart: number, coordinatorEnd: number}} options
+ * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
+ */
+export function findSurfaceLifecycleSourceContractViolations(sources, { appFile, coordinatorStart, coordinatorEnd }) {
+  return withParsedSources(sources, (sourceFiles) => {
+    const appSourceFile = sourceFiles.get(appFile);
+    if (!appSourceFile) {
+      throw new Error(`check-legacy-owners: ${appFile} was not found in the supplied surface-lifecycle source batch`);
+    }
+    const violations = [
+      ...protectedDeclarationViolations(appSourceFile, appFile, coordinatorStart, coordinatorEnd),
+      ...teardownCallViolations(appSourceFile, appFile, coordinatorStart, coordinatorEnd),
+    ];
+    for (const [filename, sourceFile] of sourceFiles) {
+      const isAppFile = filename === appFile;
+      violations.push(...signalWriteViolations(sourceFile, filename, isAppFile, coordinatorStart, coordinatorEnd));
+      violations.push(...currentWorkspaceNullViolations(sourceFile, filename, isAppFile, coordinatorStart, coordinatorEnd));
+      violations.push(...retirementOrderingViolations(sourceFile, filename));
+    }
+    return violations;
+  });
 }
