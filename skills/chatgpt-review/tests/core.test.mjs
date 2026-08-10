@@ -161,6 +161,32 @@ test('plain reviewed-head labels exclude previous-head lines', () => {
   assert.equal(extractReportedMetadata(`Previously reviewed head: ${previous}\nReviewed head: ${current}`).reportedReviewedSha, current);
 });
 
+// Issue #669 — confirmed live on a real /ship code-review loop (issue #642, PR #668):
+// ChatGPT wrapped its reported SHA in Markdown bold ("**`<sha>`**") between the label's
+// colon and the backtick, which defeated every labelled pattern and silently fell back to
+// the wrong (earlier-mentioned) SHA.
+test('a Markdown-bolded reviewed-head SHA is still extracted over an earlier bolded SHA', () => {
+  const previous = 'a'.repeat(40);
+  const current = 'b'.repeat(40);
+  const text = `Previously reviewed SHA: **\`${previous}\`**\nPass-2 reviewed head: **\`${current}\`**. The PR remained on that head.`;
+  assert.equal(extractReportedMetadata(text).reportedReviewedSha, current);
+});
+
+// Issue #669 follow-up — found live in the SAME pass-3 review this fix was verified
+// against: a different word order ("Reviewed pass-3 head:" — "reviewed" before the pass
+// number, rather than "Pass-2 reviewed head:" — pass number before "reviewed") that the
+// original fix for the Markdown-bold case alone did not cover. Also exercises the
+// qualifier-word-after-the-match trap: the real text's second sentence, on the SAME
+// physical line as the valid match with no newline between them, happens to end with
+// "...ahead of the requested anchor." — an unrelated later use of a qualifier word that
+// must NOT retroactively invalidate the match that precedes it.
+test('a different reviewed-head word order is extracted, and a later unrelated qualifier word on the same line does not invalidate it', () => {
+  const previous = 'c'.repeat(40);
+  const current = 'd'.repeat(40);
+  const text = `Reviewed anchor SHA: **\`${previous}\`**\nReviewed pass-3 head: **\`${current}\`**. The PR head has not moved since pass 2; it is one commit ahead of the requested anchor.`;
+  assert.equal(extractReportedMetadata(text).reportedReviewedSha, current);
+});
+
 test('sensitive paths and binary patches are rejected or stripped', () => {
   assert.equal(isSensitivePath('.env.local'), true);
   assert.equal(isSensitivePath('keys/id_ed25519'), true);
