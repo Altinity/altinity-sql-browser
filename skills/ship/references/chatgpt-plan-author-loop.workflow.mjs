@@ -17,14 +17,14 @@ if (!runArgs || !runArgs.issueUrl || !runArgs.planFile || !runArgs.contextFile) 
 
 const AUTHOR_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['completed', 'planStatus', 'session', 'conversationUrl', 'blocker', 'lastResponsePreview'],
+  required: ['completed', 'planStatus', 'session', 'conversationUrl', 'blocker', 'lastResponsePreviewFile'],
   properties: {
     completed: { type: 'boolean' },
     planStatus: { type: 'string', enum: ['READY', 'BLOCKED', 'INVALID'] },
     session: { type: ['string', 'null'] },
     conversationUrl: { type: ['string', 'null'] },
     blocker: { type: ['string', 'null'] },
-    lastResponsePreview: { type: ['string', 'null'], description: 'if completed=false, the last ~500 chars of the FINAL attempt\'s response_text (even if empty/partial) — diagnostic only, so a future incomplete-with-real-content-present case (observed once on #630 phase 8, never root-caused) is easier to tell apart from a genuinely empty/stuck generation without re-deriving it from scratch. null when completed=true.' },
+    lastResponsePreviewFile: { type: ['string', 'null'], description: 'if completed=false, the file path (no embedded newlines/quotes) the runner wrote via the mandated mechanical Bash command containing the last ~500 chars of the FINAL attempt\'s response_text (even if empty/partial) — diagnostic only, so a future incomplete-with-real-content-present case (observed once on #630 phase 8, never root-caused) is easier to tell apart from a genuinely empty/stuck generation without re-deriving it from scratch. The runner must never hand-transcribe response_text into this or any other tool-call argument — only a file path is ever schema data. null when completed=true (no file written).' },
   },
 }
 const REVIEW_SCHEMA = {
@@ -58,16 +58,21 @@ for (let pass = 1; pass <= 5; pass++) {
   log(`ChatGPT plan authoring / Fable review pass ${pass}/5 — ${label}`)
   const sessionFlag = session ? ` --session ${shellQuote(session)}` : ''
   const revisionNoteFlag = revisionNoteFile ? ` --revision-note-file ${shellQuote(revisionNoteFile)}` : ''
+  // Fixed by the workflow, not the runner agent, so the diagnostic path is deterministic
+  // and the agent never has to invent or transcribe anything into it.
+  const previewFile = `${runArgs.contextFile}.author-pass-${pass}-response-preview.txt`
   const authored = await agent(
     'Run the private ChatGPT plan-author command below in Bash IN THE FOREGROUND with the Bash timeout set to 580000, redirect stdout to a JSON file under $TMPDIR, and never use run_in_background:\n\n' +
     `node skills/chatgpt-review/scripts/chatgpt-review.mjs plan-author ${shellQuote(runArgs.issueUrl)} --output-file ${shellQuote(runArgs.planFile)} --question-file ${shellQuote(runArgs.contextFile)}${revisionNoteFlag} --timeout 540${sessionFlag}\n\n` +
-    'Read the JSON. A complete result has status=completed and plan_status=ready or blocked. For timed_out, rate_limited, invalid_response, or any other incomplete result, retry the same command with --session from the JSON for up to 4 total attempts; wait 90 seconds before a rate_limited retry using a small-increment loop. Never start a new conversation after a session handle exists. Map the last JSON to the schema: completed=true only for a complete ready/blocked protocol; planStatus from plan_status uppercased, otherwise INVALID; retain session, conversation_url, and blocker; lastResponsePreview = the last ~500 characters of the FINAL attempt\'s response_text field (even if it looks empty, partial, or truncated) when completed=false, otherwise null — this is diagnostic only, to help a future incomplete-with-real-content-present case get root-caused instead of just re-observed. The command is private and must never receive publication flags. ' + RUNNER_BOUNDARY,
+    'Read the JSON. A complete result has status=completed and plan_status=ready or blocked. For timed_out, rate_limited, invalid_response, or any other incomplete result, retry the same command with --session from the JSON for up to 4 total attempts; wait 90 seconds before a rate_limited retry using a small-increment loop. Never start a new conversation after a session handle exists. Map the last JSON to the schema: completed=true only for a complete ready/blocked protocol; planStatus from plan_status uppercased, otherwise INVALID; retain session, conversation_url, and blocker. ' +
+    `If completed=false (the FINAL attempt, retried or not, never reached a complete ready/blocked protocol), run exactly this Bash command, substituting the FINAL attempt's own JSON output file path for FINAL_JSON_FILE: node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));fs.writeFileSync(process.argv[2], String(j.response_text||'').slice(-500))" FINAL_JSON_FILE ${shellQuote(previewFile)} — then set lastResponsePreviewFile to exactly this path string: ${previewFile} . This is purely mechanical file-to-file copying; never read response_text yourself, never paste or paraphrase any part of it into this message or any tool-call argument, and never use it to compose completed/planStatus/blocker. If completed=true, do not run that command and set lastResponsePreviewFile to null. ` +
+    'The command is private and must never receive publication flags. ' + RUNNER_BOUNDARY,
     { label: `author plan ${pass}`, phase: 'Author', schema: AUTHOR_SCHEMA, model: 'sonnet' },
   )
   if (!authored) return { status: 'error', reason: 'plan-author runner agent died', pass, session, conversationUrl }
   session = authored.session ?? session
   conversationUrl = authored.conversationUrl ?? conversationUrl
-  if (!authored.completed) return { status: 'needs_human', reason: 'plan authoring remained incomplete after retries', pass, session, conversationUrl, lastResponsePreview: authored.lastResponsePreview }
+  if (!authored.completed) return { status: 'needs_human', reason: 'plan authoring remained incomplete after retries', pass, session, conversationUrl, lastResponsePreviewFile: authored.lastResponsePreviewFile }
   if (authored.planStatus === 'BLOCKED') {
     return { status: 'blocked', reason: authored.blocker ?? 'ChatGPT identified an unrecorded decision', pass, session, conversationUrl }
   }

@@ -128,7 +128,18 @@ export async function run(argv, dependencies = {}) {
     session = await store.write({ ...session, conversationUrl: review.conversationUrl, passCount: passNumber, lastResponseFingerprint: review.responseFingerprint ?? null, ...metadata });
     let planResult = { plan_status: null, plan_file: null, blocker: null };
     if (options.mode === 'plan-author') {
-      const parsed = parsePlanAuthorResponse(review.responseText);
+      let parsed;
+      try {
+        parsed = parsePlanAuthorResponse(review.responseText);
+      } catch (error) {
+        // parsePlanAuthorResponse only ever sees the raw text it's asked to parse, so it
+        // can't attach the wider review's captured text itself. Attach it here, at the one
+        // call site that has both the error and review.responseText in scope, so the outer
+        // catch's `error.partial ?? ''` reflects what ChatGPT actually sent instead of going
+        // diagnostically blind on every invalid_response outcome.
+        error.partial = review.responseText;
+        throw error;
+      }
       const planFile = path.resolve(options.outputFile);
       if (parsed.planStatus === 'ready') await replaceFileAtomically(planFile, parsed.plan);
       planResult = { plan_status: parsed.planStatus, plan_file: planFile, blocker: parsed.blocker };

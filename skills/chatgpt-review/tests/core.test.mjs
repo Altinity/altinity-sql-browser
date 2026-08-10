@@ -514,6 +514,42 @@ test('plan-author timeout resumes the same conversation on retry, re-uploading t
   assert.equal(await fs.readFile(planFile, 'utf8'), '# Revised plan\n');
 });
 
+test('plan-author invalid_response outcomes surface the real captured text, never an empty string', async (t) => {
+  // Regression for a confirmed-live bug (issue #639 dry run): InvalidPlanResponseError
+  // never set `.partial`, so run()'s outer catch (`error.partial ?? ''`) always returned
+  // response_text: "" for every plan-author invalid_response outcome, even though
+  // review.responseText held ChatGPT's real, substantial text one line above the throw.
+  // Reproduces both symptoms actually seen live: a malformed BLOCKED block, and a ready
+  // response missing a heading.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatgpt-plan-blind-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const planFile = path.join(dir, 'canonical.md');
+  const questionFile = path.join(dir, 'contract.md');
+  await fs.writeFile(questionFile, 'contract');
+
+  const malformedBlocked = 'PLAN_STATUS: BLOCKED\nBLOCKER: choose A or B\nSome trailing prose ChatGPT should not have added.';
+  const blockedResult = await run(
+    ['plan-author', 'https://github.com/o/r/issues/8', '--output-file', planFile, '--question-file', questionFile],
+    { store: memoryStore(new Map(), '00000000-0000-4000-8000-000000000015'),
+      driver: { async review() { return { responseText: malformedBlocked, conversationUrl: 'https://chatgpt.com/c/malformed-blocked' }; } } },
+  );
+  assert.equal(blockedResult.status, 'invalid_response');
+  assert.match(blockedResult.error, /BLOCKER line/);
+  assert.equal(blockedResult.response_text, malformedBlocked);
+  assert.notEqual(blockedResult.response_text, '');
+
+  const missingHeading = `PLAN_STATUS: READY\n${PLAN_BEGIN}\nplain text only, no heading anywhere\n${PLAN_END}`;
+  const headingResult = await run(
+    ['plan-author', 'https://github.com/o/r/issues/9', '--output-file', planFile, '--question-file', questionFile],
+    { store: memoryStore(new Map(), '00000000-0000-4000-8000-000000000016'),
+      driver: { async review() { return { responseText: missingHeading, conversationUrl: 'https://chatgpt.com/c/missing-heading' }; } } },
+  );
+  assert.equal(headingResult.status, 'invalid_response');
+  assert.match(headingResult.error, /not complete Markdown with a heading/);
+  assert.equal(headingResult.response_text, missingHeading);
+  assert.notEqual(headingResult.response_text, '');
+});
+
 function memoryStore(records, handle) {
   return {
     async create(data) { const value = { handle, passCount: 0, ...data }; records.set(handle, value); return value; },
