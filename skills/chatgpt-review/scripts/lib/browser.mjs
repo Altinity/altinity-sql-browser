@@ -268,7 +268,16 @@ export class ChatGptBrowser {
       if (!(await button.count().catch(() => 0))) return null;
       const context = this.browser.contexts()[0];
       await context?.grantPermissions?.(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin })?.catch(() => {});
-      await button.click();
+      // Confirmed live: the button resolves, is visible/enabled/stable, but a page-layout
+      // element (ChatGPT's virtualized message list spacer) sits on top of it at the exact
+      // click point, so Playwright's default "receives pointer events" actionability check
+      // fails and retries for its full 30s default before throwing — silently eaten by this
+      // method's outer catch, so every caller fell back to innerText (which can never contain
+      // the literal Markdown this exists to fetch). force:true skips just that one
+      // pointer-interception check (everything else — attached/visible/enabled/stable — still
+      // applies), and a short explicit timeout keeps a genuinely broken button failing in
+      // seconds rather than burning 30s per attempt across copyPreferredResponseText's retries.
+      await button.click({ force: true, timeout: 5000 });
       await this.sleep(150);
       // Attach the fallback race in this order — read's rejection handler attached
       // before bailAfter is even constructed — so a same-tick resolution (as in tests
