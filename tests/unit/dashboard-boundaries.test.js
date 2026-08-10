@@ -237,6 +237,44 @@ describe('dashboard dependency boundaries', () => {
       expect(found.some((line) => line.includes('__boundary_probe_642_legal__'))).toBe(false);
     });
 
+    // Review pass 1 finding: an earlier revision of `findDynamicImportUsages`
+    // never walked `ImportTypeNode`, so this exact form silently bypassed the
+    // fail-closed pre-pass despite `mightContainDynamicImport`'s gate
+    // correctly letting it through — the RETIRED regex this issue replaces
+    // matched it (a call and an import-type expression are textually
+    // identical at the `import(...)` shape a regex sees).
+    it('flags an inline import-type expression reaching into src/workspace', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_importtype__.ts',
+          "export type Foo = import('../workspace/does-not-exist.js').Foo;\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_importtype__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('flags a typeof import-type expression reaching into src/workspace', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_importtype_typeof__.ts',
+          "export type Foo = typeof import('../workspace/does-not-exist.js');\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_importtype_typeof__') && line.includes('src/workspace'))).toBe(true);
+    });
+
+    it('rejects a bare type-reference import-type argument as uncheckable', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_importtype_bare__.ts',
+          'type Bar = string;\nexport type Foo = import(Bar).Baz;\n'],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_importtype_bare__') && line.includes('uncheckable'))).toBe(true);
+    });
+
+    it('accepts a direct import-type expression resolving within an allowed layer', () => {
+      const found = violations('src/core', FORBIDDEN_CORE, [
+        ['src/core/__boundary_probe_642_importtype_legal__.ts',
+          "export type Foo = import('./format.js').Foo;\n"],
+      ]);
+      expect(found.some((line) => line.includes('__boundary_probe_642_importtype_legal__'))).toBe(false);
+    });
+
     // Regression coverage for the required static export forms — these must
     // continue through the existing static fast path, not the new dynamic
     // parser helper, and must still be rejected when they cross the boundary.

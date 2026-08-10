@@ -565,6 +565,46 @@ describe('Rule A — package source imports no SQL Browser src/** (relative)', (
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_642_legal__'))).toBe(false);
   });
+
+  // Review pass 1 finding: an earlier revision of `findDynamicImportUsages`
+  // never walked `ImportTypeNode`, so this exact form (a structurally
+  // distinct grammar production, textually identical to a dynamic-import
+  // call at the `import(...)` shape `mightContainDynamicImport`'s gate
+  // matches) silently bypassed Rule A entirely — the RETIRED regex this issue
+  // replaces caught it (it can't distinguish a call from an import-type
+  // expression either), so the AST-based classifier regressed coverage for
+  // this one shape until this fix.
+  it('flags an inline import-type expression reaching into src/application (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype__.ts',
+        "export type Foo = import('../../../src/application/does-not-exist.js').Foo;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype__') && line.includes('src/application'))).toBe(true);
+  });
+
+  it('flags a typeof import-type expression reaching into src/application (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_typeof__.ts',
+        "export type Foo = typeof import('../../../src/application/does-not-exist.js');\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_typeof__') && line.includes('src/application'))).toBe(true);
+  });
+
+  it('flags a bare type-reference import-type argument as uncheckable (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_bare__.ts',
+        'type Bar = string;\nexport type Foo = import(Bar).Baz;\n'],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_bare__') && line.includes('uncheckable'))).toBe(true);
+  });
+
+  it('does not flag a legal relative import-type expression within the package itself (issue #642 review)', () => {
+    const found = relativeViolations(PACKAGE_SRC_DIR, ['src'], [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_legal__.ts',
+        "export type Foo = import('./client.js').Foo;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_legal__'))).toBe(false);
+  });
 });
 
 describe('Rule B — package source has zero bare specifiers (empty allowlist)', () => {
@@ -610,6 +650,19 @@ describe('Rule B — package source has zero bare specifiers (empty allowlist)',
         "export async function f() { await import('./client.js'); }\n"],
     ]);
     expect(found.some((line) => line.includes('__boundary_probe_642_bare_relative__'))).toBe(false);
+  });
+
+  // Review pass 1 finding: an earlier revision of `findDynamicImportUsages`
+  // never walked `ImportTypeNode`, so a bare-specifier import-type expression
+  // silently bypassed Rule B too — the same regression as Rule A's own
+  // import-type sabotage cases above, for the bare-vs-relative half instead
+  // of the forbidden-directory half.
+  it('flags a bare import-type expression naming a package specifier (issue #642 review, sabotage probe, not written to disk)', () => {
+    const found = bareSpecifierViolations(PACKAGE_SRC_DIR, [
+      ['packages/clickhouse-http/src/__boundary_probe_642_importtype_bare_pkg__.ts',
+        "export type Foo = import('left-pad').Foo;\n"],
+    ]);
+    expect(found.some((line) => line.includes('__boundary_probe_642_importtype_bare_pkg__') && line.includes('left-pad'))).toBe(true);
   });
 });
 

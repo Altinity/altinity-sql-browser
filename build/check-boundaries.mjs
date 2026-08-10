@@ -50,21 +50,26 @@
 // were absent. Every generic-guarded file is now additionally classified by
 // the shared real-parser helpers `findDynamicImportUsages`/
 // `mightContainDynamicImport` below — `mightContainDynamicImport` gates the
-// cheap case (a file that provably contains no `import(...)` call skips the
-// parser entirely, preserving the ordinary static fast path for files with no
-// dynamic import at all); `findDynamicImportUsages` then classifies every
-// dynamic-import call expression in a matched file as `{ kind: 'static',
-// spec }` (a plain string/no-substitution-template-literal argument, fed
-// through the exact same relative-resolution/forbidden-prefix logic as an
-// ordinary static import) or `{ kind: 'uncheckable' }` (everything else —
-// identifier, computed template, concatenation, conditional, or any other
-// expression shape — an UNCONDITIONAL violation, independent of which rule
-// eventually would have matched the file). Computed/non-static dynamic
-// imports are forbidden in every source file covered by at least one generic
-// `RULES` entry; Rule C/Rule D and the other already-parser-backed package
-// guards are untouched by this — they already classify their own dynamic
-// imports through the real parser and #630/#646/#653's package-guard work is
-// not being redone here.
+// cheap case (a file that provably contains no `import(...)`-shaped
+// construct skips the parser entirely, preserving the ordinary static fast
+// path for files with none at all); `findDynamicImportUsages` then classifies
+// every dynamic-import call expression AND every TypeScript inline
+// import-type expression (`type T = import('x').Foo`, `typeof import('x')` —
+// review pass 1: a structurally distinct `ImportTypeNode`, textually
+// identical at the `import(...)` shape the gate above matches, so it reaches
+// this classifier too and must not silently fall through it) in a matched
+// file as `{ kind: 'static', spec }` (a plain string/no-substitution-
+// template-literal argument, fed through the exact same relative-resolution/
+// forbidden-prefix logic as an ordinary static import) or
+// `{ kind: 'uncheckable' }` (everything else — identifier, computed template,
+// concatenation, conditional, a bare type reference, or any other expression
+// shape — an UNCONDITIONAL violation, independent of which rule eventually
+// would have matched the file). Computed/non-static dynamic imports (and
+// non-literal import-type expressions) are forbidden in every source file
+// covered by at least one generic `RULES` entry; Rule C/Rule D and the other
+// already-parser-backed package guards are untouched by this — they already
+// classify their own dynamic imports through the real parser and
+// #630/#646/#653's package-guard work is not being redone here.
 
 import fs from 'node:fs';
 import path from 'node:path';

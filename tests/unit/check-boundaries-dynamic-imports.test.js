@@ -111,6 +111,54 @@ describe('findDynamicImportUsages — uncheckable arguments (never no result, ne
   });
 });
 
+// Review pass 1 finding: an earlier revision of `findDynamicImportUsages`
+// walked ONLY `is.isCallExpression` nodes, so TypeScript's inline import-type
+// expression (`type T = import('x').Foo`, `typeof import('x')`) — its own
+// `ImportTypeNode` grammar production, never a `CallExpression` — contributed
+// nothing at all, even though `mightContainDynamicImport`'s gate (a pure
+// textual `import\b...\(` scan, blind to which AST shape follows) correctly
+// let the source through to this function. The RETIRED regex this issue
+// replaces matched this shape (it can't tell a call from an import-type
+// expression either), so the AST-based classifier had strictly LESS coverage
+// than what it replaced for this one form until this fix.
+describe('findDynamicImportUsages — TypeScript inline import-type expressions', () => {
+  it("classifies type T = import('../x.js').Foo (single-quoted) as static with the decoded specifier", () => {
+    const found = findDynamicImportUsages("export type Foo = import('../x.js').Foo;\n", FILE);
+    expect(found).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('classifies type T = import("../x.js").Foo (double-quoted) as static with the decoded specifier', () => {
+    const found = findDynamicImportUsages('export type Foo = import("../x.js").Foo;\n', FILE);
+    expect(found).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('classifies type T = import(`../x.js`).Foo (no-substitution template) as static with the decoded specifier', () => {
+    const found = findDynamicImportUsages('export type Foo = import(`../x.js`).Foo;\n', FILE);
+    expect(found).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it("classifies typeof import('../x.js') as static with the decoded specifier", () => {
+    const found = findDynamicImportUsages("export type Foo = typeof import('../x.js');\n", FILE);
+    expect(found).toEqual([{ kind: 'static', spec: '../x.js', pos: expect.any(Number) }]);
+  });
+
+  it('classifies a bare type-reference argument (import(Bar).Baz) as uncheckable, never thrown', () => {
+    const found = findDynamicImportUsages('type Bar = string;\nexport type Foo = import(Bar).Baz;\n', FILE);
+    expect(found).toEqual([{ kind: 'uncheckable', pos: expect.any(Number) }]);
+  });
+
+  it('reports one result per import-type expression, alongside an ordinary dynamic import, in source order', () => {
+    const probe = `
+      export type Foo = import('../a.js').Foo;
+      export async function f(name) { await import(name); }
+    `;
+    const found = findDynamicImportUsages(probe, FILE);
+    expect(found).toHaveLength(2);
+    expect(found[0]).toEqual({ kind: 'static', spec: '../a.js', pos: expect.any(Number) });
+    expect(found[1]).toEqual({ kind: 'uncheckable', pos: expect.any(Number) });
+  });
+});
+
 describe('findDynamicImportUsages — multiple occurrences and clean source', () => {
   it('reports one result per dynamic-import call expression, in source order', () => {
     const probe = `
