@@ -281,6 +281,65 @@ describe('#592 shell-body-mount: same-file scope-shadowing sabotage (each must f
   });
 });
 
+// ── Body-mount nested block-local shadowing sabotage (review pass 2) ───────
+// One level finer than the #672 P1 same-FUNCTION shadowing fix above: a
+// block-local `let`/`const` (an `if`/loop/bare `{ }` body, never a nested
+// function) used to collapse into the SAME per-function alias bucket as an
+// outer parameter of the same name, so the block-local shadow could silently
+// erase (or be silently erased by) a real occurrence anywhere else in that
+// same function — regardless of whether the real occurrence is inside or
+// outside the shadow's own block.
+
+describe('#592 shell-body-mount: nested block-local shadowing sabotage (each must fail)', () => {
+  it('a block-local doc: Window shadow does not hide an outer doc: Document body mount AFTER the block', () => {
+    const source = [
+      'function openThing(doc: Document) {',
+      '  if (c) {',
+      '    const doc: Window = getPopup();',
+      '    doc.close();',
+      '  }',
+      '  doc.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-block-shadow-doc-a.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a block-local doc: Window shadow does not hide an outer doc: Document body mount BEFORE the block', () => {
+    const source = [
+      'function openThing(doc: Document) {',
+      '  doc.body.appendChild(panel);',
+      '  if (c) {',
+      '    const doc: Window = getPopup();',
+      '    doc.close();',
+      '  }',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-block-shadow-doc-b.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('the block-local doc: Window shadow correctly applies to a mount made INSIDE its own block', () => {
+    // Proves the fix is genuinely block-scoped, not merely "ignore inner
+    // shadows": a body-mount attempt through the SAME name INSIDE the block
+    // resolves against the block-local Window, not the outer Document, and
+    // is correctly NOT flagged.
+    const source = [
+      'function openThing(doc: Document) {',
+      '  if (c) {',
+      '    const doc: Window = getPopup();',
+      '    doc.body.appendChild(panel);',
+      '  }',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-block-shadow-doc-c.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found).toEqual([]);
+  });
+});
+
 // ── Capture-Escape positive cases ───────────────────────────────────────────
 
 function captureEscapeRulesFor(filename: string, scopePath: readonly string[], body: string): string[] {
@@ -334,6 +393,15 @@ describe('#592 shell-capture-escape: positive characterization (sanctioned curre
     expect(found).toEqual([]);
   });
 
+  // Proves the shorthand-capture fix (below) resolves the ALIASED value, not
+  // merely "a capture key exists at all" — a shorthand reusing an in-scope
+  // `false` stays provably non-capture.
+  it('{ capture } shorthand reusing an in-scope false stays clean', () => {
+    const found = captureEscapeRulesFor('src/ui/_noncapture-shorthand.ts', ['openSomethingElse'],
+      "const onKey = (e) => { if (e.key === 'Escape') close(); }; const capture = false; document.addEventListener('keydown', onKey, { capture });");
+    expect(found).toEqual([]);
+  });
+
   it('comments/strings containing listener lookalikes stay clean', () => {
     const found = captureEscapeRulesFor('src/ui/_lookalike.ts', ['openLookalike'], [
       "// document.addEventListener('keydown', onKey, true);",
@@ -378,6 +446,29 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
   it('a simple capture-options alias fails', () => {
     const found = captureEscapeRulesFor('src/ui/_sabotage-d.ts', ['openRogueD'],
       `${escapeHandler} const opts2 = { capture: true }; document.addEventListener('keydown', onKey, opts2);`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // #592 review pass 2: `resolveObjectCaptureLiteral` only ever recognized a
+  // plain-identifier-keyed `capture` property; a string-literal key, a
+  // computed string-literal key, or shorthand each fell through to the
+  // "no capture key present" branch and resolved provably `false`, silently
+  // bypassing the guard for a real capture-phase Escape listener.
+  it("{ 'capture': true } (string-literal key) fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-string-key.ts', ['openRogueStringKey'],
+      `${escapeHandler} document.addEventListener('keydown', onKey, { 'capture': true });`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it("{ ['capture']: true } (computed string-literal key) fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-computed-key.ts', ['openRogueComputedKey'],
+      `${escapeHandler} document.addEventListener('keydown', onKey, { ['capture']: true });`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it('{ capture } (shorthand, reusing an in-scope boolean) fails', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-shorthand.ts', ['openRogueShorthand'],
+      `${escapeHandler} const capture = true; document.addEventListener('keydown', onKey, { capture });`);
     expect(found).toEqual(['shell-capture-escape']);
   });
 
@@ -528,6 +619,49 @@ describe('#592 shell-capture-escape: same-file scope-shadowing sabotage (each mu
   });
 });
 
+// ── Capture-Escape nested block-local shadowing sabotage (review pass 2) ────
+// The same one-level-finer gap as `shell-body-mount`'s own block-shadowing
+// sabotage above: a block-local (`if`/loop/bare `{ }`, never a nested
+// function) alias or handler of the SAME name used to collapse into the same
+// per-function bucket as a real scope's own capture-options alias or named
+// handler, so the block-local shadow could silently overwrite (or be
+// overwritten by) the real one — hiding the real violation entirely.
+
+describe('#592 shell-capture-escape: nested block-local shadowing sabotage (each must fail)', () => {
+  it("a block-local, unrelated capture-options alias does not erase a real scope's { capture: true } alias", () => {
+    const source = [
+      'function real(doc: Document) {',
+      '  const opts = { capture: true };', // the real listener's own alias
+      '  if (c) {',
+      '    const opts = false;', // block-local shadow, unrelated listener
+      "    document.addEventListener('click', () => {}, opts);",
+      '  }',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      "  doc.addEventListener('keydown', onKey, opts);", // must still resolve the OUTER alias
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-block-shadow-capture.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it("a block-local, unrelated named handler does not erase a real scope's Escape-testing handler", () => {
+    const source = [
+      'function real(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };", // the real handler
+      '  if (c) {',
+      '    const onKey = (e) => { userInteracted = true; };', // block-local shadow, unrelated
+      "    document.addEventListener('click', onKey);",
+      '  }',
+      "  doc.addEventListener('keydown', onKey, true);", // must still resolve the OUTER handler
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-block-shadow-handler.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
 // ── Fixed-position positive cases ───────────────────────────────────────────
 
 describe('#592 shell-fixed-position: positive characterization', () => {
@@ -574,6 +708,17 @@ describe('#592 shell-fixed-position: positive characterization', () => {
     const found = scanFixedPositionDeclarations(css);
     expect(found).toHaveLength(1);
     expect(found[0]!.selector).toBe('.multi-a, .multi-b');
+  });
+
+  // #592 review pass 2: the scanner used to record only the NEAREST
+  // enclosing at-rule, so a rule nested under TWO at-rules (`@supports` >
+  // `@media`) produced the identical fingerprint as being nested under the
+  // inner one alone.
+  it('records the FULL chain of nested at-rules, outermost first, joined with " > "', () => {
+    const css = '@supports (display: grid) {\n@media (max-width: 768px) {\n  .x { position: fixed; }\n}\n}\n';
+    const found = scanFixedPositionDeclarations(css);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.atRule).toBe('@supports (display: grid) > @media (max-width: 768px)');
   });
 });
 
@@ -628,6 +773,19 @@ describe('#592 shell-fixed-position: sabotage (each must fail)', () => {
     const found = findShellFixedPositionViolations(css, 'src/styles.css');
     expect(found).toHaveLength(2);
   });
+
+  // #592 review pass 2: wrapping the APPROVED mobile `.inspector-host` rule
+  // in a brand-new OUTER at-rule is a real, behavior-changing structural
+  // edit (the rule now only applies when the outer at-rule also matches),
+  // but the prior nearest-only fingerprint made it indistinguishable from
+  // the unwrapped, already-approved baseline entry.
+  it('wrapping the approved mobile .inspector-host rule in an additional outer at-rule fails', () => {
+    const css = '@supports (display: grid) {\n@media (max-width: 768px) {\n  .inspector-host { position: fixed; inset: 0; }\n}\n}\n';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('shell-fixed-position');
+    expect(found[0]!.detail).toContain('.inspector-host');
+  });
 });
 
 // ── Fixed-position missing-baseline-entry sabotage (P1, PR #672 review pass 1) ──
@@ -660,6 +818,26 @@ describe('#592 shell-fixed-position: missing-baseline-entry sabotage (each must 
     const found = findShellFixedPositionMissingBaselineViolations('', 'src/styles.css');
     expect(found.length).toBeGreaterThan(1);
     expect(found.every((v) => v.rule === 'shell-fixed-position')).toBe(true);
+  });
+
+  // #592 review pass 2: wrapping the real, unmodified mobile `.inspector-host`
+  // rule in an additional nested at-rule changes its full enclosing-at-rule
+  // CHAIN — a real structural/behavioral change (the rule now only applies
+  // when the new at-rule ALSO matches) — so the ORIGINAL baseline fingerprint
+  // (single `@media (max-width: 768px)`) must be reported missing, exactly
+  // like an outright removal.
+  it('wrapping the real .inspector-host rule in an additional nested at-rule flags the original fingerprint as missing', () => {
+    const inspectorHostRuleMatch = realStylesCss.match(/\.inspector-host\s*\{[^}]*position:\s*fixed[^}]*\}/);
+    expect(inspectorHostRuleMatch).not.toBeNull(); // sanity: the real mobile rule was found
+    const wrapped = realStylesCss.replace(
+      inspectorHostRuleMatch![0],
+      `@supports (display: grid) {\n${inspectorHostRuleMatch![0]}\n}`,
+    );
+    expect(wrapped).not.toBe(realStylesCss); // sanity: the wrap actually happened
+    const missing = findShellFixedPositionMissingBaselineViolations(wrapped, 'src/styles.css')
+      .find((v) => v.detail.includes('.inspector-host') && v.detail.includes('none remain'));
+    expect(missing).toBeDefined();
+    expect(missing!.rule).toBe('shell-fixed-position');
   });
 });
 

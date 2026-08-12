@@ -2049,11 +2049,55 @@ function enclosingScopePath(node) {
  *  walk that scope's own subtree for a companion `openSurfaceLifecycle(...)`
  *  call. `null` when `node` sits at module top level (no enclosing function
  *  at all — not a real occurrence for either #592 guard today, but handled
- *  rather than assumed impossible). */
+ *  rather than assumed impossible). Deliberately FUNCTION-granular, not
+ *  block-granular — `bodyMountCandidates`'s `scopeNode` and the
+ *  `enclosingScopePath`/`fullScopePathOf`/`declaredScopeKeys` scope-PATH
+ *  concept both need "the whole named function", never a narrower nested
+ *  block, so this stays a distinct function from `innermostLexicalScopeNode`
+ *  below rather than being generalized in place. */
 function innermostScopeNode(node) {
   let current = node.parent;
   while (current) {
     if (FUNCTION_LIKE_KINDS.has(current.kind)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+/** True for a real lexical block-scope boundary — every bare `Block`
+ *  (a function body, an `if`/`else` arm, a loop body, a `try`/`catch`/
+ *  `finally` block, or a standalone `{ }`) or `CaseBlock` (a `switch`'s
+ *  whole clause list — matching real JS: every `case` in ONE switch shares a
+ *  SINGLE lexical scope, there is no separate scope per `case`). Broader
+ *  than `collectOrderingScopes`'s narrower ordering-only list (which
+ *  deliberately omits `else`/`do`/`try`/a bare standalone block to match the
+ *  retired textual opener) — this models real `let`/`const` shadowing
+ *  wherever it actually occurs, not just the constructs one old regex
+ *  happened to recognize. */
+function isBlockScopeNode(node) {
+  return node.kind === SyntaxKind.Block || node.kind === SyntaxKind.CaseBlock;
+}
+
+/** The nearest enclosing LEXICAL scope boundary for `node` — a
+ *  `FUNCTION_LIKE_KINDS` ancestor OR a bare block-scope node
+ *  (`isBlockScopeNode`), whichever is nearer. This is the fix for the #592
+ *  review-pass-2 finding one level finer than #672 P1's own same-FUNCTION
+ *  shadowing fix: a block-local `let`/`const` (`if (c) { const doc: Window =
+ *  …; … } doc.body.appendChild(...)`) must shadow an outer function-scoped
+ *  binding of the same name ONLY inside that block, exactly like real JS/TS
+ *  lexical scoping — never collapse into the one flat per-FUNCTION bucket
+ *  `innermostScopeNode` deliberately keeps for its own two callers (see that
+ *  function's own doc comment on why they need the coarser granularity).
+ *  `null` when `node` sits at module top level, same contract as
+ *  `innermostScopeNode`. Used ONLY by `scopeOwnerOf`/`scopeChain` — every
+ *  alias/handler/capture table keyed through those two (`buildGlobalAliasMap`,
+ *  `buildFunctionDeclMap`, `buildCaptureAliasMap`, and `bodyMountCandidates`'s
+ *  own `bodyAliasMap`) inherits real block-scoping from this one change. */
+function innermostLexicalScopeNode(node) {
+  let current = node.parent;
+  while (current) {
+    if (FUNCTION_LIKE_KINDS.has(current.kind)) return current;
+    if (isBlockScopeNode(current)) return current;
     current = current.parent;
   }
   return null;
@@ -2132,15 +2176,20 @@ function hasCallNamed(scopeNode, name) {
 }
 
 /** The scope that directly owns a BINDING introduced at `node`, or that a
- *  REFERENCE at `node` resolves outward from: the nearest enclosing
- *  `FUNCTION_LIKE_KINDS` ancestor (`innermostScopeNode`), or `sourceFile`
- *  itself when `node` sits at module top level. Unlike `innermostScopeNode`
- *  (whose only existing caller wants `null` to mean "no enclosing scope at
- *  all"), this always returns a real, stable map key, so every scoped alias/
- *  handler/capture table below has one uniform module-scope sentinel instead
- *  of a null special case. */
+ *  REFERENCE at `node` resolves outward from: the nearest enclosing LEXICAL
+ *  scope boundary (`innermostLexicalScopeNode` — a `FUNCTION_LIKE_KINDS`
+ *  ancestor OR a bare block), or `sourceFile` itself when `node` sits at
+ *  module top level. Deliberately `innermostLexicalScopeNode`, never the
+ *  function-only `innermostScopeNode` — every alias/handler/capture table
+ *  keyed through this function needs real block-scoped shadowing (the #592
+ *  review-pass-2 fix), while `innermostScopeNode`'s own two callers
+ *  (`bodyMountCandidates`'s `scopeNode`, and the scope-PATH helpers) still
+ *  need the coarser function granularity and call it directly instead.
+ *  Always returns a real, stable map key (never `null`), so every scoped
+ *  alias/handler/capture table below has one uniform module-scope sentinel
+ *  instead of a null special case. */
 function scopeOwnerOf(node, sourceFile) {
-  return innermostScopeNode(node) ?? sourceFile;
+  return innermostLexicalScopeNode(node) ?? sourceFile;
 }
 
 /** The full lexical scope chain for `node`, innermost first, ending at
@@ -2415,31 +2464,73 @@ function resolveHandlerNode(handlerArg, funcDeclMap, sourceFile) {
   return null;
 }
 
+/** Best-effort static name of an object-literal member's key — a plain
+ *  `Identifier` (`{ capture: … }`, and — since a `ShorthandPropertyAssignment`'s
+ *  `.name` IS both the key AND the value reference — also `{ capture }`), a
+ *  string/no-substitution-template-literal key (`{ 'capture': … }`), a
+ *  numeric-literal key (never legally spells `capture`, but still a real
+ *  static name, not an unresolvable one), or a computed key whose expression
+ *  resolves (after unwrapping cast wrappers) to one of those same literal
+ *  kinds (`{ ['capture']: … }`). Returns `undefined` — deliberately distinct
+ *  from any resolved string — only when the key's own name genuinely cannot
+ *  be determined (a computed key with a non-literal expression), so a caller
+ *  can fail closed on "this might be the key I'm looking for" instead of
+ *  silently treating it as "definitely isn't". */
+function staticPropertyKeyName(member) {
+  const name = member.name;
+  if (!name) return undefined;
+  if (name.kind === SyntaxKind.ComputedPropertyName) {
+    const inner = unwrapCastWrappers(name.expression);
+    if (inner && (inner.kind === SyntaxKind.StringLiteral || inner.kind === SyntaxKind.NoSubstitutionTemplateLiteral)) {
+      return inner.text;
+    }
+    return undefined;
+  }
+  return typeof name.text === 'string' ? name.text : undefined;
+}
+
 /** Resolve an `addEventListener` OPTIONS object literal's own `capture`
  *  member to `true`/`false`, or `null` when unresolvable — a `SpreadAssignment`
- *  anywhere in the object (its full shape can't be proven), or an explicit
- *  `capture` property whose value isn't a plain boolean literal. An object
- *  literal with NO explicit `capture` key and no spread is provably `false`
- *  (the DOM default), matching `addEventListener`'s own spec default. */
-function resolveObjectCaptureLiteral(node) {
+ *  anywhere in the object (its full shape can't be proven), an explicit
+ *  `capture` member (however its key is spelled — plain identifier, string/
+ *  computed-string-literal key, or `ShorthandPropertyAssignment` shorthand)
+ *  whose VALUE isn't provably boolean (resolved recursively through
+ *  `resolveCaptureFlag`, so a shorthand `{ capture }` reusing an in-scope
+ *  boolean alias resolves exactly like `{ capture: someAlias }` would), or a
+ *  `capture` key that exists only as a method/accessor (never a plain
+ *  boolean value). An object literal with NO explicit `capture` key at all
+ *  (every member's own static name resolves and none of them is `capture`)
+ *  and no spread is provably `false` (the DOM default), matching
+ *  `addEventListener`'s own spec default. #592 review pass 2: the prior
+ *  implementation only ever recognized a plain-identifier-keyed
+ *  `PropertyAssignment`, so a string-literal key (`{'capture': true}`), a
+ *  computed string-literal key (`{['capture']: true}`), or shorthand
+ *  (`{ capture }`) fell through to the "no capture key" branch and resolved
+ *  `false` — provably non-capture — even though each is a REAL `capture`
+ *  member. Any member whose own static key name is unresolvable
+ *  (`staticPropertyKeyName` returns `undefined`) now also fails closed to
+ *  `null`, since it might be the very `capture` key being looked for.
+ *
+ * @param {object} node
+ * @param {Map<object, Map<string, boolean|null>>} captureAliasMap
+ * @param {object} sourceFile
+ * @returns {boolean | null}
+ */
+function resolveObjectCaptureLiteral(node, captureAliasMap, sourceFile) {
   let hasSpread = false;
-  let captureProp = null;
+  let captureValueNode = null;
+  let hasUnresolvableCaptureKey = false;
   for (const p of node.properties) {
     if (p.kind === SyntaxKind.SpreadAssignment) { hasSpread = true; continue; }
-    if (
-      p.kind === SyntaxKind.PropertyAssignment && p.name && p.name.kind === SyntaxKind.Identifier
-      && p.name.text === 'capture'
-    ) {
-      captureProp = p;
-    }
+    const keyName = staticPropertyKeyName(p);
+    if (keyName === undefined) { hasUnresolvableCaptureKey = true; continue; }
+    if (keyName !== 'capture') continue;
+    if (p.kind === SyntaxKind.PropertyAssignment) captureValueNode = p.initializer;
+    else if (p.kind === SyntaxKind.ShorthandPropertyAssignment) captureValueNode = p.name;
+    else hasUnresolvableCaptureKey = true; // a method/get/set named `capture` — never a plain boolean
   }
-  if (captureProp) {
-    const v = unwrapCastWrappers(captureProp.initializer);
-    if (v && v.kind === SyntaxKind.TrueKeyword) return true;
-    if (v && v.kind === SyntaxKind.FalseKeyword) return false;
-    return null;
-  }
-  return hasSpread ? null : false;
+  if (captureValueNode) return resolveCaptureFlag(captureValueNode, captureAliasMap, sourceFile);
+  return (hasSpread || hasUnresolvableCaptureKey) ? null : false;
 }
 
 /** Every `scope -> name -> true|false|null` binding of a `const name = true`
@@ -2469,7 +2560,7 @@ function buildCaptureAliasMap(sourceFile) {
       if (init.kind === SyntaxKind.TrueKeyword) setAlias(scope, node.name.text, true);
       else if (init.kind === SyntaxKind.FalseKeyword) setAlias(scope, node.name.text, false);
       else if (init.kind === SyntaxKind.ObjectLiteralExpression) {
-        setAlias(scope, node.name.text, resolveObjectCaptureLiteral(init));
+        setAlias(scope, node.name.text, resolveObjectCaptureLiteral(init, map, sourceFile));
       }
     }
   });
@@ -2496,7 +2587,7 @@ function resolveCaptureFlag(node, captureAliasMap, sourceFile) {
   if (!expr) return null;
   if (expr.kind === SyntaxKind.TrueKeyword) return true;
   if (expr.kind === SyntaxKind.FalseKeyword) return false;
-  if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr);
+  if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr, captureAliasMap, sourceFile);
   if (expr.kind === SyntaxKind.Identifier) {
     const found = lookupInScopeChain(captureAliasMap, expr, sourceFile);
     return found === undefined ? null : found;
@@ -2610,28 +2701,40 @@ const SHELL_BODY_MOUNT_POLICY = Object.freeze([
  * childDoc.body; body.appendChild(...)`), and a further simple alias of that
  * body binding. Never gated by a raw `source.includes(...)` prefilter — see
  * this section's header comment on why a text prefilter is unsound for this
- * check (the repo's own recorded recurring failure mode).
+ * check (the repo's own recorded recurring failure mode). The body-alias
+ * table (`bodyAliasMap`) is keyed `scope -> Map<name, true>` and resolved
+ * through `lookupInScopeChain`, exactly like `buildGlobalAliasMap`/
+ * `buildFunctionDeclMap`/`buildCaptureAliasMap` — #592 review pass 2: this
+ * used to be one flat file-wide `Set<string>`, so a block-local `const body
+ * = …` unrelated to Document.body could still satisfy (or a block-local
+ * shadow could still starve) a lookup anywhere else in the file.
  *
  * @param {object} sourceFile
  * @returns {{node: object, api: 'appendChild'|'append', scopePath: string[], scopeNode: object|null, pos: number}[]}
  */
 function bodyMountCandidates(sourceFile) {
   const aliasMap = buildGlobalAliasMap(sourceFile);
-  const bodyAliasNames = new Set();
+  const bodyAliasMap = new Map(); // scope -> Map<name, true>
+  const setBodyAlias = (scope, name) => {
+    let local = bodyAliasMap.get(scope);
+    if (!local) { local = new Map(); bodyAliasMap.set(scope, local); }
+    local.set(name, true);
+  };
   walkTree(sourceFile, (node) => {
     if (
       node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier
       && node.initializer
     ) {
       const init = unwrapCastWrappers(node.initializer);
+      const scope = scopeOwnerOf(node, sourceFile);
       if (
         init && init.kind === SyntaxKind.PropertyAccessExpression && init.name.text === 'body'
         && resolveGlobalKind(init.expression, aliasMap, sourceFile) === 'document'
       ) {
-        bodyAliasNames.add(node.name.text);
+        setBodyAlias(scope, node.name.text);
       }
-      if (init && init.kind === SyntaxKind.Identifier && bodyAliasNames.has(init.text)) {
-        bodyAliasNames.add(node.name.text);
+      if (init && init.kind === SyntaxKind.Identifier && lookupInScopeChain(bodyAliasMap, init, sourceFile) !== undefined) {
+        setBodyAlias(scope, node.name.text);
       }
     }
   });
@@ -2656,7 +2759,7 @@ function bodyMountCandidates(sourceFile) {
     const recv = unwrapCastWrappers(receiver);
     if (!recv) return;
     let isBody = false;
-    if (recv.kind === SyntaxKind.Identifier && bodyAliasNames.has(recv.text)) {
+    if (recv.kind === SyntaxKind.Identifier && lookupInScopeChain(bodyAliasMap, recv, sourceFile) !== undefined) {
       isBody = true;
     } else if (recv.kind === SyntaxKind.PropertyAccessExpression && recv.name.text === 'body'
       && resolveGlobalKind(recv.expression, aliasMap, sourceFile) === 'document') {
@@ -2934,8 +3037,8 @@ export function findShellGuardrailSourceContractViolations(sources) {
 // lexer that skips `/* … */` comments, respects quoted strings and escape
 // sequences, tracks brace nesting via an explicit frame stack (one frame per
 // rule/at-rule, so a `position: fixed` declaration is always associated with
-// its OWN enclosing selector list and the nearest enclosing at-rule, never a
-// sibling's), and normalizes whitespace/comma-selector-lists deterministically
+// its OWN enclosing selector list and the FULL chain of enclosing at-rules,
+// never a sibling's), and normalizes whitespace/comma-selector-lists deterministically
 // so the SAME logical selector always produces the SAME policy key regardless
 // of incidental source formatting.
 
@@ -2981,15 +3084,23 @@ function firstMeaningfulCssOffset(source, from) {
  * Scan `source` (a complete CSS stylesheet) for every real `position: fixed`
  * (optionally `!important`) declaration, associating each with its own
  * enclosing rule's normalized selector list (`normalizeSelectorList`) and the
- * nearest enclosing at-rule's normalized prelude (`normalizeCssText`, or
- * `null` when the declaration sits at the stylesheet's top level with no
- * enclosing at-rule — e.g. NOT inside `@media`). A declaration sitting
- * directly inside an at-rule with no intervening rule block (e.g. hypothetical
- * `@page` content) is not reported — this rule only governs SELECTOR-scoped
- * declarations, matching its own "associates a real position: fixed
- * declaration with its rule prelude" contract. Comments/strings/escapes never
- * contribute a phantom brace/semicolon/colon, so lexical trickery can't hide
- * or spoof a declaration (see this section's own header comment).
+ * FULL chain of enclosing at-rules' normalized preludes (`normalizeCssText`),
+ * outermost first, joined with `' > '` — or `null` when the declaration sits
+ * at the stylesheet's top level with no enclosing at-rule at all (e.g. NOT
+ * inside `@media`). #592 review pass 2: the prior implementation stopped at
+ * the NEAREST enclosing at-rule only, so wrapping an already-approved rule in
+ * an ADDITIONAL outer at-rule (`@supports (display: grid) { @media (...) {
+ * .inspector-host { position: fixed; } } }`) produced the identical
+ * fingerprint as the unwrapped rule — a real, behavior-changing structural
+ * edit (the rule now only applies when `@supports` also matches) was
+ * completely invisible to both `findShellFixedPositionViolations` and its
+ * missing-baseline reverse pass. A declaration sitting directly inside an
+ * at-rule with no intervening rule block (e.g. hypothetical `@page` content)
+ * is not reported — this rule only governs SELECTOR-scoped declarations,
+ * matching its own "associates a real position: fixed declaration with its
+ * rule prelude" contract. Comments/strings/escapes never contribute a
+ * phantom brace/semicolon/colon, so lexical trickery can't hide or spoof a
+ * declaration (see this section's own header comment).
  *
  * @param {string} source
  * @returns {{selector: string, atRule: string | null, pos: number}[]}
@@ -3024,10 +3135,12 @@ export function scanFixedPositionDeclarations(source) {
     if (!/^fixed(\s*!\s*important)?$/i.test(normalizeCssText(value))) return;
     const innermost = frames[frames.length - 1];
     if (!innermost || innermost.kind !== 'rule') return; // no selector context — out of this rule's scope
-    let atRule = null;
+    const atChain = [];
     for (let k = frames.length - 2; k >= 0; k--) {
-      if (frames[k].kind === 'at') { atRule = frames[k].prelude; break; }
+      if (frames[k].kind === 'at') atChain.push(frames[k].prelude);
     }
+    atChain.reverse(); // outermost first
+    const atRule = atChain.length ? atChain.join(' > ') : null;
     results.push({ selector: innermost.prelude, atRule, pos: firstMeaningfulCssOffset(source, segStart) });
   }
 

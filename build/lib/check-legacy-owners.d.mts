@@ -129,10 +129,13 @@ export function findShellGuardrailSourceContractViolations(
 /** One `position: fixed` (optionally `!important`) CSS declaration found by
  * `scanFixedPositionDeclarations` — `selector` is the enclosing rule's own
  * normalized (whitespace-collapsed, comma-list-normalized) prelude; `atRule`
- * is the nearest enclosing at-rule's normalized prelude (e.g.
- * `'@media (max-width: 768px)'`), or `null` when the declaration sits at the
- * stylesheet's top level; `pos` is the declaration's own offset into the
- * scanned CSS text (the first non-whitespace, non-comment character). */
+ * is the FULL chain of enclosing at-rules' normalized preludes, outermost
+ * first, joined with `' > '` (e.g. `'@media (max-width: 768px)'`, or
+ * `'@supports (display: grid) > @media (max-width: 768px)'` for a rule
+ * nested under both), or `null` when the declaration sits at the
+ * stylesheet's top level with no enclosing at-rule at all; `pos` is the
+ * declaration's own offset into the scanned CSS text (the first
+ * non-whitespace, non-comment character). */
 export interface FixedPositionDeclaration {
   readonly selector: string;
   readonly atRule: string | null;
