@@ -2147,19 +2147,34 @@ function fullScopePathOf(fnLikeNode) {
  *  somewhere in `sourceFile` — used only to ask "does this policy scope path
  *  even exist in what was scanned", which is what makes the #672 P1
  *  missing-baseline-entry check (`shellBodyMountViolations`/
- *  `shellCaptureEscapeViolations`'s own reverse pass) safe against this
- *  test suite's own established convention of a MINIMAL synthetic fixture
- *  reproducing just ONE of a real file's several approved scopes under that
- *  file's real name (`shell-guardrails-arch.test.ts`'s own header comment):
- *  a sibling policy entry whose scope was never even part of the scanned
- *  source is correctly treated as "not this call's concern" rather than "a
- *  disappeared baseline occurrence" — the missing-entry check only fires for
- *  a scope that is ACTUALLY PRESENT in the tree (so a genuine drop from N
- *  approved occurrences to fewer, within a scope that still exists, is still
- *  caught). A policy entry whose ENTIRE enclosing scope has also been
- *  deleted from production code is a coarser change a rename/typecheck
- *  failure elsewhere in the pipeline would surface — deliberately out of
- *  this narrower check's scope. */
+ *  `shellCaptureEscapeViolations`'s own SOFTENED reverse pass) safe against
+ *  this test suite's own established convention of a MINIMAL synthetic
+ *  fixture reproducing just ONE of a real file's several approved scopes
+ *  under that file's real name (`shell-guardrails-arch.test.ts`'s own header
+ *  comment): a sibling policy entry whose scope was never even part of the
+ *  scanned source is correctly treated as "not this call's concern" rather
+ *  than "a disappeared baseline occurrence" — the missing-entry check only
+ *  fires for a scope that is ACTUALLY PRESENT in the tree (so a genuine drop
+ *  from N approved occurrences to fewer, within a scope that still exists,
+ *  is still caught).
+ *
+ *  This deliberate softening means a policy entry whose ENTIRE enclosing
+ *  scope (or whole owning FILE) has also been deleted from production code
+ *  is, BY DESIGN, invisible to `shellBodyMountViolations`/
+ *  `shellCaptureEscapeViolations`'s own softened reverse pass — a real
+ *  function-like scope either is or isn't declared in whatever was parsed,
+ *  and a genuinely complete file with an approved function deleted is
+ *  structurally indistinguishable, by THIS mechanism alone, from a partial
+ *  fixture that never declared it. That coarser question — is the batch
+ *  handed to this module the COMPLETE scanned tree, so an absent scope/file
+ *  really means "deleted" rather than "not this fixture's concern" — is
+ *  answered by a deliberately SEPARATE, stricter export instead:
+ *  `findShellGuardrailMissingBaselineViolations` (PR #672 review pass 1
+ *  follow-up, ChatGPT), which never consults `declaredScopeKeys` at all and
+ *  is meaningful only against something the caller already knows is
+ *  complete — exactly the same separation `findShellFixedPositionViolations`
+ *  and `findShellFixedPositionMissingBaselineViolations` already establish
+ *  for the CSS guard, for the identical reason. */
 function declaredScopeKeys(sourceFile) {
   const keys = new Set();
   walkTree(sourceFile, (node) => {
@@ -2217,6 +2232,84 @@ function typeNamesOf(typeNode) {
   return names;
 }
 
+/** Every ultimate type NAME `typeNode` structurally resolves to — the same
+ *  union/intersection/parenthesized walk `typeNamesOf` performs, PLUS (#592
+ *  review, ChatGPT PR #672 pass 1) resolving each `TypeReference` through the
+ *  REAL checker (`checker.getSymbolAtLocation` on the type name) to see
+ *  whether it names a local `type X = ...` ALIAS declaration — if so, this
+ *  recurses into the alias's OWN type annotation instead of stopping at the
+ *  alias's bare name, so `type Doc = Document; function f(doc: Doc)`
+ *  recognizes `doc` as a `Document` exactly like a direct `: Document`
+ *  annotation would. A reference that does NOT resolve to a type alias (an
+ *  interface, an ambient global like `Document`/`Window` itself, an
+ *  unresolvable name) contributes its own literal name instead — unchanged
+ *  from `typeNamesOf`'s behavior. `seen` (keyed by the alias's own
+ *  declaration node) guards against infinite recursion on a
+ *  self-/mutually-referential alias chain — real TypeScript itself already
+ *  rejects a directly circular type alias at compile time, so this is pure
+ *  defense-in-depth, never expected to trigger against real, valid source.
+ *  Deliberately still NOT general type inference (Architecture decision 6's
+ *  own non-goal): this only follows a NAMED alias's own declared type, never
+ *  computes a structural/inferred type for an arbitrary expression. */
+function resolvedTypeNames(typeNode, checker, seen) {
+  const names = [];
+  const walk = (t) => {
+    if (!t) return;
+    if (t.kind === SyntaxKind.UnionType || t.kind === SyntaxKind.IntersectionType) {
+      for (const sub of t.types) walk(sub);
+      return;
+    }
+    if (t.kind === SyntaxKind.ParenthesizedType) { walk(t.type); return; }
+    if (t.kind !== SyntaxKind.TypeReference || !t.typeName || t.typeName.kind !== SyntaxKind.Identifier) return;
+    const symbol = checker.getSymbolAtLocation(t.typeName);
+    const handle = symbol?.declarations?.[0];
+    const aliasDecl = handle?.resolve?.();
+    if (aliasDecl && aliasDecl.kind === SyntaxKind.TypeAliasDeclaration && !seen.has(aliasDecl)) {
+      seen.add(aliasDecl);
+      walk(aliasDecl.type);
+      return;
+    }
+    names.push(t.typeName.text);
+  };
+  walk(typeNode);
+  return names;
+}
+
+/** The SOURCE property name a `BindingElement` destructures — its own
+ *  `propertyName`'s literal spelling when present (a rename: a plain
+ *  identifier, a string/no-substitution-template literal, or a computed key
+ *  resolving to either — mirrors `staticPropertyKeyName`'s object-literal-
+ *  member recognition below, applied here to a `BindingElement`'s own
+ *  `propertyName` instead), or else the binding's own LOCAL identifier name
+ *  when `propertyName` is absent (a NON-renamed destructuring, where the
+ *  local name IS the source key). `undefined` only when genuinely
+ *  unresolvable (an unresolved computed `propertyName`, or a nested
+ *  destructuring pattern as the local name) — never silently treated as "not
+ *  a match" for the WRONG reason. #592 review pass (ChatGPT PR #672 pass 1):
+ *  the prior check recognized a `propertyName` only when its OWN kind was
+ *  `Identifier`, so a QUOTED rename (`const { 'body': host } = document`)
+ *  fell through to reading the LOCAL name `host` instead of the real source
+ *  key `body` — silently wrong whenever the local name differs from the real
+ *  source property, and simply missed the match whenever it doesn't happen
+ *  to coincide. */
+function bindingElementSourceKeyName(declNode) {
+  const propertyName = declNode.propertyName;
+  if (propertyName) {
+    if (propertyName.kind === SyntaxKind.Identifier) return propertyName.text;
+    if (
+      propertyName.kind === SyntaxKind.StringLiteral || propertyName.kind === SyntaxKind.NoSubstitutionTemplateLiteral
+    ) return propertyName.text;
+    if (propertyName.kind === SyntaxKind.ComputedPropertyName) {
+      const inner = unwrapCastWrappers(propertyName.expression);
+      if (inner && (inner.kind === SyntaxKind.StringLiteral || inner.kind === SyntaxKind.NoSubstitutionTemplateLiteral)) {
+        return inner.text;
+      }
+    }
+    return undefined;
+  }
+  return declNode.name && declNode.name.kind === SyntaxKind.Identifier ? declNode.name.text : undefined;
+}
+
 /** `openInDetachedTab`'s `mount()` callback destructures its one parameter —
  *  `({ doc, bar, body, close, closeBtn }: MountCtx) => {...}` — and `doc` is
  *  a real `Document` (`MountCtx.doc`, `src/ui/detached-view.ts`), but it's
@@ -2242,18 +2335,24 @@ const MOUNT_CTX_TYPE_NAME = 'MountCtx';
  * passes' hand-rolled `buildGlobalAliasMap`: instead of pre-walking the whole
  * file into a scope-keyed alias table, this inspects ONE already-resolved
  * declaration node directly, purely structurally:
- *   - a destructuring rename whose `propertyName` is `document`/`window`
- *     (`const { document: doc } = opts` — `menu.ts`'s real shape);
+ *   - a destructuring rename whose source key is `document`/`window`
+ *     (`const { document: doc } = opts` — `menu.ts`'s real shape; a QUOTED
+ *     spelling — `const { 'document': doc } = opts` — is recognized
+ *     identically, via `bindingElementSourceKeyName`'s own literal-form
+ *     recognition, #592 review pass/ChatGPT PR #672 pass 1);
  *   - a plain (non-renamed) destructuring of a `doc` property from a
  *     parameter/variable whose OWN type annotation names `MountCtx` (see
  *     `MOUNT_CTX_TYPE_NAME` above);
- *   - a `Parameter` or `VariableDeclaration` whose declared TYPE names
- *     `Document`/`Window` (`childDoc: Document`, `mainDoc: Document`) — this
- *     ALSO covers the bare globals `document`/`window` themselves: the real
- *     TypeScript checker resolves each to its own ambient `declare var
- *     document: Document` / `declare var window: Window & typeof
- *     globalThis` declaration in `lib.dom.d.ts`, which has exactly this
- *     shape, so no separate bare-identifier special case is needed;
+ *   - a `Parameter` or `VariableDeclaration` whose declared TYPE resolves
+ *     (`resolvedTypeNames`, following any local `type X = ...` ALIAS chain
+ *     through the real checker — #592 review pass/ChatGPT PR #672 pass 1) to
+ *     `Document`/`Window` (`childDoc: Document`, `mainDoc: Document`, or
+ *     `type Doc = Document; function f(doc: Doc)`) — this ALSO covers the
+ *     bare globals `document`/`window` themselves: the real TypeScript
+ *     checker resolves each to its own ambient `declare var document:
+ *     Document` / `declare var window: Window & typeof globalThis`
+ *     declaration in `lib.dom.d.ts`, which has exactly this shape, so no
+ *     separate bare-identifier special case is needed;
  *   - a `VariableDeclaration` with NO type annotation: classified through its
  *     own initializer, recursively, via `resolveGlobalKind` below (`const doc
  *     = document.body.ownerDocument` and similar chains).
@@ -2264,17 +2363,16 @@ const MOUNT_CTX_TYPE_NAME = 'MountCtx';
  * block/function scoping, hoisting, and shadowing for free.
  *
  * @param {object} declNode
- * @param {object} checker the file's real TypeScript `Checker` — needed only
- *   for the no-type-annotation initializer branch's recursive call
+ * @param {object} checker the file's real TypeScript `Checker` — used for the
+ *   type-alias-chain resolution (`resolvedTypeNames`) and the no-type-
+ *   annotation initializer branch's recursive call
  * @returns {'document'|'window'|null}
  */
 function classifyGlobalDeclaration(declNode, checker) {
-  if (
-    declNode.kind === SyntaxKind.BindingElement && declNode.propertyName
-    && declNode.propertyName.kind === SyntaxKind.Identifier
-  ) {
-    if (declNode.propertyName.text === 'document') return 'document';
-    if (declNode.propertyName.text === 'window') return 'window';
+  if (declNode.kind === SyntaxKind.BindingElement && declNode.propertyName) {
+    const propName = bindingElementSourceKeyName(declNode);
+    if (propName === 'document') return 'document';
+    if (propName === 'window') return 'window';
   }
   if (
     declNode.kind === SyntaxKind.BindingElement && !declNode.propertyName
@@ -2285,7 +2383,7 @@ function classifyGlobalDeclaration(declNode, checker) {
     if (owner && owner.type && typeNamesOf(owner.type).includes(MOUNT_CTX_TYPE_NAME)) return 'document';
   }
   if ((declNode.kind === SyntaxKind.Parameter || declNode.kind === SyntaxKind.VariableDeclaration) && declNode.type) {
-    const names = typeNamesOf(declNode.type);
+    const names = resolvedTypeNames(declNode.type, checker, new Set());
     if (names.includes('Document')) return 'document';
     if (names.includes('Window')) return 'window';
   }
@@ -2359,6 +2457,29 @@ function resolveGlobalKind(node, checker) {
   return null;
 }
 
+/** True when `declNode` (a `VariableDeclaration`) sits in a genuine `const`
+ *  `VariableDeclarationList` — a binding that can never be reassigned after
+ *  its own initialization, so trusting that initializer for EVERY later
+ *  reference to the same binding is sound. A `let`/`var` binding can be
+ *  reassigned anywhere in its scope, so a reference resolved to one is NOT
+ *  safely reducible to "whatever its initializer says" (#592 review pass,
+ *  ChatGPT PR #672 pass 1): `resolveHandlerNode`/`resolveCaptureFlag` below
+ *  previously trusted ANY resolved `VariableDeclaration`'s initializer
+ *  regardless of const-ness, so `let opts = { capture: false }; opts = {
+ *  capture: true };` (or the analogous bare-boolean/handler-function form)
+ *  silently escaped detection — the LATER value, the one actually in effect
+ *  at the real `addEventListener` call, was never even considered. Both
+ *  callers already have a documented fail-closed contract for "cannot be
+ *  resolved" (return `null`, which the caller always treats as a violation
+ *  — never as "assume clean"), so refusing to trust a non-`const` alias's
+ *  initializer here is a strict IMPROVEMENT in detection, never a
+ *  regression: it can only turn a previously-missed case into a correctly
+ *  flagged "uncheckable" one, never the reverse. */
+function isConstVariableDeclaration(declNode) {
+  const list = declNode.parent;
+  return !!list && list.kind === SyntaxKind.VariableDeclarationList && (list.flags & NodeFlags.Const) !== 0;
+}
+
 /**
  * Resolve an `addEventListener` handler argument to the `FUNCTION_LIKE_KINDS`
  * node it actually runs — an inline arrow/function expression directly, or a
@@ -2379,7 +2500,14 @@ function resolveGlobalKind(node, checker) {
  * its correct governing declaration (respecting real block/function scoping
  * and shadowing), there is no "nearest-preceding-by-source-position" heuristic
  * needed here either — the checker already answers "which declaration does
- * THIS specific reference mean".
+ * THIS specific reference mean". A `VariableDeclaration` alias must ALSO be a
+ * genuine `const` (`isConstVariableDeclaration` above, #592 review pass,
+ * ChatGPT PR #672 pass 1) before its initializer is trusted: a `let`
+ * reassigned to a DIFFERENT function after its declaration (`let onKey =
+ * () => {}; onKey = (e) => { if (e.key === 'Escape') close(); };`) would
+ * otherwise resolve to the STALE initial function — exactly the "cannot be
+ * statically resolved" case this function's own contract already requires
+ * failing closed on, not a silent resolution to the wrong handler.
  *
  * @param {object} handlerArg
  * @param {object} checker the file's real TypeScript `Checker`
@@ -2396,7 +2524,7 @@ function resolveHandlerNode(handlerArg, checker) {
   const declNode = handle?.resolve();
   if (!declNode) return null;
   if (FUNCTION_LIKE_KINDS.has(declNode.kind)) return declNode;
-  if (declNode.kind === SyntaxKind.VariableDeclaration && declNode.initializer) {
+  if (declNode.kind === SyntaxKind.VariableDeclaration && declNode.initializer && isConstVariableDeclaration(declNode)) {
     const init = unwrapCastWrappers(declNode.initializer);
     if (init && FUNCTION_LIKE_KINDS.has(init.kind)) return init;
   }
@@ -2502,10 +2630,17 @@ function resolveObjectCaptureLiteral(node, checker) {
  * for-header `let` binding, can never satisfy a lookup for a DIFFERENT real
  * scope's own reference, because the checker's binder already resolved
  * WHICH declaration this specific reference means. Every other shape (a
- * member access, a call, a conditional, an unresolved identifier, or a
+ * member access, a call, a conditional, an unresolved identifier, a
  * resolved declaration that isn't a plain `VariableDeclaration` with an
  * initializer — e.g. a destructured `BindingElement`, never supported here
- * either) is `null`.
+ * either — OR (#592 review pass, ChatGPT PR #672 pass 1) a `VariableDeclaration`
+ * that is NOT a genuine `const` — `isConstVariableDeclaration` above) is
+ * `null`: a `let`/`var` alias CAN be reassigned anywhere in its scope
+ * (`let opts = { capture: false }; opts = { capture: true };`), so trusting
+ * only its own initializer would silently miss the value actually in effect
+ * at the real `addEventListener` call — exactly the "cannot prove
+ * non-capture" case this function's own contract already requires failing
+ * closed on, never a silent resolution to a stale value.
  *
  * A `ShorthandPropertyAssignment`'s own name node (`{ capture }`'s `capture`)
  * is a special case the real checker itself distinguishes: plain
@@ -2535,7 +2670,10 @@ function resolveCaptureFlag(node, checker) {
   if (!symbol) return null;
   const handle = symbol.valueDeclaration ?? symbol.declarations[0];
   const declNode = handle?.resolve();
-  if (!declNode || declNode.kind !== SyntaxKind.VariableDeclaration || !declNode.initializer) return null;
+  if (
+    !declNode || declNode.kind !== SyntaxKind.VariableDeclaration || !declNode.initializer
+    || !isConstVariableDeclaration(declNode)
+  ) return null;
   return resolveCaptureFlag(declNode.initializer, checker);
 }
 
@@ -2683,9 +2821,12 @@ function resolvesToDocumentBody(node, checker) {
   const declNode = handle?.resolve();
   if (!declNode) return false;
   if (declNode.kind === SyntaxKind.BindingElement) {
-    const propName = declNode.propertyName && declNode.propertyName.kind === SyntaxKind.Identifier
-      ? declNode.propertyName.text
-      : (declNode.name && declNode.name.kind === SyntaxKind.Identifier ? declNode.name.text : null);
+    // #592 review pass/ChatGPT PR #672 pass 1: `bindingElementSourceKeyName`
+    // recognizes a QUOTED rename (`const { 'body': host } = document`)
+    // identically to the unquoted form — the prior inline check here only
+    // recognized a plain-Identifier `propertyName`, so a quoted source key
+    // fell through to reading the LOCAL name (`host`) instead.
+    const propName = bindingElementSourceKeyName(declNode);
     if (propName !== 'body') return false;
     const pattern = declNode.parent; // ObjectBindingPattern
     const owner = pattern && pattern.parent; // VariableDeclaration
@@ -2995,6 +3136,145 @@ export function findShellGuardrailSourceContractViolations(sources) {
   });
 }
 
+/** The STRICT (complete-tree) count of every `SHELL_BODY_MOUNT_POLICY` entry
+ *  belonging to `filename`, against `sourceFile`'s real `bodyMountCandidates`
+ *  — unlike `shellBodyMountViolations`'s own softened reverse pass, this
+ *  NEVER consults `declaredScopeKeys` first: a genuinely deleted approved
+ *  function-like scope simply contributes zero occurrences here, exactly
+ *  like a real disappeared mount within a still-present scope does, because
+ *  this function's only caller (`findShellGuardrailMissingBaselineViolations`)
+ *  already guarantees `sourceFile` is the complete real file, never a
+ *  partial synthetic fixture. */
+function shellBodyMountMissingBaselineViolationsStrict(sourceFile, filename, checker) {
+  const counts = new Map();
+  for (const c of bodyMountCandidates(sourceFile, checker)) {
+    const key = scopeKey(c.scopePath);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const violations = [];
+  for (const entry of SHELL_BODY_MOUNT_POLICY) {
+    if (entry.filename !== filename) continue;
+    const key = scopeKey(entry.scopePath);
+    const actualCount = counts.get(key) ?? 0;
+    if (actualCount >= entry.count) continue;
+    violations.push(makeViolation(
+      'shell-body-mount', filename, 0,
+      `the approved #592 body-mount snapshot expects ${entry.count} Document-body mount(s) in scope "${key}" `
+        + `(${entry.category}), but only ${actualCount} remain in the complete scanned tree — deliberately update `
+        + 'the reviewed baseline if this mount was intentionally removed, or restore it if this is unintended drift',
+    ));
+  }
+  return violations;
+}
+
+/** `shellBodyMountMissingBaselineViolationsStrict`'s exact counterpart for
+ *  `SHELL_CAPTURE_ESCAPE_POLICY` — counts only `'escape'`-classified
+ *  candidates (an `'uncheckable-*'`/`'clean'` candidate is a DIFFERENT
+ *  question this reverse pass never re-litigates; the forward pass already
+ *  owns those). */
+function shellCaptureEscapeMissingBaselineViolationsStrict(sourceFile, filename, checker) {
+  const counts = new Map();
+  for (const c of captureEscapeCandidates(sourceFile, checker)) {
+    if (c.kind !== 'escape') continue;
+    const key = scopeKey(c.scopePath);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const violations = [];
+  for (const entry of SHELL_CAPTURE_ESCAPE_POLICY) {
+    if (entry.filename !== filename) continue;
+    const key = scopeKey(entry.scopePath);
+    const actualCount = counts.get(key) ?? 0;
+    if (actualCount >= entry.count) continue;
+    violations.push(makeViolation(
+      'shell-capture-escape', filename, 0,
+      `the approved #592 capture-Escape snapshot expects ${entry.count} listener(s) in scope "${key}" `
+        + `(${entry.category}), but only ${actualCount} remain in the complete scanned tree — deliberately update `
+        + 'the reviewed baseline if this listener was intentionally removed, or restore it if this is unintended '
+        + 'drift',
+    ));
+  }
+  return violations;
+}
+
+/**
+ * The complete-tree REVERSE half of the #592 shell-guardrail source
+ * contract — deliberately SEPARATE from `findShellGuardrailSourceContractViolations`,
+ * for the exact reason `findShellFixedPositionMissingBaselineViolations` is
+ * a separate export from `findShellFixedPositionViolations` (see that
+ * pair's own doc comments): `declaredScopeKeys`'s own softening — "a scope
+ * not part of what was scanned is not this call's concern" — exists ONLY to
+ * keep the forward check's reverse pass safe for this suite's many minimal
+ * single-scope synthetic fixtures (a fixture reproducing just ONE of a real
+ * file's several approved scopes, under that file's real name). It CANNOT
+ * tell a genuinely complete file with an approved function/scope deleted
+ * apart from a fixture that never declared that scope to begin with — both
+ * simply lack a function-like node at that scope path — so a real approved
+ * function's outright deletion (or an approved FILE's outright deletion)
+ * produced zero violations from the forward check's own reverse pass alone
+ * (PR #672 review pass 1 follow-up, ChatGPT): the forward check's own
+ * per-file loop (`findShellGuardrailSourceContractViolations` above) never
+ * even iterates a filename `sources` doesn't contain, and its softened
+ * reverse pass skips a scope that no longer parses out of a still-present
+ * file exactly like it skips one that was never in scope at all.
+ *
+ * This export assumes `sources` IS the complete scanned tree (its only real
+ * caller is `build/check-boundaries.mjs`'s live `collectFiles(src/)` batch,
+ * which reads every file under `src/**` from disk) and reports, WITHOUT
+ * that softening:
+ *   - every `SHELL_BODY_MOUNT_POLICY`/`SHELL_CAPTURE_ESCAPE_POLICY` entry
+ *     whose OWN `filename` has no matching entry in `sources` at all — a
+ *     whole approved FILE deleted outright;
+ *   - every remaining entry whose approved scope's real occurrence count is
+ *     below its frozen baseline — covering BOTH a dropped count within a
+ *     still-present function AND an approved function deleted (or renamed)
+ *     outright, uniformly: a deleted function-like node simply has no
+ *     scope-path key in the real tree at all, so it counts as zero
+ *     occurrences exactly like a real disappeared mount/listener, with no
+ *     "declared at all" softening asked first.
+ *
+ * @param {readonly {filename: string, source: string}[]} sources
+ * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
+ */
+export function findShellGuardrailMissingBaselineViolations(sources) {
+  const present = new Set(sources.map((s) => s.filename));
+  const violations = [];
+  for (const entry of SHELL_BODY_MOUNT_POLICY) {
+    if (present.has(entry.filename)) continue;
+    violations.push(makeViolation(
+      'shell-body-mount', entry.filename, 0,
+      `the approved #592 body-mount snapshot expects ${entry.count} Document-body mount(s) in scope `
+        + `"${scopeKey(entry.scopePath)}" (${entry.category}), but ${entry.filename} is not part of the scanned `
+        + 'tree at all — deliberately update the reviewed baseline if this file was intentionally removed, or '
+        + 'restore it if this is unintended drift',
+    ));
+  }
+  for (const entry of SHELL_CAPTURE_ESCAPE_POLICY) {
+    if (present.has(entry.filename)) continue;
+    violations.push(makeViolation(
+      'shell-capture-escape', entry.filename, 0,
+      `the approved #592 capture-Escape snapshot expects ${entry.count} listener(s) in scope `
+        + `"${scopeKey(entry.scopePath)}" (${entry.category}), but ${entry.filename} is not part of the scanned `
+        + 'tree at all — deliberately update the reviewed baseline if this file was intentionally removed, or '
+        + 'restore it if this is unintended drift',
+    ));
+  }
+  const neededFilenames = new Set([
+    ...SHELL_BODY_MOUNT_POLICY.map((e) => e.filename),
+    ...SHELL_CAPTURE_ESCAPE_POLICY.map((e) => e.filename),
+  ]);
+  const toParse = sources.filter((s) => neededFilenames.has(s.filename));
+  if (toParse.length === 0) return violations;
+  return violations.concat(withParsedSources(toParse, (sourceFiles, checkers) => {
+    const out = [];
+    for (const [filename, sourceFile] of sourceFiles) {
+      const checker = checkers.get(filename);
+      out.push(...shellBodyMountMissingBaselineViolationsStrict(sourceFile, filename, checker));
+      out.push(...shellCaptureEscapeMissingBaselineViolationsStrict(sourceFile, filename, checker));
+    }
+    return out;
+  }));
+}
+
 // ── Guard 2: `shell-fixed-position` (focused CSS lexical scanner) ───────────
 //
 // No CSS parser dependency (Architecture decision 2) — a small hand-written
@@ -3097,10 +3377,19 @@ function firstMeaningfulCssOffset(source, from) {
  * `position: \66ixed;`) can't hide one either: `processDeclaration` decodes
  * the property/value text (`decodeCssEscapes`) before comparing, so an
  * escaped spelling that real CSS parses identically to `position`/`fixed`
- * is recognized identically here too.
+ * is recognized identically here too. `nested` is `true` when the
+ * declaration's own rule sits inside another plain STYLE rule — real CSS
+ * nesting (`.wrapper { .auth-host { position: fixed; } }` compiles to the
+ * descendant selector `.wrapper .auth-host`, a genuinely different,
+ * never-approved selector context) — as opposed to only at-rule ancestors
+ * (#592 review pass, ChatGPT PR #672 pass 1): the at-chain builder above only
+ * ever recorded 'at'-kind ancestor frames, silently skipping over any
+ * enclosing 'rule'-kind frame instead of folding it into the fingerprint or
+ * rejecting it, so a nested plain rule fingerprinted identically to its
+ * unwrapped, already-approved counterpart.
  *
  * @param {string} source
- * @returns {{selector: string, atRule: string | null, pos: number}[]}
+ * @returns {{selector: string, atRule: string | null, nested: boolean, pos: number}[]}
  */
 export function scanFixedPositionDeclarations(source) {
   const n = source.length;
@@ -3136,12 +3425,14 @@ export function scanFixedPositionDeclarations(source) {
     const innermost = frames[frames.length - 1];
     if (!innermost || innermost.kind !== 'rule') return; // no selector context — out of this rule's scope
     const atChain = [];
+    let nested = false;
     for (let k = frames.length - 2; k >= 0; k--) {
       if (frames[k].kind === 'at') atChain.push(frames[k].prelude);
+      else nested = true; // an enclosing 'rule'-kind frame, at ANY depth — real CSS nesting
     }
     atChain.reverse(); // outermost first
     const atRule = atChain.length ? atChain.join(' > ') : null;
-    results.push({ selector: innermost.prelude, atRule, pos: firstMeaningfulCssOffset(source, segStart) });
+    results.push({ selector: innermost.prelude, atRule, nested, pos: firstMeaningfulCssOffset(source, segStart) });
   }
 
   while (i < n) {
@@ -3234,6 +3525,18 @@ function fixedPositionKey(selector, atRule) {
  * deliberately separate export; see its own doc comment for why folding it
  * in here would break this suite's many minimal single-selector fixtures.
  *
+ * A `nested` declaration (real CSS nesting under another plain style rule —
+ * `scanFixedPositionDeclarations`'s own doc comment) is NEVER compared
+ * against `SHELL_FIXED_POSITION_POLICY` by fingerprint at all — it is
+ * unconditionally flagged (#592 review pass, ChatGPT PR #672 pass 1): its
+ * `(selector, atRule)` fingerprint can otherwise be textually IDENTICAL to
+ * an already-approved top-level entry's (`.wrapper { .auth-host { position:
+ * fixed; } }` fingerprints as bare `.auth-host`/`atRule: null`, exactly like
+ * the approved, unwrapped baseline row), even though the rule's REAL
+ * effective selector changed (`.wrapper .auth-host`, a descendant
+ * selector) — a genuinely reviewable structural edit a fingerprint
+ * comparison alone can never distinguish from the unwrapped baseline.
+ *
  * @param {string} cssSource
  * @param {string} filename repo-relative, forward-slash separated (report only)
  * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
@@ -3242,6 +3545,17 @@ export function findShellFixedPositionViolations(cssSource, filename) {
   const violations = [];
   const byKey = new Map(); // fingerprint -> decl[]
   for (const decl of scanFixedPositionDeclarations(cssSource)) {
+    if (decl.nested) {
+      violations.push(makeViolation(
+        'shell-fixed-position', filename, decl.pos,
+        `position: fixed on selector "${decl.selector}"${decl.atRule ? ` inside ${decl.atRule}` : ''} is nested `
+          + 'inside another plain style rule (real CSS nesting changes its effective selector context, e.g. to a '
+          + 'descendant selector) — this is never an approved #592 fixed-position shape; hoist the declaration out '
+          + 'to a top-level (or purely at-rule-scoped) rule, or deliberately extend the reviewed fixed-position '
+          + 'snapshot for a legitimate nested overlay',
+      ));
+      continue;
+    }
     const key = fixedPositionKey(decl.selector, decl.atRule);
     const list = byKey.get(key) ?? [];
     list.push(decl);
@@ -3297,7 +3611,16 @@ export function findShellFixedPositionViolations(cssSource, filename) {
  * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
  */
 export function findShellFixedPositionMissingBaselineViolations(cssSource, filename) {
-  const found = new Set(scanFixedPositionDeclarations(cssSource).map((d) => fixedPositionKey(d.selector, d.atRule)));
+  // A `nested` declaration's fingerprint never counts as "still present" for
+  // an approved baseline entry (#592 review pass, ChatGPT PR #672 pass 1):
+  // `findShellFixedPositionViolations` already unconditionally flags it on
+  // its own, and its REAL effective selector is no longer the approved
+  // top-level one (a descendant selector under its new enclosing rule) —
+  // wrapping the approved rule in a new enclosing style rule must report the
+  // ORIGINAL fingerprint missing, exactly like an outright removal would.
+  const found = new Set(
+    scanFixedPositionDeclarations(cssSource).filter((d) => !d.nested).map((d) => fixedPositionKey(d.selector, d.atRule)),
+  );
   const violations = [];
   for (const entry of SHELL_FIXED_POSITION_POLICY) {
     const key = fixedPositionKey(entry.selector, entry.atRule);

@@ -96,27 +96,43 @@ function selectorTargetsResizeHandleClass(selector, className) {
   return new RegExp(`\\.${className}(?![\\w-])`).test(selector);
 }
 
-/** Every `width: <number>px` value declared by ANY flat rule whose selector
- *  list names `.col-resize` and/or `.inspector-resize` — together (the rule
- *  that governs both classes' shared width), alone (a more-specific, later-
- *  declared, or media-query-scoped override that could still win the real
- *  cascade for just one of the two classes even though it never mentions the
- *  other — the P1 gap `flatCssRules`'s own brace-agnostic regex already sees
- *  through one level of `@media { … }` nesting for: an inner flat rule is
- *  matched on its own, the outer at-rule prelude is simply skipped as
- *  unmatched text), OR as part of a COMPOUND/DESCENDANT selector naming
- *  either class (`selectorTargetsResizeHandleClass`, the pass-3 fix — a
- *  bare-class-list membership check alone missed `.inspector-
- *  resize.dragging { width: 8px; }` and `.shell .inspector-resize { width:
- *  8px; }` entirely, so either override silently escaped this contract).
- *  Order-independent; additional selectors in the same group, e.g.
- *  `.row-resize`, are allowed. Zero, one, or many, across however many
- *  matching rule groups exist: the caller decides what count is valid — and
- *  the contract below requires EXACTLY one, so ANY standalone, compound,
- *  descendant, or media-scoped override of either class's `width` makes the
- *  count 2+ and the contract fails closed (`css-ambiguous`) instead of
- *  silently reading only the grouped rule's own value while the browser's
- *  real cascade could render a completely different pixel width. */
+/** Every `width: <value>` declaration's own numeric-px value, declared by ANY
+ *  flat rule whose selector list names `.col-resize` and/or `.inspector-
+ *  resize` — together (the rule that governs both classes' shared width),
+ *  alone (a more-specific, later-declared, or media-query-scoped override
+ *  that could still win the real cascade for just one of the two classes
+ *  even though it never mentions the other — the P1 gap `flatCssRules`'s own
+ *  brace-agnostic regex already sees through one level of `@media { … }`
+ *  nesting for: an inner flat rule is matched on its own, the outer at-rule
+ *  prelude is simply skipped as unmatched text), OR as part of a COMPOUND/
+ *  DESCENDANT selector naming either class (`selectorTargetsResizeHandleClass`,
+ *  the pass-3 fix — a bare-class-list membership check alone missed
+ *  `.inspector-resize.dragging { width: 8px; }` and `.shell .inspector-resize
+ *  { width: 8px; }` entirely, so either override silently escaped this
+ *  contract). EVERY matching `width:` declaration contributes exactly one
+ *  entry — a real numeric px value (`7`, `8px !important` → `8`, the
+ *  `!important` suffix never changes the browser's real geometry so it never
+ *  changes what this contract extracts either) when the declared value IS a
+ *  plain `<number>px` (optionally `!important`), or `NaN` for anything else
+ *  the browser's cascade could still render as a real width but this
+ *  contract cannot statically reduce to one comparable number — `calc(...)`,
+ *  a custom-property `var(...)`, or any other non-literal value (P1 follow-
+ *  up, ChatGPT PR #672 pass 1: the prior regex silently SKIPPED any `width:`
+ *  value that wasn't already an exact `<number>px;` token, so a real,
+ *  differently-valued `!important`/`calc()`/`var()` override on either
+ *  resize class was invisible to this extractor — the SAME class of
+ *  "silently skip instead of fail closed" bug the descendant/compound-
+ *  selector fix above (pass 3) already closed for the SELECTOR side of this
+ *  contract, just still open on the VALUE side). Order-independent; the
+ *  contract below requires EXACTLY one declaration overall, so ANY second
+ *  `width:` declaration on either class — standalone, compound, descendant,
+ *  media-scoped, `!important`, or a non-literal value — makes the count 2+
+ *  and the contract fails closed (`css-ambiguous`) instead of silently
+ *  reading only the grouped rule's own value while the browser's real
+ *  cascade could render a completely different pixel width; a SOLE
+ *  `calc()`/`var()` declaration (no clean numeric sibling at all) is a
+ *  single `NaN` entry, which the exact-equality contract below can never
+ *  treat as a match for the real `HANDLE_PX` either. */
 function extractSharedResizeWidthPx(cssSource) {
   const values = [];
   for (const rule of flatCssRules(cssSource)) {
@@ -124,7 +140,10 @@ function extractSharedResizeWidthPx(cssSource) {
       (s) => selectorTargetsResizeHandleClass(s, 'col-resize') || selectorTargetsResizeHandleClass(s, 'inspector-resize'),
     );
     if (!targets) continue;
-    for (const m of rule.body.matchAll(/\bwidth\s*:\s*(-?\d+(?:\.\d+)?)px\s*;/g)) values.push(Number(m[1]));
+    for (const m of rule.body.matchAll(/\bwidth\s*:\s*([^;]+?)\s*;/g)) {
+      const numeric = /^(-?\d+(?:\.\d+)?)px(?:\s*!\s*important)?$/i.exec(m[1].trim());
+      values.push(numeric ? Number(numeric[1]) : NaN);
+    }
   }
   return values;
 }
@@ -241,6 +260,57 @@ describe('#592 resize-handle thickness contract sabotage (synthetic — independ
     const css = `${CLEAN_CSS}.inspector-resize { width: 7px; }\n`;
     const status = resizeHandleContractStatus(CLEAN_JS, css);
     expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 7] });
+  });
+
+  // P1 follow-up (accepted, ChatGPT PR #672 review pass 1): the value-side
+  // regex required an EXACT `<number>px;` token with nothing else between
+  // the number and the semicolon, so a `!important` suffix or a non-literal
+  // value (`calc(...)`, `var(...)`) was silently SKIPPED rather than counted
+  // — the real browser cascade still applies these declarations (an
+  // `!important` value WINS over a normal one; `calc()`/`var()` compute to
+  // some real pixel width), but the extractor never even saw them, so the
+  // contract stayed green while a real, differently-valued override sat
+  // right there in the CSS.
+
+  it('a later standalone !important override with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.inspector-resize { width: 8px !important; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 8] });
+  });
+
+  it('an !important override with no space before the bang is still counted', () => {
+    const css = `${CLEAN_CSS}.col-resize { width: 9px!important; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 9] });
+  });
+
+  it('a calc() override is counted as an unconvertible (NaN) value, not silently skipped', () => {
+    const css = `${CLEAN_CSS}.inspector-resize { width: calc(7px + 1px); }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status.ok).toBe(false);
+    expect(status.reason).toBe('css-ambiguous');
+    expect(status.cssValues).toHaveLength(2);
+    expect(status.cssValues[0]).toBe(7);
+    expect(Number.isNaN(status.cssValues[1])).toBe(true);
+  });
+
+  it('a var(--custom-property) override is counted as an unconvertible (NaN) value, not silently skipped', () => {
+    const css = `${CLEAN_CSS}.col-resize { width: var(--handle-width); }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status.ok).toBe(false);
+    expect(status.reason).toBe('css-ambiguous');
+    expect(status.cssValues).toHaveLength(2);
+    expect(status.cssValues[0]).toBe(7);
+    expect(Number.isNaN(status.cssValues[1])).toBe(true);
+  });
+
+  it('a SOLE var(...) declaration (no clean numeric sibling) is a single unconvertible NaN value, never a false match', () => {
+    const css = '.col-resize, .inspector-resize { width: var(--handle-width); }\n';
+    const values = extractSharedResizeWidthPx(css);
+    expect(values).toHaveLength(1);
+    expect(Number.isNaN(values[0])).toBe(true);
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status.ok).toBe(false); // NaN !== 7 either way — never a silent pass
   });
 
   it('a comment-only mention of HANDLE_PX does not count as a declaration', () => {

@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   findShellGuardrailSourceContractViolations,
+  findShellGuardrailMissingBaselineViolations,
   findShellFixedPositionViolations,
   findShellFixedPositionMissingBaselineViolations,
   scanFixedPositionDeclarations,
@@ -59,15 +60,18 @@ function rulesOf(vs: SourceContractViolation[]): string[] {
 
 describe('#592 shell guardrails: live-tree baseline', () => {
   let tsViolations: SourceContractViolation[];
+  let missingBaselineViolations: SourceContractViolation[];
   let cssViolations: SourceContractViolation[];
+  let sources: ShellGuardrailSourceEntry[];
 
   beforeAll(() => {
     const files = listSourceFiles();
-    const sources: ShellGuardrailSourceEntry[] = files.map((relPath) => ({
+    sources = files.map((relPath) => ({
       filename: relPath,
       source: readFileSync(join(root, relPath), 'utf8'),
     }));
     tsViolations = findShellGuardrailSourceContractViolations(sources);
+    missingBaselineViolations = findShellGuardrailMissingBaselineViolations(sources);
     const css = readFileSync(join(root, 'src/styles.css'), 'utf8');
     cssViolations = findShellFixedPositionViolations(css, 'src/styles.css');
   }, 10000);
@@ -78,6 +82,16 @@ describe('#592 shell guardrails: live-tree baseline', () => {
 
   it('no shell-capture-escape violation exists anywhere in the current tree', () => {
     expect(tsViolations.filter((v) => v.rule === 'shell-capture-escape')).toEqual([]);
+  });
+
+  it('the complete-tree reverse check also reports zero violations (sanity check)', () => {
+    expect(missingBaselineViolations).toEqual([]);
+  });
+
+  it('every #592-scanned filename listed by listSourceFiles() actually exists in the batch (sanity check on the sanity check)', () => {
+    // Otherwise the previous assertion could pass vacuously (an empty
+    // `sources` array trivially has zero "missing" violations too).
+    expect(sources.length).toBeGreaterThan(0);
   });
 
   it('no shell-fixed-position violation exists in src/styles.css', () => {
@@ -413,6 +427,97 @@ describe('#592 shell-body-mount: destructuring alias sabotage (each must fail)',
       .filter((v) => v.rule === 'shell-body-mount');
     expect(found.length).toBeGreaterThan(0);
   });
+
+  // ChatGPT PR #672 review pass 1: the prior check only recognized a
+  // destructuring rename whose OWN `propertyName` was a plain `Identifier`
+  // (`{ body: host }`) — a QUOTED source key (`{ 'body': host }`, valid,
+  // equivalent JS/TS syntax) fell through to reading the LOCAL binding name
+  // (`host`) instead of the real source property (`body`), so this exact
+  // shape silently bypassed the guard.
+  it("const { 'body': host } = document; host.appendChild(panel) (quoted rename) fails", () => {
+    const source = "function openRogue() { const { 'body': host } = document; host.appendChild(panel); }";
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-destructure-body-quoted.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it("const { ['body']: host } = document; host.appendChild(panel) (computed string-literal rename) fails", () => {
+    const source = "function openRogue() { const { ['body']: host } = document; host.appendChild(panel); }";
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-destructure-body-computed.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  // The identical quoted-rename gap also applied to the OTHER destructuring
+  // recognition branch — resolving a Document/Window alias itself (not just
+  // its `.body`) through a renamed `{ document: doc }`/`{ window: win }`
+  // destructure — since both go through the SAME `bindingElementSourceKeyName`
+  // helper.
+  it("const { 'document': doc } = opts; doc.body.appendChild(panel) (quoted document-alias rename) fails", () => {
+    const source = 'function openRogue() { const { \'document\': doc } = opts; doc.body.appendChild(panel); }';
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-quoted-document-rename.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Body-mount type-alias sabotage (ChatGPT PR #672 review pass 1) ─────────
+// `type Doc = Document; function f(doc: Doc) { ... }` names a real
+// `Document` exactly like a direct `: Document` annotation would — the
+// prior `typeNamesOf`-only check read only the type annotation's own
+// LITERAL name (`'Doc'`), never resolving it through the checker to see
+// that it's a local alias FOR `Document`, so this exact shape silently
+// bypassed the guard.
+
+describe('#592 shell-body-mount: type-alias sabotage (each must fail)', () => {
+  it('a local type alias for Document (type Doc = Document) is recognized as a Document parameter', () => {
+    const source = [
+      'type Doc = Document;',
+      'function openRogue(doc: Doc) { doc.body.appendChild(panel); }',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-type-alias-doc.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a local type alias for Window (type Win = Window) is recognized as a candidate addEventListener receiver', () => {
+    const source = [
+      'type Win = Window;',
+      "function openRogue(win: Win) { const onKey = (e) => { if (e.key === 'Escape') close(); }; "
+        + "win.addEventListener('keydown', onKey, true); }",
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-type-alias-win.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a CHAIN of two type aliases (type A = Document; type Doc = A;) is still resolved to Document', () => {
+    const source = [
+      'type A = Document;',
+      'type Doc = A;',
+      'function openRogue(doc: Doc) { doc.body.appendChild(panel); }',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-type-alias-chain.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('an unrelated type alias (type Doc = string) is never mistaken for a Document alias', () => {
+    const source = [
+      'type Doc = string;',
+      'function openRogue(doc: Doc) { doc.body.appendChild(panel); }', // not a real Document — `.body` is nonsense on a string, but the check is purely structural
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_not-a-document-type-alias.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found).toEqual([]);
+  });
+
+  it('a direct : Document annotation still works unchanged (no regression from the alias-chain resolver)', () => {
+    const source = 'function openRogue(doc: Document) { doc.body.appendChild(panel); }';
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-direct-document-still-works.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
 });
 
 // ── Capture-Escape positive cases ───────────────────────────────────────────
@@ -531,6 +636,54 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
   it('a simple capture-options alias fails', () => {
     const found = captureEscapeRulesFor('src/ui/_sabotage-d.ts', ['openRogueD'],
       `${escapeHandler} const opts2 = { capture: true }; document.addEventListener('keydown', onKey, opts2);`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // ChatGPT PR #672 review pass 1 follow-up: `resolveCaptureFlag` used to
+  // trust ANY resolved `VariableDeclaration`'s initializer regardless of
+  // const-ness — a `let` alias reassigned AFTER its declaration (the value
+  // actually in effect at the real `addEventListener` call) was silently
+  // read as its STALE initial value instead, escaping detection entirely.
+  // These fail-closed to `uncheckable-options` now (the same violation shape
+  // "a simple capture-options alias fails" above exercises for a real
+  // `const` alias), never a silent "provably false" pass.
+
+  it('a let capture-options object alias REASSIGNED to { capture: true } after declaration fails (not the stale initializer)', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-let-opts-reassign.ts', ['openRogueLetOptsReassign'],
+      `${escapeHandler} let opts = { capture: false }; opts = { capture: true }; `
+      + "document.addEventListener('keydown', onKey, opts);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it('a let bare-boolean capture flag REASSIGNED to true after declaration fails (not the stale initializer)', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-let-bool-reassign.ts', ['openRogueLetBoolReassign'],
+      `${escapeHandler} let capture = false; capture = true; `
+      + "document.addEventListener('keydown', onKey, capture);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it('a var capture-options alias (never a genuine const) fails, even with no reassignment at all', () => {
+    // The invariant is "genuine const", not "happens to be reassigned" —
+    // a `var`/`let` alias is NEVER trusted, regardless of whether THIS
+    // particular fixture reassigns it.
+    const found = captureEscapeRulesFor('src/ui/_sabotage-var-opts.ts', ['openRogueVarOpts'],
+      `${escapeHandler} var opts = { capture: true }; document.addEventListener('keydown', onKey, opts);`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // The identical gap, for the HANDLER alias instead of the capture-options
+  // alias: `resolveHandlerNode` used to trust a resolved `VariableDeclaration`
+  // initializer regardless of const-ness too, so a `let` handler reassigned
+  // to a real Escape-testing function AFTER its (non-Escape) initial
+  // declaration resolved to the STALE, non-Escape initializer and was
+  // classified 'clean' instead of 'escape'.
+
+  it('a let handler alias REASSIGNED to a real Escape handler after declaration fails (not the stale initializer)', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-let-handler-reassign.ts', ['openRogueLetHandlerReassign'], [
+      'let onKey = () => {};',
+      "onKey = (e) => { if (e.key === 'Escape') close(); };",
+      "document.addEventListener('keydown', onKey, true);",
+    ].join('\n'));
     expect(found).toEqual(['shell-capture-escape']);
   });
 
@@ -674,6 +827,62 @@ describe('#592 shell-capture-escape: missing-baseline-entry sabotage (each must 
     // listener — remove it entirely (an empty scope body).
     const found = captureEscapeRulesFor('src/ui/menu.ts', ['openMenu'], '');
     expect(found).toEqual(['shell-capture-escape']);
+  });
+});
+
+// ── Complete-tree missing-baseline strict reverse check sabotage (ChatGPT PR #672
+// review pass 1 follow-up) ──────────────────────────────────────────────────
+// The softened forward-check reverse pass above (`declaredScopeKeys`) can
+// only ever catch a dropped OCCURRENCE COUNT within a scope that is still
+// present in whatever was scanned — it deliberately treats a scope/file
+// entirely ABSENT from the scanned batch as "not this call's concern",
+// which is exactly right for this suite's own minimal single-scope
+// fixtures but leaves a real approved function (or a whole approved FILE)
+// deleted outright silently unflagged. `findShellGuardrailMissingBaselineViolations`
+// is the deliberately separate, stricter pass that assumes `sources` IS the
+// complete tree and closes exactly that gap.
+
+describe('#592 shell-guardrail missing-baseline: complete-tree strict reverse check (each must fail)', () => {
+  it('deleting an approved function outright (whole-scope disappearance) is flagged — unlike the softened forward-check reverse pass', () => {
+    const sources: ShellGuardrailSourceEntry[] = [
+      { filename: 'src/ui/toast.ts', source: 'export const unrelated = 1;\n' },
+    ];
+    // Sanity: this is exactly the confirmed blind spot — the softened
+    // forward-check reverse pass does NOT catch it, because
+    // `declaredScopeKeys` correctly (for ITS OWN purpose) treats a fixture
+    // that never declares `flashToast` at all as "not this call's concern".
+    expect(shellViolations(sources).filter((v) => v.rule === 'shell-body-mount')).toEqual([]);
+    const found = findShellGuardrailMissingBaselineViolations(sources)
+      .filter((v) => v.rule === 'shell-body-mount' && v.filename === 'src/ui/toast.ts');
+    expect(found.length).toBeGreaterThan(0);
+    expect(found[0]!.detail).toContain('flashToast');
+  });
+
+  it('an approved FILE missing from the batch entirely is flagged for every one of its policy entries', () => {
+    // src/ui/menu.ts owns entries in BOTH tables (shell-body-mount's
+    // openMenu, count 2; shell-capture-escape's openMenu, count 1) —
+    // omitting the file from the batch entirely must flag both, never
+    // silently skip either just because the file was never even parsed.
+    const sources: ShellGuardrailSourceEntry[] = [
+      { filename: 'src/ui/_unrelated.ts', source: 'export const x = 1;\n' },
+    ];
+    const found = findShellGuardrailMissingBaselineViolations(sources);
+    const menuBodyMount = found.find((v) => v.rule === 'shell-body-mount' && v.filename === 'src/ui/menu.ts');
+    const menuCaptureEscape = found.find((v) => v.rule === 'shell-capture-escape' && v.filename === 'src/ui/menu.ts');
+    expect(menuBodyMount).toBeDefined();
+    expect(menuCaptureEscape).toBeDefined();
+    expect(menuBodyMount!.detail).toContain('not part of the scanned tree');
+  });
+
+  it('renaming an approved function while KEEPING its mount call is a real bypass of NEITHER check — it is still caught by the forward check\'s own "no policy entry" branch', () => {
+    // Sanity/negative control per the finding's own caveat: pure renaming is
+    // NOT a full bypass — it is already flagged today, just via a DIFFERENT
+    // branch (a scope with no matching policy entry) than the missing-
+    // baseline gap this describe block targets.
+    const found = bodyMountRulesFor(
+      'src/ui/toast.ts', ['flashToastRenamed'], withDocAlias('doc', 'doc.body.appendChild(el);'),
+    );
+    expect(found).toEqual(['shell-body-mount']);
   });
 });
 
@@ -865,6 +1074,19 @@ describe('#592 shell-fixed-position: positive characterization', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.atRule).toBe('@supports (display: grid) > @media (max-width: 768px)');
   });
+
+  it('a top-level (non-nested) declaration has nested: false', () => {
+    const found = scanFixedPositionDeclarations('.x { position: fixed; }');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.nested).toBe(false);
+  });
+
+  it('a declaration inside @media only (no enclosing plain rule) still has nested: false', () => {
+    const css = '@media (max-width: 768px) {\n  .x { position: fixed; }\n}\n';
+    const found = scanFixedPositionDeclarations(css);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.nested).toBe(false);
+  });
 });
 
 // ── Fixed-position sabotage cases ───────────────────────────────────────────
@@ -952,6 +1174,38 @@ describe('#592 shell-fixed-position: sabotage (each must fail)', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.rule).toBe('shell-fixed-position');
   });
+
+  // ChatGPT PR #672 review pass 1: the at-chain builder only ever folded
+  // enclosing 'at'-kind (at-rule) frames into the fingerprint, silently
+  // skipping any enclosing 'rule'-kind (plain style rule) frame — so real
+  // CSS NESTING (`.wrapper { .auth-host { position: fixed; } }` compiles to
+  // the descendant selector `.wrapper .auth-host`, a genuinely different,
+  // never-approved effective selector) fingerprinted as bare `.auth-host`
+  // with no at-rule — byte-identical to the approved top-level baseline row
+  // — and was never flagged.
+
+  it('a position: fixed declaration nested inside another plain style rule is unconditionally flagged, even reusing an approved-looking selector', () => {
+    const css = '.wrapper {\n  .auth-host { position: fixed; }\n}\n';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1); // NOT zero — proves it never silently matched the approved .auth-host baseline
+    expect(found[0]!.rule).toBe('shell-fixed-position');
+    expect(found[0]!.detail).toContain('.auth-host');
+    expect(found[0]!.detail).toContain('nested');
+  });
+
+  it('a position: fixed declaration nested two levels deep inside plain style rules is still flagged', () => {
+    const css = '.outer {\n  .inner {\n    .deepest { position: fixed; }\n  }\n}\n';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.detail).toContain('.deepest');
+  });
+
+  it('a nested rule under an at-rule (both a plain-rule AND an at-rule ancestor) is still flagged', () => {
+    const css = '@media (max-width: 768px) {\n  .wrapper {\n    .nested-under-media { position: fixed; }\n  }\n}\n';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.detail).toContain('.nested-under-media');
+  });
 });
 
 // ── Fixed-position missing-baseline-entry sabotage (P1, PR #672 review pass 1) ──
@@ -1002,6 +1256,23 @@ describe('#592 shell-fixed-position: missing-baseline-entry sabotage (each must 
     expect(wrapped).not.toBe(realStylesCss); // sanity: the wrap actually happened
     const missing = findShellFixedPositionMissingBaselineViolations(wrapped, 'src/styles.css')
       .find((v) => v.detail.includes('.inspector-host') && v.detail.includes('none remain'));
+    expect(missing).toBeDefined();
+    expect(missing!.rule).toBe('shell-fixed-position');
+  });
+
+  // ChatGPT PR #672 review pass 1: wrapping the real, unmodified `.auth-host`
+  // rule in an additional enclosing PLAIN style rule (real CSS nesting) is a
+  // genuinely different, never-approved effective selector — the original
+  // un-nested fingerprint must be reported missing exactly like an outright
+  // removal, not silently treated as "still present" just because a nested
+  // declaration with the same bare selector text exists somewhere.
+  it('wrapping the real .auth-host rule in an additional enclosing plain rule flags the original fingerprint as missing too', () => {
+    const authHostMatch = realStylesCss.match(/\.auth-host\s*\{[^}]*\}/);
+    expect(authHostMatch).not.toBeNull(); // sanity: the real rule was found
+    const wrapped = realStylesCss.replace(authHostMatch![0], `.sabotage-wrapper {\n${authHostMatch![0]}\n}`);
+    expect(wrapped).not.toBe(realStylesCss); // sanity: the wrap actually happened
+    const missing = findShellFixedPositionMissingBaselineViolations(wrapped, 'src/styles.css')
+      .find((v) => v.detail.includes('.auth-host') && v.detail.includes('none remain'));
     expect(missing).toBeDefined();
     expect(missing!.rule).toBe('shell-fixed-position');
   });
@@ -1176,7 +1447,7 @@ describe('#592 Architecture decision 6: checker-based resolution (mirrors the pr
 // Typed-only compile-time proof the DTOs above are what the strict `.d.mts`
 // boundary declares — never executed, just type-checked by `tsc --noEmit`.
 function typeCheckOnly(): void {
-  const decl: FixedPositionDeclaration = { selector: '.x', atRule: null, pos: 0 };
+  const decl: FixedPositionDeclaration = { selector: '.x', atRule: null, nested: false, pos: 0 };
   const violation: SourceContractViolation = { rule: 'shell-body-mount', filename: 'x', pos: 0, detail: 'x' };
   const entry: ShellGuardrailSourceEntry = { filename: 'x', source: 'x' };
   void decl; void violation; void entry;

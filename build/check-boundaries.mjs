@@ -101,6 +101,7 @@ import {
   findDynamicImportUsages,
   mightContainDynamicImport,
   findShellGuardrailSourceContractViolations,
+  findShellGuardrailMissingBaselineViolations,
   findShellFixedPositionViolations,
   findShellFixedPositionMissingBaselineViolations,
 } from './lib/check-legacy-owners.mjs';
@@ -912,6 +913,16 @@ function lineOfOffset(source, pos) {
   });
   const bySource = new Map(shellSources.map((s) => [s.filename, s.source]));
   for (const v of findShellGuardrailSourceContractViolations(shellSources)) {
+    const line = lineOfOffset(bySource.get(v.filename) ?? '', v.pos);
+    violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
+  }
+  // The complete-tree reverse half (PR #672 review pass 1 follow-up,
+  // ChatGPT) — meaningful only against the real, complete `src/**` tree,
+  // which `shellSources` (built from `collectFiles`'s live disk walk) always
+  // is here; see the function's own doc comment for why this is a separate
+  // export from `findShellGuardrailSourceContractViolations` rather than
+  // folded into it.
+  for (const v of findShellGuardrailMissingBaselineViolations(shellSources)) {
     const line = lineOfOffset(bySource.get(v.filename) ?? '', v.pos);
     violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
   }
