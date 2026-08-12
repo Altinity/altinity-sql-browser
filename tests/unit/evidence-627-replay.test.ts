@@ -1,22 +1,26 @@
-// Issue #627 — PR-review finding (pass 1): `docs/evidence/627/README.md`
-// pinned its "Tested commit" to `036760a` and claimed `src/core/stream.ts`'s
-// meta-less fallback "is unchanged since". That was true when written, but
-// this branch's own later commit `edcb8ba` (`fix(#627): restore row-width
-// invariant for zero-key rows...`) added a zero-key-row guard to the exact
-// `json.row` fallback arm the evidence exercises — making the README's
-// blanket claim stale/false relative to the branch's final head.
+// The committed live-capture evidence in `docs/evidence/627/*.ndjson` /
+// `*.normalized.json` attests to decoder/accumulator behavior. That
+// attestation has to stay bound to the code currently under test, not to
+// the commit the capture happened to run against — otherwise a later
+// change to `streamLines()`/`applyStreamLine()` would silently invalidate
+// the committed evidence instead of failing this suite.
 //
-// This spec is the promised replay: it feeds the two RAW committed NDJSON
-// captures through the REAL production path at the CURRENT head — the
-// package's `streamLines()` (unmodified protocol mechanics) followed by
-// `src/core/stream.ts`'s `newResult()`/`applyStreamLine()` (the #627
-// result-policy fallback, now including the zero-key-row guard) — and
-// asserts the result is exactly/structurally equal to the committed
-// `*.normalized.json` files (deep value equality on the parsed objects, not
-// a byte-for-byte file comparison). Both committed captures carry only 3-key rows
-// (id/precise/lexical), never a zero-key `{}` row, so the guard added in
-// `edcb8ba` is provably inert against this corpus: this test is the
-// evidence for that inertness claim, not just an assertion of it in prose.
+// This spec is what enforces that binding: it replays the two raw
+// committed NDJSON captures through the REAL production path at whatever
+// checkout runs it — the package's `streamLines()` (unmodified protocol
+// mechanics) followed by `src/core/stream.ts`'s
+// `newResult()`/`applyStreamLine()` (the #627 result-policy fallback,
+// including its zero-key-row guard) — and requires the result to still be
+// deeply/structurally equal to the committed `*.normalized.json` files
+// (deep value equality on the parsed objects, not a byte-for-byte file
+// comparison).
+//
+// The zero-key-row guard `edcb8ba` added to that fallback arm is inert for
+// this corpus: both committed captures carry only 3-key rows
+// (id/precise/lexical) in every `row` line, never a zero-key `{}` row, so
+// the guard's `keys.length === 0` branch never fires here. The per-case
+// column assertions below are the evidence for that inertness claim, not
+// just an assertion of it in prose.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -62,7 +66,7 @@ async function replay(ndjson: string): Promise<{ metaSeen: boolean; result: Stre
   return { metaSeen, result };
 }
 
-describe('#627 evidence replay — production path at the current head (PR review pass 1)', () => {
+describe('#627 evidence replay — production path reproduces the committed captures', () => {
   it.each([
     ['oss-24.8.14.39', 'ClickHouse OSS 24.8.14.39'],
     ['altinity-24.8.14.10547', 'Altinity Stable 24.8.14.10547.altinitystable'],

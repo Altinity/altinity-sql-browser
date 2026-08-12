@@ -154,13 +154,12 @@ not re-run against these captured bytes here, since it already covers the
 `StreamResult -> renderGrid` half of the pipeline with its own independently declared
 literals.
 
-`tests/unit/evidence-627-replay.test.ts` (added in PR review pass 1, see "Tested
-commit" above) is the ongoing, head-tracking counterpart to the one-off verifier
-above: it replays these exact two committed `*.ndjson` files through the real
-`streamLines()`/`applyStreamLine()` production path at whatever commit `npm test`
-runs against, and fails the suite if that ever stops matching the committed
-`*.normalized.json` files — so this evidence's attestation does not silently go
-stale again the next time `src/core/stream.ts`'s fallback changes.
+`tests/unit/evidence-627-replay.test.ts` is the ongoing, head-tracking counterpart
+to the one-off verifier above: it replays these exact two committed `*.ndjson`
+files through the real `streamLines()`/`applyStreamLine()` production path at
+whatever commit `npm test` runs against, and fails the suite if that ever stops
+matching the committed `*.normalized.json` files — so this evidence's attestation
+does not silently go stale the next time `src/core/stream.ts`'s fallback changes.
 
 ## Transient pull retries
 
