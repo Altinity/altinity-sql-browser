@@ -76,6 +76,17 @@ describe('autoChart', () => {
     expect(autoChart([{ name: 'carrier', type: 'String' }, { name: 'monthly_total', type: 'Float64' }]))
       .toEqual({ type: 'hbar', x: 0, y: [1], series: null });
   });
+  // #627: a meta-less ClickHouse 24.8 stream carries `type: ''` for every
+  // column — no value-based inference means there is no measure, so auto
+  // chart detection must fail closed to null rather than guessing a numeric
+  // axis from the column name/values.
+  it('a meta-less result (every column type "") never auto-charts', () => {
+    expect(chartRole({ name: 'total', type: '' })).toBe('category');
+    expect(autoChart([
+      { name: 'when', type: '' },
+      { name: 'total', type: '' },
+    ])).toBeNull();
+  });
 });
 
 describe('schemaKey', () => {

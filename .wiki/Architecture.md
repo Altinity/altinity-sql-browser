@@ -71,7 +71,16 @@ module mocking.
    now calls the package's own stateless `killQuery` directly, and there
    is exactly one generic ClickHouse HTTP transport implementation left in
    the repository.
-3. `JSONStringsEachRowWithProgress` is folded line by line by pure stream logic.
+3. `JSONStringsEachRowWithProgress` is folded line by line by pure stream logic
+   (`core/stream.js`'s `applyStreamLine`). A `meta` line establishes named/
+   typed columns when the server sends one. **#627**: a meta-less first `row`
+   (ClickHouse 24.8 and earlier never emit `meta` for ordinary queries)
+   instead establishes name-only columns from that row's own keys, with the
+   unknown-type sentinel `type: ''` — never a value-based type guess. Row
+   values are stored in whichever order was established first, meta or not.
+   This fallback belongs to `core/stream.js` as SQL Browser result policy;
+   the package's own stream reading (`streamLines`) is unchanged and never
+   synthesizes metadata.
 4. Results resolve through the panel registry to table, chart, logs, KPI, filter,
    text, or graph-oriented renderers.
 5. One auth refresh is attempted for expired/denied tokens.

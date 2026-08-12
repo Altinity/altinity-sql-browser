@@ -6,6 +6,7 @@ import {
 import type { GridColumn, RenderGridArgs, Widths } from '../../src/ui/grid-render.js';
 import type { ResultSort } from '../../src/state.js';
 import { h } from '../../src/ui/dom.js';
+import { newResult, applyStreamLine } from '../../src/core/stream.js';
 
 const click = (el: Element) => el.dispatchEvent(new Event('click', { bubbles: true }));
 
@@ -104,6 +105,48 @@ describe('renderGrid', () => {
     expect(capped.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(capped.textContent).toContain('+ 1 more rows truncated');
   });
+  it('faithfully renders a meta-less accumulated result (#627) with no fabricated type and no numeric coercion', () => {
+    const result = newResult('Table');
+    applyStreamLine({
+      row: {
+        id: 'row-a',
+        precise: '9007199254740993.12345678901234567890',
+        lexical: '001.2300',
+      },
+    }, result);
+    applyStreamLine({
+      row: {
+        id: 'row-b',
+        precise: '-9007199254740993.00000000000000000001',
+        lexical: '0002',
+      },
+    }, result);
+
+    const el = renderGrid(gridArgs({ columns: result.columns, rows: result.rows }));
+
+    const headers = el.querySelectorAll('thead th');
+    // Header type titles are empty — no fabricated String/Decimal/UInt64 etc.
+    expect(headers[1].getAttribute('title')).toBe('');
+    expect(headers[2].getAttribute('title')).toBe('');
+    expect(headers[3].getAttribute('title')).toBe('');
+
+    const rows = el.querySelectorAll('tbody tr');
+    const row0 = rows[0].querySelectorAll('td.cell');
+    const row1 = rows[1].querySelectorAll('td.cell');
+
+    // Independently declared expected literals — not read back from `result`.
+    expect(row0[0].textContent).toBe('row-a');
+    expect(row0[1].textContent).toBe('9007199254740993.12345678901234567890');
+    expect(row0[2].textContent).toBe('001.2300');
+    expect(row1[0].textContent).toBe('row-b');
+    expect(row1[1].textContent).toBe('-9007199254740993.00000000000000000001');
+    expect(row1[2].textContent).toBe('0002');
+
+    // Unknown-type cells never get the numeric `.num` class.
+    expect(el.querySelectorAll('td.num')).toHaveLength(0);
+    expect(el.textContent).not.toMatch(/\b(String|Decimal|UInt64|Int\d+|Float\d+)\b/);
+  });
+
   it('reapplies stored widths (fixed layout) on render', () => {
     const el = renderGrid(gridArgs({ widths: { idx: 36, 0: 90, 1: 70 } }));
     const table = el.querySelector('.res-table')!;

@@ -354,6 +354,16 @@ describe('validateOptionColumns', () => {
     expect(validateOptionColumns([{ name: 'v', type: 'String' }, { name: 'l', type: 'String' }]))
       .toBeNull();
   });
+
+  // #627: a meta-less ClickHouse 24.8 probe response reports `type: ''` for
+  // both columns. `''` must not be treated as String — it fails the existing
+  // type check, with the existing diagnostic, not a throw and not acceptance.
+  it('rejects type: "" the same as any other non-String type (meta-less #627 probe response)', () => {
+    expect(() => validateOptionColumns([{ name: 'v', type: '' }, { name: 'l', type: '' }])).not.toThrow();
+    const found = validateOptionColumns([{ name: 'v', type: '' }, { name: 'l', type: '' }])!;
+    expect(found.code).toBe('variable-option-column-type');
+    expect(found.message).toContain('this returns  and ');
+  });
 });
 
 describe('validateOptionRowCount', () => {

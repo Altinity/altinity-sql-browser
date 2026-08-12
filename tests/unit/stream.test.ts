@@ -79,6 +79,111 @@ describe('applyStreamLine', () => {
   });
 });
 
+describe('applyStreamLine — meta-less streams (#627)', () => {
+  it('establishes name-only columns from the first row and preserves values through a true EOF with no meta', () => {
+    const r = newResult('Table');
+    applyStreamLine({
+      row: {
+        id: 'row-a',
+        precise: '9007199254740993.12345678901234567890',
+        label: '001.2300',
+      },
+    }, r);
+    // No `meta` line is ever applied — this is the real EOF-with-no-meta failure mode.
+
+    expect(r.columns).toEqual([
+      { name: 'id', type: '' },
+      { name: 'precise', type: '' },
+      { name: 'label', type: '' },
+    ]);
+    expect(r.rows).toEqual([[
+      'row-a',
+      '9007199254740993.12345678901234567890',
+      '001.2300',
+    ]]);
+  });
+
+  it('keeps the first row\'s key order stable even when later rows insert keys in a different order', () => {
+    const r = newResult('Table');
+    applyStreamLine({ row: { alpha: 'a1', beta: 'b1', gamma: 'c1' } }, r);
+    applyStreamLine({ row: { gamma: 'c2', alpha: 'a2', beta: 'b2' } }, r);
+
+    expect(r.columns).toEqual([
+      { name: 'alpha', type: '' },
+      { name: 'beta', type: '' },
+      { name: 'gamma', type: '' },
+    ]);
+    expect(r.rows).toEqual([
+      ['a1', 'b1', 'c1'],
+      ['a2', 'b2', 'c2'],
+    ]);
+  });
+
+  it('never fabricates a value-based type for synthetic-looking meta-less values', () => {
+    const r = newResult('Table');
+    applyStreamLine({
+      row: {
+        big_int: '9223372036854775807123', // beyond JS safe integer range
+        decimal: '001.2300',
+        date_time: '2024-01-02 03:04:05',
+        uuid: '550e8400-e29b-41d4-a716-446655440000',
+        bool: 'true',
+        enum_like: 'ACTIVE',
+      },
+    }, r);
+
+    for (const column of r.columns) {
+      expect(column.type).toBe('');
+    }
+  });
+
+  it('caps meta-less rows the same way as meta-first rows', () => {
+    const r = newResult('Table', 1);
+    applyStreamLine({ row: { a: '1' } }, r);
+    applyStreamLine({ row: { a: '2' } }, r);
+
+    expect(r.columns).toEqual([{ name: 'a', type: '' }]);
+    expect(r.rows).toEqual([['1']]);
+    expect(r.capped).toBe(true);
+  });
+
+  it('keeps meta-first columns and real types authoritative even when metadata order differs from row-object order', () => {
+    const r = newResult('Table');
+    applyStreamLine({ meta: [{ name: 'b', type: 'String' }, { name: 'a', type: 'UInt64' }] }, r);
+    applyStreamLine({ row: { a: '1', b: 'x' } }, r);
+
+    expect(r.columns).toEqual([{ name: 'b', type: 'String' }, { name: 'a', type: 'UInt64' }]);
+    expect(r.rows).toEqual([['x', '1']]);
+  });
+
+  it('declines to establish columns or store a zero-key row, so a later real row leaves every stored row width-matched to result.columns', () => {
+    const r = newResult('Table');
+    applyStreamLine({ row: {} }, r);
+    applyStreamLine({ row: { host: 'srv-7', status: 'ok' } }, r);
+
+    expect(r.columns).toEqual([
+      { name: 'host', type: '' },
+      { name: 'status', type: '' },
+    ]);
+    expect(r.rows).toEqual([['srv-7', 'ok']]);
+    for (const storedRow of r.rows) {
+      expect(storedRow.length).toBe(r.columns.length);
+    }
+  });
+
+  it('preserves progress/exception folding once meta-less columns are established', () => {
+    const r = newResult('Table');
+    applyStreamLine({ row: { a: '1' } }, r);
+    applyStreamLine({ progress: { read_rows: '50', read_bytes: '500', elapsed_ns: '1000', total_rows_to_read: '100' } }, r);
+    expect(r.progress).toEqual({ rows: 50, bytes: 500, elapsed_ns: 1000, total_rows: 100 });
+    expect(r.pct).toBe(50);
+
+    applyStreamLine({ exception: 'boom' }, r);
+    expect(r.error).toBe('boom');
+    expect(r.columns).toEqual([{ name: 'a', type: '' }]);
+  });
+});
+
 describe('parseErrorPos', () => {
   it('returns the 0-based caret offset from "position N" (1-based in the message)', () => {
     expect(parseErrorPos('Syntax error: failed at position 18 (BEWEEN): …')).toBe(17);

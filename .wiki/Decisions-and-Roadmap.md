@@ -163,6 +163,15 @@ Two roadmap tracks are current:
   `Response`/rejection while the caller's `AbortSignal` controls the real
   fetch, or a deliberate renegotiation of the transport contract's
   cancellation semantics themselves.
+  **Current state (#627, landed):** the general meta-line compatibility bug
+  called out above is resolved — `core/stream.ts`'s `applyStreamLine` now
+  establishes name-only columns (`type: ''`) from the first row when a
+  stream never sends `meta`, instead of silently discarding every row.
+  ClickHouse 24.8 is now limited support: query execution and Table results
+  work; automatic typed-result parity (charts/KPI/logs/type-aware
+  formatting) remains outside the 24.8 guarantee, since those servers still
+  never provide result-type metadata. This is independent of ADR-0005, which
+  **remains Rejected**.
 
 - **#630 — extract the SQL Browser's own Fetch-native transport mechanics
   into a first-party package.** Independent of the #585/ADR-0005 track above

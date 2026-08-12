@@ -135,4 +135,21 @@ describe('readKpiFields', () => {
     expect(tupleString.diagnostics.map((item) => item.code)).toEqual(['kpi-server-named-tuple-unsupported', 'kpi-no-eligible-fields']);
     expect(tupleString.diagnostics[0].message).toContain('ClickHouse 24.3');
   });
+  // #627: a meta-less ClickHouse 24.8 stream reports every column as
+  // `type: ''`. Numeric-looking scalar values and tuple-shaped objects must
+  // never be accepted as KPI fields solely from their values — parsing/
+  // numeric-eligibility both fail closed, and the existing diagnostics fire
+  // instead of a fabricated numeric type or a dereference.
+  it('never accepts a KPI field from values alone when column type is "" (meta-less #627 result)', () => {
+    const columns = [
+      { name: 'requests', type: '' },
+      { name: 'availability', type: '' },
+      { name: 'region', type: '' },
+    ];
+    const row = [42, { value: '99.95', delta: '0.1' }, 'EU'];
+    expect(() => readKpiFields({ columns, row, rowCount: 1 })).not.toThrow();
+    const out = readKpiFields({ columns, row, rowCount: 1 });
+    expect(out.items).toEqual([]);
+    expect(out.diagnostics.map((d) => d.code)).toEqual(['kpi-unsupported-field', 'kpi-unsupported-field', 'kpi-unsupported-field', 'kpi-no-eligible-fields']);
+  });
 });

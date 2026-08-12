@@ -504,6 +504,18 @@ describe('openCellDetail', () => {
     expect(qs(panel, '.cd-type')).toBeNull();
     expect(qs(panel, '.cd-pre').textContent).toBe('');
   });
+  // #627: a meta-less ClickHouse 24.8 stream column carries `type: ''` — the
+  // unknown-type sentinel, not "no type at all". The detail drawer must not
+  // throw, must keep the full value visible, and must never synthesize a
+  // type label for it.
+  it('type: "" (meta-less #627 column) → no exception, full value visible, no type chip, no synthetic type text', () => {
+    const app = makeApp();
+    expect(() => openCellDetail(app, 'precise', '', '9007199254740993.12345678901234567890')).not.toThrow();
+    const panel = qs(app.dom.inspectorHost, '.cd-panel');
+    expect(qs(panel, '.cd-type')).toBeNull();
+    expect(qs(panel, '.cd-pre').textContent).toBe('9007199254740993.12345678901234567890');
+    expect(panel.textContent).not.toMatch(/\b(String|Decimal|UInt64|Int\d+|Float\d+)\b/);
+  });
   it('HTML value → Rendered (sandboxed iframe srcdoc) ↔ Source toggle', () => {
     const app = makeApp();
     openCellDetail(app, 'html', 'String', '<b>hi</b>');

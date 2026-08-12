@@ -1,11 +1,19 @@
 // Pure result accumulator for ClickHouse's JSONStringsEachRowWithProgress
 // streaming format. Each newline-delimited JSON object is one of:
-//   { meta: [{name,type}, ...] }   — column headers (once, first)
+//   { meta: [{name,type}, ...] }   — column headers (usually first, but may
+//                                     be absent entirely — see below)
 //   { row:  { col: value, ... } }  — one data row
 //   { progress: {...} }            — incremental progress stats
 //   { exception: "..." }           — server-side error
 // `applyStreamLine` folds one parsed object into a mutable result; keeping it
 // pure (no fetch, no DOM) makes the streaming parser fully unit-testable.
+//
+// Issue #627 — ClickHouse 24.8 and earlier streams omit `meta` entirely for
+// ordinary queries. When the first `row` line arrives before any columns are
+// established, `applyStreamLine` establishes name-only columns from that
+// row's object keys, with the unknown-type sentinel `type: ''` (never a
+// value-based type guess). This is SQL Browser result policy, not protocol
+// parsing — see the fallback in the `json.row` arm below.
 //
 // Issue #630 Phase 3 — the canonical progress-line wire type (`StreamLine`)
 // and the generic stream/exception-parsing primitives (`splitBuffer`,
@@ -23,7 +31,10 @@
 // imports the package type either — it narrows the fields it needs from the
 // open record instead.
 
-/** One streamed result column, as reported by a `{meta}` line. */
+/** One streamed result column, as reported by a `{meta}` line — or, when a
+ *  stream omits `meta` entirely (ClickHouse 24.8 and earlier, issue #627),
+ *  a name-only column established from the first `row`'s object keys, with
+ *  `type: ''` as the unknown-type sentinel. */
 export interface StreamColumn {
   name: string;
   type: string;
@@ -87,6 +98,13 @@ export function newResult(fmt: string, rowLimit = 0): StreamResult {
  * (`meta`/`row`/`progress`/`exception`), narrowing each locally, without
  * re-exporting a second declared wire contract. Unrecognized records are a
  * no-op — the module doc above lists the four shapes a line can take.
+ *
+ * Issue #627: when a `row` line arrives before `result.columns` has been
+ * established (no `meta` line ever arrived, or none will), this is SQL
+ * Browser result policy — not protocol parsing — establishing name-only
+ * columns from that first row's object keys (`type: ''`, no value-based
+ * inference) so meta-less ClickHouse 24.8-and-earlier streams still produce
+ * a usable Table result instead of silently discarding every row.
  */
 export function applyStreamLine(json: Record<string, unknown>, result: StreamResult): StreamResult {
   if (json.meta) {
@@ -94,6 +112,25 @@ export function applyStreamLine(json: Record<string, unknown>, result: StreamRes
     result.columns = meta.map((m) => ({ name: m.name, type: m.type }));
   } else if (json.row) {
     const row = json.row as Record<string, unknown>;
+    const keys = Object.keys(row);
+
+    if (result.columns.length === 0) {
+      // A zero-key row (`{}`) arriving before columns are established is
+      // deliberately never stored, and never used to "establish" columns:
+      // establishing zero-length columns from it would make
+      // `result.columns.length === 0` mean both "not yet established" and
+      // "established with zero columns" — indistinguishable sentinels. A
+      // later real row would then re-establish columns out from under this
+      // row's already-pushed (necessarily zero-width) entry, breaking the
+      // invariant this module must hold for its whole lifetime: every stored
+      // row's width equals `result.columns.length`. A zero-key row carries no
+      // values, so declining to store it discards no query data. Not
+      // reachable from a real ClickHouse SELECT (a projection always has at
+      // least one column) — issue #627.
+      if (keys.length === 0) return result;
+      result.columns = keys.map((name) => ({ name, type: '' }));
+    }
+
     // At the cap: drop the row (block-boundary overage from `break`) and flag it.
     if (result.rowLimit > 0 && result.rows.length >= result.rowLimit) {
       result.capped = true;
