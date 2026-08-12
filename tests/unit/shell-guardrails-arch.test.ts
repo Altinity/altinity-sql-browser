@@ -719,6 +719,31 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
     expect(found).toEqual(['shell-capture-escape']);
   });
 
+  // #592 review pass 3: `hasCapturePropertyMutation` previously only ever
+  // recognized a PLAIN `=` write on the object literal's OWN receiver
+  // identifier — a compound assignment operator (`||=`, `&&=`, `??=`, …) was
+  // filtered out before the property name was even inspected, and a
+  // mutation through a plain ALIAS of the same object (`const alias = opts;
+  // alias.capture = true;`) compared only the write's own receiver against
+  // the original declaration, never following the alias back to it — both
+  // silently trusted the stale `{ capture: false }` snapshot even though the
+  // real object (shared by reference) had already been mutated to
+  // `capture: true` before the real `addEventListener` call.
+
+  it('a const capture-options object mutated via a compound assignment operator (opts.capture ||= true) fails', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-const-opts-mutate-compound.ts', ['openRogueConstOptsMutateCompound'],
+      `${escapeHandler} const opts = { capture: false }; opts.capture ||= true; `
+      + "document.addEventListener('keydown', onKey, opts);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it('a const capture-options object mutated through a plain alias (const alias = opts; alias.capture = true) fails', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-const-opts-mutate-alias.ts', ['openRogueConstOptsMutateAlias'],
+      `${escapeHandler} const opts = { capture: false }; const alias = opts; alias.capture = true; `
+      + "document.addEventListener('keydown', onKey, opts);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
   // The identical gap, for the HANDLER alias instead of the capture-options
   // alias: `resolveHandlerNode` used to trust a resolved `VariableDeclaration`
   // initializer regardless of const-ness too, so a `let` handler reassigned
@@ -858,6 +883,30 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
   it('unresolved capture options for an Escape keydown fails', () => {
     const found = captureEscapeRulesFor('src/ui/_sabotage-l.ts', ['openRogueL'],
       `${escapeHandler} document.addEventListener('keydown', onKey, computeOptions());`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // #592 review pass 3: candidate discovery required the CALL's own callee to
+  // be a plain `.`-property-access (`document.addEventListener(...)`) — the
+  // bracket-property equivalent (`document['addEventListener'](...)`) was
+  // discarded before the event-name/receiver were even inspected, exactly
+  // the SAME bracket spelling `shell-body-mount`'s own candidate discovery
+  // already recognizes for `.appendChild`/`.append`.
+  it("a bracket-spelled addEventListener callee (document['addEventListener'](...)) fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-bracket-addeventlistener.ts', ['openRogueBracketAddEventListener'],
+      `${escapeHandler} document['addEventListener']('keydown', onKey, true);`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // #592 review pass 3: the event-name argument required the LITERAL string
+  // `'keydown'` directly in the call — a `const` alias of that same literal
+  // (the analogous alias resolution `resolveStringLiteralValue` already
+  // applies to the Escape-literal COMPARISON inside the handler body) was
+  // never dereferenced here, so this call silently exited as "not a
+  // candidate at all".
+  it("a const alias of the 'keydown' event-name literal (const EVT = 'keydown') fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-keydown-alias.ts', ['openRogueKeydownAlias'],
+      `const EVT = 'keydown'; ${escapeHandler} document.addEventListener(EVT, onKey, true);`);
     expect(found).toEqual(['shell-capture-escape']);
   });
 
@@ -1141,6 +1190,105 @@ describe('#592 shell-capture-escape: declaration-kind-aware scoping sabotage (ea
     ].join('\n');
     const found = shellViolations([{ filename: 'src/ui/_sabotage-for-header-let-leak-handler.ts', source }])
       .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Mutable Document/Window global-alias write-awareness sabotage
+// (review pass 3) ───────────────────────────────────────────────────────────
+// `resolveGlobalKind`/`classifyGlobalDeclaration` (the receiver resolver
+// SHARED by both `shell-body-mount` and `shell-capture-escape`) previously
+// classified an untyped `let`/`var` binding from its OWN initializer alone —
+// a LATER whole-binding reassignment (the value actually in effect at the
+// real `.body`/`.addEventListener` receiver use) was invisible, exactly the
+// gap `laterAssignmentResolvesToDocumentBody` already closed for the body-
+// ALIAS resolver, never applied to the Document/Window RECEIVER resolver
+// itself.
+
+describe('#592 shell guardrails: mutable Document/Window global-alias write-awareness sabotage (review pass 3)', () => {
+  it('a let receiver REASSIGNED from Window to Document after declaration is a body-mount (not its stale Window initializer)', () => {
+    const source = [
+      'function openRogue() {',
+      '  let doc = window;',
+      '  doc = document;',
+      '  doc.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-mutable-global-alias.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a let receiver REASSIGNED from a non-global value to Document after declaration is a capture-escape candidate', () => {
+    const source = [
+      'function openRogue() {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      '  let target = {};',
+      '  target = document;',
+      "  target.addEventListener('keydown', onKey, true);",
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-mutable-global-alias-capture.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  // Negative control: proves the fix isn't simply "treat every reassigned
+  // let/var as Document/Window" — a binding whose initializer AND every
+  // later reassignment never resolve to either stays entirely unclassified.
+  it('an ordinary let-bound alias never pointing to Document/Window at all (initializer or any reassignment) stays clean', () => {
+    const source = [
+      'function openRogue() {',
+      '  let doc = {};',
+      '  doc = getSomethingElse();',
+      '  doc.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-mutable-global-alias-negative.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found).toEqual([]);
+  });
+});
+
+// ── Alias-cycle non-crash sabotage (review pass 3) ──────────────────────────
+// `resolvesToDocumentBody`/`laterAssignmentResolvesToDocumentBody` previously
+// recursed into each other with no visited-binding set: an alias-reassignment
+// CYCLE (`a` assigned to `b`, `b` initialized from `a`) re-triggered the
+// identical unresolved call forever — a real `RangeError: Maximum call stack
+// size exceeded`, not merely a missed-detection false negative, independent
+// of whether the cycle has any relation to `document.body` at all.
+
+describe('#592 shell-body-mount: alias-cycle non-crash sabotage (must not throw)', () => {
+  it('an alias-reassignment cycle with NO document.body relation at all does not crash the analyzer', () => {
+    const source = [
+      'function openRogue() {',
+      "  let a = document.createElement('div');",
+      '  let b = a;',
+      '  a = b;',
+      '  a.appendChild(panel);',
+      '}',
+    ].join('\n');
+    expect(() => shellViolations([{ filename: 'src/ui/_sabotage-alias-cycle.ts', source }])).not.toThrow();
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-alias-cycle.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found).toEqual([]);
+  });
+
+  it('a real document.body mount reached through a DIFFERENT reassignment on a binding that ALSO has a cyclic alias is still detected', () => {
+    // Proves the cycle guard only suppresses the cyclic path itself — a
+    // genuine mount reached through a separate, non-cyclic reassignment on
+    // the SAME binding is not collaterally hidden by the cycle fix.
+    const source = [
+      'function openRogue() {',
+      "  let a = document.createElement('div');",
+      '  let b = a;',
+      '  a = b;',
+      '  a = document.body;',
+      '  a.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-alias-cycle-real-mount.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
     expect(found.length).toBeGreaterThan(0);
   });
 });

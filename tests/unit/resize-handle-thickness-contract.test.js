@@ -69,6 +69,35 @@ function flatCssRules(cssSource) {
   }));
 }
 
+/** Decode real CSS identifier ESCAPE SEQUENCES — a backslash followed by 1-6
+ *  hex digits (optionally consuming one trailing whitespace character that
+ *  terminates the hex run, per the CSS spec) is that Unicode code point; a
+ *  backslash followed by any other single character is that literal
+ *  character. Mirrors the identically-specified `decodeCssEscapes` in
+ *  `build/lib/check-legacy-owners.mjs` (added there for the general
+ *  `shell-fixed-position` CSS scanner, #592 review pass 3) — duplicated here
+ *  rather than imported: that module exports no such helper, and this file's
+ *  own established precedent (`flatCssRules`'s own doc comment above) is to
+ *  duplicate the ONE specific need rather than reuse the general
+ *  architecture-guard scanner for an unrelated, independent test. Applied
+ *  ONLY to an already-split selector token or property/value text right
+ *  before a comparison, never to the raw buffer used for brace/comma/colon
+ *  SPLITTING — a decoded escape could change the text's length or introduce
+ *  a real delimiter character, which must never disturb where a rule or
+ *  declaration was actually delimited (#592 review pass 3: without this,
+ *  real, browser-equivalent CSS like `.inspector-resize { \77idth: 8px; }`
+ *  — `\77` = `w` — stays textually distinct from `'width'` and silently
+ *  escapes this contract's own width comparison). */
+function decodeCssIdentifierEscapes(text) {
+  return text.replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([\s\S])/g, (_m, hex, literal) => {
+    if (hex !== undefined) {
+      const code = Number.parseInt(hex, 16);
+      return Number.isNaN(code) ? '' : String.fromCodePoint(code);
+    }
+    return literal ?? '';
+  });
+}
+
 /** True when `selector` (one already-trimmed token from a comma-split
  *  selector LIST — never the whole list) TARGETS `className`'s OWN box — a
  *  bare `.col-resize`, a COMPOUND selector (`.inspector-resize.dragging`,
@@ -90,10 +119,14 @@ function flatCssRules(cssSource) {
  *  independent `width` — styling it is not an override of the handle
  *  element's OWN width, so it is correctly out of this contract's scope
  *  (matching how the prior exact-match check already, if incidentally,
- *  never matched any of these either). */
+ *  never matched any of these either). `selector` is decoded
+ *  (`decodeCssIdentifierEscapes`) before either check (#592 review pass 3),
+ *  so an escaped class-name spelling is recognized identically to its
+ *  unescaped form. */
 function selectorTargetsResizeHandleClass(selector, className) {
-  if (selector.includes('::')) return false;
-  return new RegExp(`\\.${className}(?![\\w-])`).test(selector);
+  const decoded = decodeCssIdentifierEscapes(selector);
+  if (decoded.includes('::')) return false;
+  return new RegExp(`\\.${className}(?![\\w-])`).test(decoded);
 }
 
 /** Every `width: <value>` declaration's own numeric-px value, declared by ANY
@@ -140,7 +173,20 @@ function selectorTargetsResizeHandleClass(selector, className) {
  *  regex required a literal `;` — so that declaration contributed ZERO
  *  entries, not even the NaN fail-closed entry a non-literal value gets,
  *  silently passing the contract even though the real cascade renders that
- *  width. */
+ *  width. Each declaration's PROPERTY NAME (the text before its own `:`) is
+ *  decoded (`decodeCssIdentifierEscapes`) before comparing to `'width'`
+ *  (#592 review pass 3): a real CSS identifier escape in the property name
+ *  (`\77idth: 8px;` — `\77` = `w`, a spec-legal spelling every real browser
+ *  parses identically to `width: 8px;`) previously stayed textually
+ *  distinct from `'width'` and silently skipped this extractor entirely —
+ *  the same "lexical trickery hides a declaration" gap `decodeCssEscapes`
+ *  already closes for the general `shell-fixed-position` CSS scanner in
+ *  `build/lib/check-legacy-owners.mjs`, never applied to this INDEPENDENT
+ *  extractor. Declarations are found by splitting the rule body on `;`
+ *  (rather than the previous single `width\s*:` regex) so the property-name
+ *  text is available on its own for decoding before the comparison — the
+ *  VALUE side's own decode-then-match shape (numeric px / `!important` /
+ *  fail-closed `NaN`) is unchanged. */
 function extractSharedResizeWidthPx(cssSource) {
   const values = [];
   for (const rule of flatCssRules(cssSource)) {
@@ -148,8 +194,13 @@ function extractSharedResizeWidthPx(cssSource) {
       (s) => selectorTargetsResizeHandleClass(s, 'col-resize') || selectorTargetsResizeHandleClass(s, 'inspector-resize'),
     );
     if (!targets) continue;
-    for (const m of rule.body.matchAll(/\bwidth\s*:\s*([^;]+?)\s*(?:;|$)/g)) {
-      const numeric = /^(-?\d+(?:\.\d+)?)px(?:\s*!\s*important)?$/i.exec(m[1].trim());
+    for (const decl of rule.body.split(';')) {
+      const colonIdx = decl.indexOf(':');
+      if (colonIdx === -1) continue;
+      const prop = decodeCssIdentifierEscapes(decl.slice(0, colonIdx)).trim().toLowerCase();
+      if (prop !== 'width') continue;
+      const rawValue = decodeCssIdentifierEscapes(decl.slice(colonIdx + 1)).trim();
+      const numeric = /^(-?\d+(?:\.\d+)?)px(?:\s*!\s*important)?$/i.exec(rawValue);
       values.push(numeric ? Number(numeric[1]) : NaN);
     }
   }
@@ -400,5 +451,35 @@ describe('#592 resize-handle thickness contract sabotage (synthetic — independ
   it('a compound-then-pseudo-element selector (.col-resize.dragging::before) is never mistaken for the handle\'s own width', () => {
     const css = `${CLEAN_CSS}.col-resize.dragging::before { width: 1px; }\n`;
     expect(extractSharedResizeWidthPx(css)).toEqual([7]);
+  });
+
+  // #592 review pass 3: real CSS identifier ESCAPE SEQUENCES in the
+  // PROPERTY NAME — `\77idth` (a hex escape: `\77` = `w`) or `\width` (a
+  // single-character escape: `\w` = literal `w`) — are both, per the CSS
+  // spec, exactly equivalent to plain `width` in every real browser, but the
+  // prior regex matched only the literal text `width` and silently skipped
+  // either escaped spelling entirely, leaving a real, differently-valued
+  // override invisible to this contract.
+
+  it('an escaped property name using a hex CSS identifier escape (\\77idth) with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.inspector-resize { \\77idth: 8px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 8] });
+  });
+
+  it('an escaped property name using a single-character CSS identifier escape (\\width) with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.col-resize { \\width: 9px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 9] });
+  });
+
+  it('an escaped selector class name (.inspector-re\\size, equivalent to .inspector-resize) with a DIFFERENT width fails', () => {
+    // `\s` is a single-character escape (`s` is not a hex digit), decoding
+    // to literal `s` — unlike `\e` (which real CSS parses as the HEX escape
+    // for code point U+000E, since `e` IS a valid hex digit), so `s` is
+    // deliberately the escaped character here.
+    const css = `${CLEAN_CSS}.inspector-re\\size { width: 10px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 10] });
   });
 });

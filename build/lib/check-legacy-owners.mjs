@@ -2355,7 +2355,22 @@ const MOUNT_CTX_TYPE_NAME = 'MountCtx';
  *     separate bare-identifier special case is needed;
  *   - a `VariableDeclaration` with NO type annotation: classified through its
  *     own initializer, recursively, via `resolveGlobalKind` below (`const doc
- *     = document.body.ownerDocument` and similar chains).
+ *     = document.body.ownerDocument` and similar chains) — AND (#592 review
+ *     pass 3) through every LATER whole-binding reassignment too, when the
+ *     binding is a genuine `let`/`var` (`laterAssignmentResolvesToGlobalKind`
+ *     below): a `let`/`var` binding can be reassigned anywhere in its scope,
+ *     so classifying it from its initializer ALONE previously missed `let
+ *     doc = window; doc = document; doc.body.appendChild(panel);` entirely —
+ *     `doc` classified as `'window'` from its stale initializer, even though
+ *     the value actually in effect at the real `.body` receiver use is
+ *     `document`. This mirrors the write-awareness
+ *     `resolvesToDocumentBody`/`laterAssignmentResolvesToDocumentBody` already
+ *     apply to the body-ALIAS resolver, applied here to the Document/Window
+ *     RECEIVER resolver itself. `seen` (keyed by the declaration node already
+ *     being resolved) guards against an alias-reassignment CYCLE
+ *     (`let a = x; let b = a; a = b;`) causing unbounded recursion — the same
+ *     defense-in-depth precedent `resolvedTypeNames` already establishes for
+ *     a type-alias cycle.
  * Every one of these is answered by inspecting real AST structure the
  * checker's binder already led us to — no scope-chain walk, alias map, or
  * declaration-kind (`var` vs `let`/`const`) tracking of any kind: the checker
@@ -2366,9 +2381,15 @@ const MOUNT_CTX_TYPE_NAME = 'MountCtx';
  * @param {object} checker the file's real TypeScript `Checker` — used for the
  *   type-alias-chain resolution (`resolvedTypeNames`) and the no-type-
  *   annotation initializer branch's recursive call
+ * @param {object} [sourceFile] the file `declNode` was parsed from — required
+ *   to detect a later reassignment of a `let`/`var` binding; every real
+ *   caller has one, so only synthetic/legacy call sites without one skip
+ *   that specific check (falling back to the initializer-only classification)
+ * @param {Set<object>} [seen] declaration nodes already being resolved on
+ *   this call's recursion path — cycle guard, see above
  * @returns {'document'|'window'|null}
  */
-function classifyGlobalDeclaration(declNode, checker) {
+function classifyGlobalDeclaration(declNode, checker, sourceFile, seen = new Set()) {
   if (declNode.kind === SyntaxKind.BindingElement && declNode.propertyName) {
     const propName = bindingElementSourceKeyName(declNode);
     if (propName === 'document') return 'document';
@@ -2388,7 +2409,17 @@ function classifyGlobalDeclaration(declNode, checker) {
     if (names.includes('Window')) return 'window';
   }
   if (declNode.kind === SyntaxKind.VariableDeclaration && !declNode.type && declNode.initializer) {
-    return resolveGlobalKind(declNode.initializer, checker);
+    if (seen.has(declNode)) return null;
+    seen.add(declNode);
+    const initKind = resolveGlobalKind(declNode.initializer, checker, sourceFile, seen);
+    if (isConstVariableDeclaration(declNode) || !sourceFile) return initKind;
+    if (initKind === 'document' || laterAssignmentResolvesToGlobalKind(sourceFile, declNode, checker, 'document', seen)) {
+      return 'document';
+    }
+    if (initKind === 'window' || laterAssignmentResolvesToGlobalKind(sourceFile, declNode, checker, 'window', seen)) {
+      return 'window';
+    }
+    return null;
   }
   return null;
 }
@@ -2418,9 +2449,19 @@ function classifyGlobalDeclaration(declNode, checker) {
  *
  * @param {object} node
  * @param {object} checker the file's real TypeScript `Checker`
+ * @param {object} [sourceFile] the file `node` was parsed from — threaded
+ *   through to `classifyGlobalDeclaration` so a `let`/`var` receiver alias's
+ *   LATER reassignment (not only its initializer) is considered; every real
+ *   caller has one, so only synthetic/legacy call sites without one fall back
+ *   to initializer-only classification
+ * @param {Set<object>} [seen] declaration nodes already being resolved on
+ *   this call's recursion path — cycle guard, threaded through every
+ *   recursive call below so sibling `||`/`??`/ternary branches and
+ *   `classifyGlobalDeclaration`'s own later-assignment walk all share one
+ *   cycle-safe view
  * @returns {'document'|'window'|null}
  */
-function resolveGlobalKind(node, checker) {
+function resolveGlobalKind(node, checker, sourceFile, seen = new Set()) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return null;
   if (expr.kind === SyntaxKind.Identifier) {
@@ -2428,7 +2469,7 @@ function resolveGlobalKind(node, checker) {
     if (!symbol) return null;
     const handle = symbol.valueDeclaration ?? symbol.declarations[0];
     const declNode = handle?.resolve();
-    return declNode ? classifyGlobalDeclaration(declNode, checker) : null;
+    return declNode ? classifyGlobalDeclaration(declNode, checker, sourceFile, seen) : null;
   }
   if (expr.kind === SyntaxKind.PropertyAccessExpression) {
     if (expr.name.text === 'document') return 'document';
@@ -2446,15 +2487,56 @@ function resolveGlobalKind(node, checker) {
   if (expr.kind === SyntaxKind.BinaryExpression) {
     const op = expr.operatorToken.kind;
     if (op === SyntaxKind.BarBarToken || op === SyntaxKind.QuestionQuestionToken) {
-      return resolveGlobalKind(expr.left, checker) ?? resolveGlobalKind(expr.right, checker);
+      return resolveGlobalKind(expr.left, checker, sourceFile, seen) ?? resolveGlobalKind(expr.right, checker, sourceFile, seen);
     }
-    if (op === SyntaxKind.AmpersandAmpersandToken) return resolveGlobalKind(expr.right, checker);
+    if (op === SyntaxKind.AmpersandAmpersandToken) return resolveGlobalKind(expr.right, checker, sourceFile, seen);
     return null;
   }
   if (expr.kind === SyntaxKind.ConditionalExpression) {
-    return resolveGlobalKind(expr.whenTrue, checker) ?? resolveGlobalKind(expr.whenFalse, checker);
+    return resolveGlobalKind(expr.whenTrue, checker, sourceFile, seen) ?? resolveGlobalKind(expr.whenFalse, checker, sourceFile, seen);
   }
   return null;
+}
+
+/** True when `declNode` (a non-`const` `let`/`var` `VariableDeclaration`,
+ *  already known to have no type annotation — `classifyGlobalDeclaration`'s
+ *  own precondition) is EVER whole-binding reassigned (`<identifier> =
+ *  <expr>;`) anywhere in `sourceFile` to a value that itself resolves
+ *  (`resolveGlobalKind`) to exactly `kind` ('document' or 'window') — the
+ *  Document/Window RECEIVER-classification analogue of
+ *  `laterAssignmentResolvesToDocumentBody` above, applied to
+ *  `classifyGlobalDeclaration`'s untyped-variable branch (#592 review pass
+ *  3): `let doc = window; doc = document; doc.body.appendChild(panel);`
+ *  previously classified `doc` from its stale `window` initializer alone, so
+ *  this exact reassignment — the value actually in effect at the real
+ *  receiver use — was invisible to both `shell-body-mount` (`doc.body`) and
+ *  `shell-capture-escape` (`doc.addEventListener(...)`). Deliberately no
+ *  control-flow/ordering analysis, matching every other later-assignment walk
+ *  in this module (`laterAssignmentResolvesToDocumentBody`,
+ *  `hasCapturePropertyMutation`) — ANY such reassignment anywhere is
+ *  conservatively enough to attribute `kind` to the whole binding.
+ *
+ * @param {object} sourceFile
+ * @param {object} declNode the non-const `VariableDeclaration` binding
+ * @param {object} checker the file's real TypeScript `Checker`
+ * @param {'document'|'window'} kind
+ * @param {Set<object>} seen cycle guard, threaded from the caller
+ * @returns {boolean}
+ */
+function laterAssignmentResolvesToGlobalKind(sourceFile, declNode, checker, kind, seen) {
+  let found = false;
+  walkTree(sourceFile, (node) => {
+    if (found) return;
+    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsToken) return;
+    const target = node.left;
+    if (target.kind !== SyntaxKind.Identifier) return;
+    const symbol = checker.getSymbolAtLocation(target);
+    if (!symbol) return;
+    const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+    if (handle?.resolve() !== declNode) return;
+    if (resolveGlobalKind(node.right, checker, sourceFile, seen) === kind) found = true;
+  });
+  return found;
 }
 
 /** True when `declNode` (a `VariableDeclaration`) sits in a genuine `const`
@@ -2617,18 +2699,58 @@ function resolveObjectCaptureLiteral(node, checker, sourceFile) {
   return lastEventKnown === false ? null : false;
 }
 
-/** True when ANY `<expr>.capture = …` / `<expr>['capture'] = …` assignment
+/** True when `rExpr` (already unwrapped) is an `Identifier` whose
+ *  declaration chain resolves to `declNode` itself — directly, or through
+ *  any number of hops of a PLAIN identifier-initialized alias (`const alias
+ *  = opts;`), `let`/`var` included (a receiver need not itself be `const` to
+ *  still reference the exact same runtime object at the moment of a write —
+ *  only `declNode`'s OWN const-ness matters for whether ITS literal is
+ *  trustworthy at all, which `resolveCaptureFlag` already gates before ever
+ *  calling `hasCapturePropertyMutation`) — #592 review pass 3: the prior
+ *  inline check here only ever compared the write's OWN receiver identifier
+ *  against `declNode` directly, so `const alias = opts; alias.capture =
+ *  true;` resolved `alias` to ITS OWN, distinct declaration and never
+ *  reached `declNode` at all, silently trusting a stale snapshot even though
+ *  `alias` and `opts` reference the identical object. `seen` guards against
+ *  an alias cycle (the same defense-in-depth precedent `resolvedTypeNames`
+ *  and the write-aware Document/Window resolvers above already establish). */
+function receiverAliasesDecl(rExpr, checker, declNode, seen) {
+  if (!rExpr || rExpr.kind !== SyntaxKind.Identifier) return false;
+  const sym = checker.getSymbolAtLocation(rExpr);
+  if (!sym) return false;
+  const handle = sym.valueDeclaration ?? sym.declarations[0];
+  const resolved = handle?.resolve();
+  if (!resolved) return false;
+  if (resolved === declNode) return true;
+  if (seen.has(resolved)) return false;
+  seen.add(resolved);
+  if (resolved.kind !== SyntaxKind.VariableDeclaration || !resolved.initializer) return false;
+  return receiverAliasesDecl(unwrapCastWrappers(resolved.initializer), checker, declNode, seen);
+}
+
+/** True when ANY `<expr>.capture = …` / `<expr>['capture'] = …` assignment —
+ *  a plain `=`, or ANY compound assignment operator (`||=`, `&&=`, `??=`,
+ *  and every arithmetic/bitwise compound form — `SyntaxKind.FirstAssignment`
+ *  .. `SyntaxKind.LastAssignment` is the real TypeScript AST's own contiguous
+ *  range covering every assignment-operator token, #592 review pass 3) —
  *  exists anywhere in `sourceFile` whose OWN receiver resolves (via the real
- *  checker) to the exact same binding as `declNode` — i.e. whether a
- *  property write elsewhere can change what `resolveObjectCaptureLiteral`'s
- *  snapshot of the object literal's OWN properties would otherwise
- *  "provably" answer (#592 review pass 2, ChatGPT PR #672 pass 2 P1):
- *  `const opts = { capture: false }; opts.capture = true;
- *  document.addEventListener(..., opts)` previously trusted the literal's
- *  OWN properties forever, even though the value actually in effect at the
- *  real `addEventListener` call had already changed. This deliberately does
- *  NOT attempt real control-flow/ordering analysis — unlike
- *  `resolveObjectCaptureLiteral`'s own property-evaluation-order walk
+ *  checker, `receiverAliasesDecl` above — directly, or through a plain alias
+ *  of the same object) to the exact same binding as `declNode` — i.e.
+ *  whether a property write elsewhere can change what
+ *  `resolveObjectCaptureLiteral`'s snapshot of the object literal's OWN
+ *  properties would otherwise "provably" answer (#592 review pass 2, ChatGPT
+ *  PR #672 pass 2 P1): `const opts = { capture: false }; opts.capture =
+ *  true; document.addEventListener(..., opts)` previously trusted the
+ *  literal's OWN properties forever, even though the value actually in
+ *  effect at the real `addEventListener` call had already changed. #592
+ *  review pass 3 closed two further escapes of the identical shape: a
+ *  compound operator (`opts.capture ||= true`) was invisible because the
+ *  operator check accepted only a plain `=`, and an ALIAS-mediated write
+ *  (`const alias = opts; alias.capture = true;`) was invisible because the
+ *  receiver-resolution check compared only the write's own receiver
+ *  identifier, never following a plain alias back to `declNode`. This
+ *  deliberately does NOT attempt real control-flow/ordering analysis —
+ *  unlike `resolveObjectCaptureLiteral`'s own property-evaluation-order walk
  *  (sound because object-literal property order is a real, unconditional JS
  *  semantic), a later statement's execution order is not, once
  *  branches/loops exist, and the PR's Architecture decision 6 addendum
@@ -2646,7 +2768,9 @@ function hasCapturePropertyMutation(sourceFile, declNode, checker) {
   let found = false;
   walkTree(sourceFile, (node) => {
     if (found) return;
-    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsToken) return;
+    if (node.kind !== SyntaxKind.BinaryExpression) return;
+    const op = node.operatorToken.kind;
+    if (op < SyntaxKind.FirstAssignment || op > SyntaxKind.LastAssignment) return;
     const target = node.left;
     let receiver = null;
     let propName;
@@ -2662,11 +2786,7 @@ function hasCapturePropertyMutation(sourceFile, declNode, checker) {
     }
     if (propName !== 'capture' || !receiver) return;
     const rExpr = unwrapCastWrappers(receiver);
-    if (!rExpr || rExpr.kind !== SyntaxKind.Identifier) return;
-    const sym = checker.getSymbolAtLocation(rExpr);
-    if (!sym) return;
-    const handle = sym.valueDeclaration ?? sym.declarations[0];
-    if (handle?.resolve() === declNode) found = true;
+    if (receiverAliasesDecl(rExpr, checker, declNode, new Set())) found = true;
   });
   return found;
 }
@@ -2940,13 +3060,27 @@ const SHELL_BODY_MOUNT_POLICY = Object.freeze([
  *   detect a later reassignment of a `let`/`var` binding; every real caller
  *   has one, so only synthetic/legacy call sites without one skip that
  *   specific check
+ * @param {Set<object>} [seen] declaration nodes already being resolved on
+ *   this call's recursion path (#592 review pass 3) — an alias-reassignment
+ *   CYCLE (`let a = createElement(...); let b = a; a = b; a.appendChild(...)`)
+ *   would otherwise recurse `resolvesToDocumentBody` <-> `laterAssignmentRes-
+ *   olvesToDocumentBody` forever: resolving `a`'s later assignment `a = b`
+ *   resolves `b`, whose own initializer is `a` again, which (being non-const)
+ *   re-triggers `a`'s later-assignment walk — the identical call, with no
+ *   memoization, repeating indefinitely. Re-entering an already-in-progress
+ *   declaration returns `false` for THAT path (the same defense-in-depth
+ *   precedent `resolvedTypeNames` already establishes for a type-alias
+ *   cycle) — a genuine `document.body` assignment reached through a
+ *   DIFFERENT, non-cyclic later assignment on the same binding is still found,
+ *   since `laterAssignmentResolvesToDocumentBody` visits every whole-binding
+ *   reassignment in the file, not only the cyclic one.
  * @returns {boolean}
  */
-function resolvesToDocumentBody(node, checker, sourceFile) {
+function resolvesToDocumentBody(node, checker, sourceFile, seen = new Set()) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return false;
   if (expr.kind === SyntaxKind.PropertyAccessExpression && expr.name.text === 'body') {
-    return resolveGlobalKind(expr.expression, checker) === 'document';
+    return resolveGlobalKind(expr.expression, checker, sourceFile) === 'document';
   }
   if (expr.kind === SyntaxKind.ElementAccessExpression) {
     const arg = expr.argumentExpression;
@@ -2954,7 +3088,7 @@ function resolvesToDocumentBody(node, checker, sourceFile) {
       arg && (arg.kind === SyntaxKind.StringLiteral || arg.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
       && arg.text === 'body'
     ) {
-      return resolveGlobalKind(expr.expression, checker) === 'document';
+      return resolveGlobalKind(expr.expression, checker, sourceFile) === 'document';
     }
     return false;
   }
@@ -2974,12 +3108,14 @@ function resolvesToDocumentBody(node, checker, sourceFile) {
     if (propName !== 'body') return false;
     const pattern = declNode.parent; // ObjectBindingPattern
     const owner = pattern && pattern.parent; // VariableDeclaration
-    return !!(owner && owner.initializer && resolveGlobalKind(owner.initializer, checker) === 'document');
+    return !!(owner && owner.initializer && resolveGlobalKind(owner.initializer, checker, sourceFile) === 'document');
   }
   if (declNode.kind === SyntaxKind.VariableDeclaration && declNode.initializer) {
-    if (resolvesToDocumentBody(declNode.initializer, checker, sourceFile)) return true;
+    if (seen.has(declNode)) return false; // cycle guard — see @param seen above
+    seen.add(declNode);
+    if (resolvesToDocumentBody(declNode.initializer, checker, sourceFile, seen)) return true;
     if (!isConstVariableDeclaration(declNode) && sourceFile
-      && laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker)) return true;
+      && laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker, seen)) return true;
     return false;
   }
   return false;
@@ -2999,8 +3135,12 @@ function resolvesToDocumentBody(node, checker, sourceFile) {
  *  real mount. This is deliberately narrow (it only fires for a binding
  *  reassigned to something that ITSELF resolves to `Document.body`), so an
  *  ordinary `let container = createDiv(); container.appendChild(row);` —
- *  never reassigned to `document.body` — is entirely unaffected. */
-function laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker) {
+ *  never reassigned to `document.body` — is entirely unaffected. `seen` is
+ *  the SAME cycle-guard `resolvesToDocumentBody` threads to it (#592 review
+ *  pass 3) — this function recurses back into `resolvesToDocumentBody` for
+ *  each candidate right-hand side, so both must share one cycle-safe view of
+ *  which declarations are already being resolved on this path. */
+function laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker, seen) {
   let found = false;
   walkTree(sourceFile, (node) => {
     if (found) return;
@@ -3011,7 +3151,7 @@ function laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker) {
     if (!symbol) return;
     const handle = symbol.valueDeclaration ?? symbol.declarations[0];
     if (handle?.resolve() !== declNode) return;
-    if (resolvesToDocumentBody(node.right, checker, sourceFile)) found = true;
+    if (resolvesToDocumentBody(node.right, checker, sourceFile, seen)) found = true;
   });
   return found;
 }
@@ -3163,6 +3303,20 @@ const SHELL_CAPTURE_ESCAPE_POLICY = Object.freeze([
  * Every global capture-phase `keydown` `addEventListener` call in
  * `sourceFile`, classified — per the plan's candidate-listener/Escape-
  * recognition/fail-closed requirements:
+ *   - the CALL itself may be spelled either `<receiver>.addEventListener(...)`
+ *     (`PropertyAccessExpression`) or the bracket-property equivalent
+ *     `<receiver>['addEventListener'](...)` (`ElementAccessExpression` with a
+ *     literal `'addEventListener'` argument, #592 review pass 3 — the
+ *     identical bracket-spelling recognition `bodyMountCandidates` already
+ *     applies to its own `.appendChild`/`.append` callee, previously never
+ *     extended to this candidate discovery, so this exact spelling escaped
+ *     as "not a candidate at all", not even fail-closed);
+ *   - the EVENT NAME (first argument) must resolve (`resolveStringLiteralValue`
+ *     — a literal directly, or a `const` alias of one, #592 review pass 3:
+ *     previously only a literal directly in the call qualified, so `const
+ *     EVT = 'keydown'; el.addEventListener(EVT, ...)` was invisible here even
+ *     though the analogous alias resolution already applies to the Escape-
+ *     literal COMPARISON inside the handler body) to exactly `'keydown'`;
  *   - the receiver must resolve to a recognized Document/Window
  *     (`resolveGlobalKind`) — anything else is not a candidate at all;
  *   - a MISSING third argument is provably non-capture (bubble phase) —
@@ -3196,15 +3350,23 @@ function captureEscapeCandidates(sourceFile, checker) {
   walkTree(sourceFile, (node) => {
     if (node.kind !== SyntaxKind.CallExpression) return;
     const callee = node.expression;
-    if (callee.kind !== SyntaxKind.PropertyAccessExpression || callee.name.text !== 'addEventListener') return;
+    let apiName = null;
+    let receiverExpr = null;
+    if (callee.kind === SyntaxKind.PropertyAccessExpression) {
+      apiName = callee.name.text;
+      receiverExpr = callee.expression;
+    } else if (callee.kind === SyntaxKind.ElementAccessExpression) {
+      const arg = callee.argumentExpression;
+      if (arg && (arg.kind === SyntaxKind.StringLiteral || arg.kind === SyntaxKind.NoSubstitutionTemplateLiteral)) {
+        apiName = arg.text;
+        receiverExpr = callee.expression;
+      }
+    }
+    if (apiName !== 'addEventListener' || !receiverExpr) return;
     const args = node.arguments;
     if (args.length < 2) return;
-    const evtArg = unwrapCastWrappers(args[0]);
-    if (
-      !evtArg || (evtArg.kind !== SyntaxKind.StringLiteral && evtArg.kind !== SyntaxKind.NoSubstitutionTemplateLiteral)
-      || evtArg.text !== 'keydown'
-    ) return;
-    if (!resolveGlobalKind(callee.expression, checker)) return; // not Document/Window — not a candidate
+    if (resolveStringLiteralValue(args[0], checker) !== 'keydown') return;
+    if (!resolveGlobalKind(receiverExpr, checker, sourceFile)) return; // not Document/Window — not a candidate
     const pos = node.getStart(sourceFile);
     const scopePath = enclosingScopePath(node);
     const third = args[2];
