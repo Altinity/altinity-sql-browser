@@ -11,8 +11,9 @@
 // package's `streamLines()` (unmodified protocol mechanics) followed by
 // `src/core/stream.ts`'s `newResult()`/`applyStreamLine()` (the #627
 // result-policy fallback, now including the zero-key-row guard) — and
-// asserts the result is byte-identical to the committed
-// `*.normalized.json` files. Both committed captures carry only 3-key rows
+// asserts the result is exactly/structurally equal to the committed
+// `*.normalized.json` files (deep value equality on the parsed objects, not
+// a byte-for-byte file comparison). Both committed captures carry only 3-key rows
 // (id/precise/lexical), never a zero-key `{}` row, so the guard added in
 // `edcb8ba` is provably inert against this corpus: this test is the
 // evidence for that inertness claim, not just an assertion of it in prose.

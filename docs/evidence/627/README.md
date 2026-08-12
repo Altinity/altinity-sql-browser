@@ -16,34 +16,39 @@ diverged fork). At that commit, `src/core/stream.ts`'s meta-less fallback had be
 unchanged since this branch's first commit, `fe19ab7` (`fix(#627): preserve Table
 results from ClickHouse 24.8 meta-less streams`).
 
-That is **not** the branch's final head. A later commit on this same branch,
-`edcb8ba7` (`fix(#627): restore row-width invariant for zero-key rows...`), added a
-guard to the exact `json.row` fallback arm this evidence exercises: a zero-key `{}`
-row arriving before columns are established is now declined rather than used to
-"establish" zero-length columns (see that arm's comment in `src/core/stream.ts` for
-the invariant it protects). Since acceptance criterion 7 is evidence-backed, this
-document must attest to the code at the branch's final head, not only the commit
-the live capture happened to run against — so the distinction matters:
+That is **not** the branch's only later commit. A subsequent commit on this same
+branch, `edcb8ba7` (`fix(#627): restore row-width invariant for zero-key rows...`,
+hereafter "the zero-key-guard commit"), added a guard to the exact `json.row`
+fallback arm this evidence exercises: a zero-key `{}` row arriving before columns
+are established is now declined rather than used to "establish" zero-length
+columns (see that arm's comment in `src/core/stream.ts` for the invariant it
+protects). Since acceptance criterion 7 is evidence-backed, this document must
+attest to the code at whichever commit is currently checked out, not only the
+commit the live capture happened to run against — so the distinction matters:
 
-* The guard **does not require re-running the live Docker capture** to validate: it
-  is provably inert against the two `*.ndjson` captures committed here, because both
-  carry only 3-key rows (`id`/`precise`/`lexical`) in every `row` line — never a
-  zero-key `{}` row — so `keys.length === 0` never fires for this corpus, and
-  replaying these exact bytes through `edcb8ba7`'s `stream.ts` reproduces the
-  committed `*.normalized.json` files byte-for-byte.
+* The zero-key-guard commit **does not require re-running the live Docker capture**
+  to validate: it is provably inert against the two `*.ndjson` captures committed
+  here, because both carry only 3-key rows (`id`/`precise`/`lexical`) in every `row`
+  line — never a zero-key `{}` row — so `keys.length === 0` never fires for this
+  corpus, and replaying these exact bytes through the zero-key-guard commit's
+  `stream.ts` reproduces the committed `*.normalized.json` files' structural
+  content exactly.
 * That replay is not just asserted here — it is a real, permanent regression test:
   `tests/unit/evidence-627-replay.test.ts` feeds both committed raw `*.ndjson`
   captures through the production `streamLines()` -> `applyStreamLine()` path at
-  whatever commit `npm test` is run against, and asserts the result matches the
-  committed `*.normalized.json` files exactly (and that the guard's zero-key branch
-  never fires on this corpus). That test currently passes at `edcb8ba7` and every
-  commit after it that leaves the corpus/guard behavior unchanged.
+  whatever checkout/HEAD `npm test` is run against, and asserts the result matches
+  the committed `*.normalized.json` files exactly (and that the guard's zero-key
+  branch never fires on this corpus). That test passes at the zero-key-guard commit
+  and every commit after it that leaves the corpus/guard behavior unchanged — it
+  validates whichever checkout is currently under test, not one SHA pinned as
+  permanently final.
 
 In short: the pinned image digests, `SELECT version()` assertions, and raw
 `*.ndjson` bytes below are provenance of the **live capture**, dated to `036760a`;
-the **decoder/accumulator behavior** they were run through is attested at the
-branch's final head, `edcb8ba7`, via the committed replay test above — not frozen
-at the live-capture commit.
+the **decoder/accumulator behavior** they were run through is attested by the
+committed replay test above against whichever commit is currently checked out —
+not frozen at the live-capture commit, and not pinned to any single SHA as a
+permanently "final" head.
 
 ## Execution date
 
