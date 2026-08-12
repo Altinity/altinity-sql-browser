@@ -99,6 +99,26 @@ describe('resolveLogsShape', () => {
     expect(resolveLogsShape({ type: 'logs' }, strCols)).toBeNull();
     expect(resolveLogsShape({ type: 'logs' }, [])).toBeNull();
   });
+  it('#627: an explicit cfg resolves by column NAME alone against meta-less columns (type: \'\'), unlike convention detection which fails closed on \'\'', () => {
+    // A meta-less ClickHouse 24.8 stream (#627) establishes columns with the
+    // unknown-type sentinel `type: ''`. Convention detection (findTimeColumn/
+    // findMsgColumn) type-checks via TIME_TYPE_RE/MSG_TYPE_RE and fails closed
+    // on '' — but an *explicit* cfg.time/cfg.msg resolves purely by name
+    // (idxOf), never consulting column.type, so it still succeeds here. This
+    // is intended, pre-existing name-based-path behavior (not a #627
+    // regression): #627's degraded-functionality contract permits rendering
+    // against unknown-typed columns, it only forbids discarding row values or
+    // fabricating a type — this path does neither.
+    const metalessCols = [
+      { name: 'event_time', type: '' },
+      { name: 'message', type: '' },
+    ];
+    expect(resolveLogsShape({ type: 'logs', time: 'event_time', msg: 'message' }, metalessCols))
+      .toEqual({ time: 0, msg: 1, level: null, extras: [] });
+    // Convention detection alone (no explicit names) fails closed on the same
+    // meta-less columns — the contrast this test pins.
+    expect(resolveLogsShape({ type: 'logs' }, metalessCols)).toBeNull();
+  });
 });
 
 describe('panelCfgValid', () => {

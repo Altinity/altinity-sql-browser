@@ -105,8 +105,10 @@ reason:
    `{"meta":[...]}` column-header line on ClickHouse 24.8 — that capability
    was added by ClickHouse GitHub PR #74181 ("JSONEachRowWithProgress format
    will include meta, totals, and extremes"), merged 2025-01-06, postdating
-   24.8. `src/core/stream.ts`'s `applyStreamLine()` has no meta-less
-   fallback, so every row silently maps to an empty/null value —
+   24.8. `src/core/stream.ts`'s `applyStreamLine()` had no meta-less
+   fallback at the time of this evidence (since fixed in #627 — see the
+   "#627 production compatibility follow-up" note below), so every row
+   silently mapped to an empty/null value —
    **identically** for the current transport and the candidate: on both
    24.8 rows, the live precision corpus shows `currentMatchesOfficial: true`
    (both adapters agree with each other) while both disagree with the
@@ -278,9 +280,11 @@ the "Decision" section above).
 `@clickhouse/client-web` need" — it does not, by itself, set or change SQL
 Browser's own general ClickHouse-version support floor. That remains a
 separate, open question: #71 tracks the documented support matrix, and #627
-tracks fixing the underlying meta-line bug this derivation surfaced, which
-affects the *current* transport regardless of this ADR's outcome or of
-which client SQL Browser eventually ships.
+tracked fixing the underlying meta-line bug this derivation surfaced (since
+fixed — see the "#627 production compatibility follow-up" note under
+"## Decision: Rejected" above), which affected the *current* transport
+regardless of this ADR's outcome or of which client SQL Browser eventually
+ships.
 
 ## Exact server matrix
 
@@ -870,10 +874,12 @@ surfaced that they fail for two very different *kinds* of reasons:
 - `supported-server matrix`'s failure is **symmetric**: the current
   transport and the candidate read back the same wrong (empty) values on
   24.8, because the root cause (`src/core/stream.ts`'s `applyStreamLine()`
-  has no fallback for a ClickHouse response that never sends a `meta`
-  line — a real, pre-existing, general SQL Browser defect, now tracked as
-  #627) lives entirely on the SQL Browser side, unrelated to which HTTP
-  client issues the request. A candidate that fails identically to the
+  had no fallback for a ClickHouse response that never sends a `meta`
+  line — a real, pre-existing, general SQL Browser defect, tracked as #627
+  and since fixed there; see the "#627 production compatibility follow-up"
+  note under "## Decision: Rejected" above) lived entirely on the SQL
+  Browser side, unrelated to which HTTP client issues the request. A
+  candidate that fails identically to the
   status quo isn't *worse* than the status quo on this axis — the original
   Phase 0 evidence run's mechanical rule (any required hard gate failing →
   Rejected) didn't distinguish "the candidate regressed something" from

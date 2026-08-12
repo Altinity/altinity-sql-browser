@@ -156,6 +156,21 @@ describe('applyStreamLine — meta-less streams (#627)', () => {
     expect(r.rows).toEqual([['x', '1']]);
   });
 
+  it('declines to establish columns or store a zero-key row, so a later real row leaves every stored row width-matched to result.columns', () => {
+    const r = newResult('Table');
+    applyStreamLine({ row: {} }, r);
+    applyStreamLine({ row: { host: 'srv-7', status: 'ok' } }, r);
+
+    expect(r.columns).toEqual([
+      { name: 'host', type: '' },
+      { name: 'status', type: '' },
+    ]);
+    expect(r.rows).toEqual([['srv-7', 'ok']]);
+    for (const storedRow of r.rows) {
+      expect(storedRow.length).toBe(r.columns.length);
+    }
+  });
+
   it('preserves progress/exception folding once meta-less columns are established', () => {
     const r = newResult('Table');
     applyStreamLine({ row: { a: '1' } }, r);

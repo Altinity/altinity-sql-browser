@@ -112,9 +112,23 @@ export function applyStreamLine(json: Record<string, unknown>, result: StreamRes
     result.columns = meta.map((m) => ({ name: m.name, type: m.type }));
   } else if (json.row) {
     const row = json.row as Record<string, unknown>;
+    const keys = Object.keys(row);
 
     if (result.columns.length === 0) {
-      result.columns = Object.keys(row).map((name) => ({ name, type: '' }));
+      // A zero-key row (`{}`) arriving before columns are established is
+      // deliberately never stored, and never used to "establish" columns:
+      // establishing zero-length columns from it would make
+      // `result.columns.length === 0` mean both "not yet established" and
+      // "established with zero columns" — indistinguishable sentinels. A
+      // later real row would then re-establish columns out from under this
+      // row's already-pushed (necessarily zero-width) entry, breaking the
+      // invariant this module must hold for its whole lifetime: every stored
+      // row's width equals `result.columns.length`. A zero-key row carries no
+      // values, so declining to store it discards no query data. Not
+      // reachable from a real ClickHouse SELECT (a projection always has at
+      // least one column) — issue #627.
+      if (keys.length === 0) return result;
+      result.columns = keys.map((name) => ({ name, type: '' }));
     }
 
     // At the cap: drop the row (block-boundary overage from `break`) and flag it.
