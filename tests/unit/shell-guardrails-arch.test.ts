@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 import {
   findShellGuardrailSourceContractViolations,
   findShellFixedPositionViolations,
+  findShellFixedPositionMissingBaselineViolations,
   scanFixedPositionDeclarations,
 } from '../../build/lib/check-legacy-owners.mjs';
 import type {
@@ -226,6 +227,60 @@ describe('#592 shell-body-mount: sabotage (each must fail)', () => {
   });
 });
 
+// ── Body-mount missing-baseline-entry sabotage (P1, PR #672 review pass 1) ──
+// The prior implementation only ever flagged EXCESS occurrences in a scope
+// that still had at least one candidate — a scope whose approved mount
+// disappeared ENTIRELY produced zero violations, comparing the policy and
+// the discovered candidates as an allowlist in only one direction.
+
+describe('#592 shell-body-mount: missing-baseline-entry sabotage (each must fail)', () => {
+  it('an approved scope that loses its ONLY frozen body-mount occurrence fails', () => {
+    // src/ui/toast.ts's flashToast is approved for exactly 1 body mount —
+    // remove it entirely (an empty scope body) rather than adding an excess.
+    const found = bodyMountRulesFor('src/ui/toast.ts', ['flashToast'], '');
+    expect(found).toEqual(['shell-body-mount']);
+  });
+
+  it('an approved scope that drops from 2 approved occurrences to 1 fails', () => {
+    // src/ui/menu.ts's openMenu is approved for exactly 2 — keep only 1.
+    const found = bodyMountRulesFor('src/ui/menu.ts', ['openMenu'], withDocAlias('doc', 'doc.body.appendChild(overlay);'));
+    expect(found).toEqual(['shell-body-mount']);
+  });
+});
+
+// ── Body-mount same-file scope-shadowing sabotage (P1, PR #672 review pass 1) ──
+// The alias resolvers used to collect bindings by bare identifier across the
+// ENTIRE source file (one flat last-write-wins Map), not lexically — a later
+// sibling/nested same-named binding in an unrelated scope could silently
+// erase an earlier one, hiding a real violation. These fixtures put TWO
+// scopes with the SAME local names in ONE file (`shellViolations` operates
+// per-file, so `bodyMountRulesFor`'s single-scope wrapper can't reproduce
+// this — the source is built by hand instead).
+
+describe('#592 shell-body-mount: same-file scope-shadowing sabotage (each must fail)', () => {
+  it('a later sibling doc: Window function does not erase an earlier doc: Document body mount', () => {
+    const source = [
+      'function sneaky(doc: Document) { doc.body.appendChild(panel); }',
+      'function unrelated(doc: Window) { }',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-shadow-doc-a.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('the same fixture with declaration order reversed still detects the violation', () => {
+    // Proves the fix is genuinely scope-aware, not an artifact of which
+    // declaration happens to come last in source order.
+    const source = [
+      'function unrelated(doc: Window) { }',
+      'function sneaky(doc: Document) { doc.body.appendChild(panel); }',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-shadow-doc-b.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
 // ── Capture-Escape positive cases ───────────────────────────────────────────
 
 function captureEscapeRulesFor(filename: string, scopePath: readonly string[], body: string): string[] {
@@ -413,6 +468,66 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
   });
 });
 
+// ── Capture-Escape missing-baseline-entry sabotage (P1, PR #672 review pass 1) ──
+// Same reverse-direction gap as `shell-body-mount`'s: the excess-only loop
+// never visits a scope with zero remaining candidates, so a disappeared
+// frozen Escape listener produced no violation at all.
+
+describe('#592 shell-capture-escape: missing-baseline-entry sabotage (each must fail)', () => {
+  it('an approved scope that loses its ONLY frozen capture-Escape listener fails', () => {
+    // src/ui/menu.ts's openMenu is approved for exactly 1 capture-Escape
+    // listener — remove it entirely (an empty scope body).
+    const found = captureEscapeRulesFor('src/ui/menu.ts', ['openMenu'], '');
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+});
+
+// ── Capture-Escape same-file scope-shadowing sabotage (P1, PR #672 review pass 1) ──
+// Reproduces the reviewed capture-alias-overwrite and handler-shadowing
+// cases: a same-named binding in an unrelated sibling or nested-below scope
+// must never resolve (or de-resolve) a real scope's own capture options or
+// handler. `shellViolations` is called directly (not through
+// `captureEscapeRulesFor`) because these fixtures need TWO independent
+// scopes in ONE file.
+
+describe('#592 shell-capture-escape: same-file scope-shadowing sabotage (each must fail)', () => {
+  it("a sibling scope's opts = false does not erase a real scope's { capture: true } alias", () => {
+    const source = [
+      'function real(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      '  const opts = { capture: true };',
+      "  doc.addEventListener('keydown', onKey, opts);",
+      '}',
+      'function other() {',
+      '  const opts = false;',
+      "  document.addEventListener('click', () => {}, opts);",
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-shadow-capture.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it("an unrelated nested helper's same-named local never resolves a real scope's addEventListener handler", () => {
+    // `unrelatedHelper`'s own `onKey` sits textually BETWEEN the real
+    // Escape-testing `onKey`'s declaration and its `addEventListener` use —
+    // a nearest-preceding-by-POSITION (not by lexical scope) resolver picks
+    // the wrong, non-Escape handler and the real violation goes undetected.
+    const source = [
+      'function real(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      '  function unrelatedHelper() {',
+      '    const onKey = (e) => { userInteracted = true; };',
+      '  }',
+      "  doc.addEventListener('keydown', onKey, true);",
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-shadow-handler.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
 // ── Fixed-position positive cases ───────────────────────────────────────────
 
 describe('#592 shell-fixed-position: positive characterization', () => {
@@ -493,6 +608,58 @@ describe('#592 shell-fixed-position: sabotage (each must fail)', () => {
   it("a new selector with an approved-looking name (another '*-overlay') fails — no fuzzy name heuristic", () => {
     const found = findShellFixedPositionViolations('.sabotage-overlay { position: fixed; }', 'src/styles.css');
     expect(found).toHaveLength(1);
+  });
+
+  // P1 (accepted, PR #672 review pass 1): the prior check was a `.some(...)`
+  // membership test with no count, so a duplicate of an already-approved
+  // fingerprint silently passed.
+  it('a duplicate of an already-approved selector/at-rule fails (count-based, not membership-only)', () => {
+    const css = '.auth-host { position: fixed; }\n.auth-host { position: fixed; }\n';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1); // only the SECOND, excess occurrence
+    expect(found[0]!.rule).toBe('shell-fixed-position');
+    expect(found[0]!.detail).toContain('duplicates');
+  });
+
+  it('a THIRD occurrence of an already-approved-for-2 selector still only flags the excess one(s)', () => {
+    // .fm-overlay/.fm-dialog-backdrop etc. are each approved for exactly 1 —
+    // reuse .auth-host (also approved for exactly 1) three times: 2 excess.
+    const css = Array(3).fill('.auth-host { position: fixed; }').join('\n');
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(2);
+  });
+});
+
+// ── Fixed-position missing-baseline-entry sabotage (P1, PR #672 review pass 1) ──
+// The reverse direction: an approved fingerprint disappearing from the CSS
+// entirely used to leave stale permission for its silent reintroduction,
+// since nothing ever checked it. Meaningful only against the real, complete
+// stylesheet (see `findShellFixedPositionMissingBaselineViolations`'s own
+// doc comment) — these tests read the REAL `src/styles.css` and remove one
+// approved rule from it, rather than using a small synthetic snippet.
+
+describe('#592 shell-fixed-position: missing-baseline-entry sabotage (each must fail)', () => {
+  const realStylesCss = readFileSync(join(root, 'src/styles.css'), 'utf8');
+
+  it('the real, complete stylesheet has zero missing-baseline violations (sanity check)', () => {
+    expect(findShellFixedPositionMissingBaselineViolations(realStylesCss, 'src/styles.css')).toEqual([]);
+  });
+
+  it('removing the one approved .auth-host rule from the real stylesheet is flagged as missing', () => {
+    const withoutAuthHost = realStylesCss.replace(/\.auth-host\s*\{[^}]*\}/, '');
+    // Sanity: the removal actually happened (otherwise this test would prove
+    // nothing about the missing-entry check at all).
+    expect(withoutAuthHost).not.toContain('.auth-host {');
+    const found = findShellFixedPositionMissingBaselineViolations(withoutAuthHost, 'src/styles.css');
+    const authHostMissing = found.find((v) => v.detail.includes('.auth-host') && v.detail.includes('none remain'));
+    expect(authHostMissing).toBeDefined();
+    expect(authHostMissing!.rule).toBe('shell-fixed-position');
+  });
+
+  it('a completely empty stylesheet flags every approved entry as missing', () => {
+    const found = findShellFixedPositionMissingBaselineViolations('', 'src/styles.css');
+    expect(found.length).toBeGreaterThan(1);
+    expect(found.every((v) => v.rule === 'shell-fixed-position')).toBe(true);
   });
 });
 

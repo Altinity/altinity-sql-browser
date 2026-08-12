@@ -69,17 +69,26 @@ function flatCssRules(cssSource) {
   }));
 }
 
-/** Every `width: <number>px` value declared by a rule whose selector list
- *  contains BOTH `.col-resize` AND `.inspector-resize` together (order-
- *  independent; additional selectors in the same group, e.g. `.row-resize`,
- *  are allowed) — i.e. the rule that governs both classes' shared width, not
- *  just any rule that happens to mention either class alone. Zero, one, or
- *  many, across however many matching rule groups exist: the caller decides
- *  what count is valid. */
+/** Every `width: <number>px` value declared by ANY flat rule whose selector
+ *  list names `.col-resize` and/or `.inspector-resize` — together (the rule
+ *  that governs both classes' shared width) OR alone (a more-specific, later-
+ *  declared, or media-query-scoped override that could still win the real
+ *  cascade for just one of the two classes even though it never mentions the
+ *  other — the P1 gap `flatCssRules`'s own brace-agnostic regex already sees
+ *  through one level of `@media { … }` nesting for: an inner flat rule is
+ *  matched on its own, the outer at-rule prelude is simply skipped as
+ *  unmatched text). Order-independent; additional selectors in the same
+ *  group, e.g. `.row-resize`, are allowed. Zero, one, or many, across however
+ *  many matching rule groups exist: the caller decides what count is valid —
+ *  and the contract below requires EXACTLY one, so ANY standalone or
+ *  media-scoped override of either class's `width` makes the count 2+ and
+ *  the contract fails closed (`css-ambiguous`) instead of silently reading
+ *  only the grouped rule's own value while the browser's real cascade could
+ *  render a completely different pixel width. */
 function extractSharedResizeWidthPx(cssSource) {
   const values = [];
   for (const rule of flatCssRules(cssSource)) {
-    if (!rule.selectors.includes('.col-resize') || !rule.selectors.includes('.inspector-resize')) continue;
+    if (!rule.selectors.includes('.col-resize') && !rule.selectors.includes('.inspector-resize')) continue;
     for (const m of rule.body.matchAll(/\bwidth\s*:\s*(-?\d+(?:\.\d+)?)px\s*;/g)) values.push(Number(m[1]));
   }
   return values;
@@ -134,9 +143,15 @@ describe('#592 resize-handle thickness contract sabotage (synthetic — independ
   });
 
   it('.col-resize and .inspector-resize stop sharing the intended declaration: fails', () => {
+    // Two INDEPENDENT single-class rules, not one shared rule — the P1 fix
+    // (extraction is now OR-based, not AND-based) means each is now its own
+    // "could target either resize class" width declaration, so this is
+    // still `css-ambiguous` (length !== 1), just via [7, 7] rather than the
+    // old AND-only extractor's `[]` (which only ever looked at the combined
+    // rule and never saw either standalone declaration at all).
     const css = '.col-resize { width: 7px; }\n.inspector-resize { width: 7px; }\n';
     const status = resizeHandleContractStatus(CLEAN_JS, css);
-    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [] });
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 7] });
   });
 
   it('the JS constant is missing entirely: fails', () => {
@@ -160,6 +175,37 @@ describe('#592 resize-handle thickness contract sabotage (synthetic — independ
     const css = '.col-resize, .inspector-resize { width: 7px; width: 9px; }\n';
     const status = resizeHandleContractStatus(CLEAN_JS, css);
     expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 9] });
+  });
+
+  // P1 (accepted, PR #672 review pass 1): a standalone or media-scoped
+  // single-class override rule used to be invisible to
+  // `extractSharedResizeWidthPx` (it only looked at rules naming BOTH
+  // classes together), so this exact drift — the browser renders the
+  // inspector handle at a DIFFERENT width than `HANDLE_PX` reserves — passed
+  // the contract silently.
+
+  it('a later standalone .inspector-resize override with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.inspector-resize { width: 8px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 8] });
+  });
+
+  it('a standalone .col-resize override with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.col-resize { width: 9px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 9] });
+  });
+
+  it('a media-query-scoped .inspector-resize override with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}@media (max-width: 768px) {\n  .inspector-resize { width: 10px; }\n}\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 10] });
+  });
+
+  it('a standalone override that happens to repeat the SAME width still fails (no single-source-of-truth exception)', () => {
+    const css = `${CLEAN_CSS}.inspector-resize { width: 7px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 7] });
   });
 
   it('a comment-only mention of HANDLE_PX does not count as a declaration', () => {

@@ -149,11 +149,26 @@ export interface FixedPositionDeclaration {
 export function scanFixedPositionDeclarations(source: string): FixedPositionDeclaration[];
 
 /**
- * The `shell-fixed-position` guard: every `scanFixedPositionDeclarations`
- * result in `cssSource` whose exact `(selector, atRule)` pair is outside the
- * frozen #592 baseline snapshot.
+ * The `shell-fixed-position` guard's FORWARD half: every
+ * `scanFixedPositionDeclarations` result in `cssSource` beyond its exact
+ * `(selector, atRule)` fingerprint's approved COUNT (never a mere membership
+ * check — a duplicate of an approved fingerprint is flagged too, PR #672
+ * review pass 1).
  */
 export function findShellFixedPositionViolations(
+  cssSource: string,
+  filename: string,
+): SourceContractViolation[];
+
+/**
+ * The `shell-fixed-position` guard's REVERSE half (PR #672 review pass 1):
+ * every frozen `SHELL_FIXED_POSITION_POLICY` fingerprint with ZERO matching
+ * occurrences in `cssSource` — meaningful only against the real, complete
+ * `src/styles.css` (see the `.mjs` implementation's own doc comment for why
+ * this is a separate export from `findShellFixedPositionViolations` rather
+ * than folded into it).
+ */
+export function findShellFixedPositionMissingBaselineViolations(
   cssSource: string,
   filename: string,
 ): SourceContractViolation[];

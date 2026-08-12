@@ -102,6 +102,7 @@ import {
   mightContainDynamicImport,
   findShellGuardrailSourceContractViolations,
   findShellFixedPositionViolations,
+  findShellFixedPositionMissingBaselineViolations,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -922,6 +923,13 @@ function lineOfOffset(source, pos) {
     for (const v of findShellFixedPositionViolations(cssSource, 'src/styles.css')) {
       const line = lineOfOffset(cssSource, v.pos);
       violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
+    }
+    // The reverse half of the #672 P1 fix — an approved fixed-position
+    // fingerprint that disappeared from the CSS entirely. Meaningful only
+    // against the real, complete stylesheet (see the function's own doc
+    // comment), which this gate always reads from disk.
+    for (const v of findShellFixedPositionMissingBaselineViolations(cssSource, 'src/styles.css')) {
+      violations.push(`${v.filename}:${lineOfOffset(cssSource, v.pos)} → ${v.rule}: ${v.detail}`);
     }
   }
 }

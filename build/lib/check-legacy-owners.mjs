@@ -2067,6 +2067,50 @@ function scopeKey(scopePath) {
   return scopePath.join(' > ');
 }
 
+/** The full scope-path key for a `FUNCTION_LIKE_KINDS` node ITSELF — its own
+ *  enclosing chain (`enclosingScopePath`'s ancestors) PLUS its own name
+ *  (`scopeNameFor`) — e.g. `createAnchoredPopovers`'s nested `open` arrow
+ *  yields `['createAnchoredPopovers', 'open']`, distinct from
+ *  `enclosingScopePath(node)` (which never includes `node` itself, only what
+ *  encloses it). Never carries the `<module>` sentinel: `fnLikeNode` is
+ *  always itself a real function-like node, so the walk always has at least
+ *  one name. */
+function fullScopePathOf(fnLikeNode) {
+  const names = [scopeNameFor(fnLikeNode)];
+  let current = fnLikeNode.parent;
+  while (current) {
+    if (FUNCTION_LIKE_KINDS.has(current.kind)) names.push(scopeNameFor(current));
+    current = current.parent;
+  }
+  names.reverse();
+  return names;
+}
+
+/** Every scope-path KEY (`scopeKey(fullScopePathOf(...))`) actually declared
+ *  somewhere in `sourceFile` — used only to ask "does this policy scope path
+ *  even exist in what was scanned", which is what makes the #672 P1
+ *  missing-baseline-entry check (`shellBodyMountViolations`/
+ *  `shellCaptureEscapeViolations`'s own reverse pass) safe against this
+ *  test suite's own established convention of a MINIMAL synthetic fixture
+ *  reproducing just ONE of a real file's several approved scopes under that
+ *  file's real name (`shell-guardrails-arch.test.ts`'s own header comment):
+ *  a sibling policy entry whose scope was never even part of the scanned
+ *  source is correctly treated as "not this call's concern" rather than "a
+ *  disappeared baseline occurrence" — the missing-entry check only fires for
+ *  a scope that is ACTUALLY PRESENT in the tree (so a genuine drop from N
+ *  approved occurrences to fewer, within a scope that still exists, is still
+ *  caught). A policy entry whose ENTIRE enclosing scope has also been
+ *  deleted from production code is a coarser change a rename/typecheck
+ *  failure elsewhere in the pipeline would surface — deliberately out of
+ *  this narrower check's scope. */
+function declaredScopeKeys(sourceFile) {
+  const keys = new Set();
+  walkTree(sourceFile, (node) => {
+    if (FUNCTION_LIKE_KINDS.has(node.kind)) keys.add(scopeKey(fullScopePathOf(node)));
+  });
+  return keys;
+}
+
 /** True for a real call anywhere inside `scopeNode`'s subtree whose callee's
  *  own terminal (last) identifier segment is exactly `name` — e.g.
  *  `hasCallNamed(scope, 'openSurfaceLifecycle')` matches both
@@ -2085,6 +2129,52 @@ function hasCallNamed(scopeNode, name) {
     if (names.length === 1 && names[0] === name) found = true;
   });
   return found;
+}
+
+/** The scope that directly owns a BINDING introduced at `node`, or that a
+ *  REFERENCE at `node` resolves outward from: the nearest enclosing
+ *  `FUNCTION_LIKE_KINDS` ancestor (`innermostScopeNode`), or `sourceFile`
+ *  itself when `node` sits at module top level. Unlike `innermostScopeNode`
+ *  (whose only existing caller wants `null` to mean "no enclosing scope at
+ *  all"), this always returns a real, stable map key, so every scoped alias/
+ *  handler/capture table below has one uniform module-scope sentinel instead
+ *  of a null special case. */
+function scopeOwnerOf(node, sourceFile) {
+  return innermostScopeNode(node) ?? sourceFile;
+}
+
+/** The full lexical scope chain for `node`, innermost first, ending at
+ *  `sourceFile` (module scope) — every scope a name reference at `node` can
+ *  actually resolve through, mirroring real JS/TS function-scope shadowing.
+ *  A binding declared in a sibling scope, or in a scope nested BELOW `node`
+ *  (a helper function declared inside the scope currently being resolved),
+ *  is never a member of this chain, so it can never satisfy a lookup for
+ *  `node` — the fix for the P1 "collects bindings by bare identifier across
+ *  the entire source file" finding: every alias/handler/capture table below
+ *  is now keyed `scope -> Map<name, value>` and resolved through this chain,
+ *  never through one flat file-wide `Map<name, value>`. */
+function scopeChain(node, sourceFile) {
+  const chain = [];
+  let scope = scopeOwnerOf(node, sourceFile);
+  for (;;) {
+    chain.push(scope);
+    if (scope === sourceFile) return chain;
+    scope = scopeOwnerOf(scope, sourceFile);
+  }
+}
+
+/** Resolve `node` (an `Identifier`) through `scopedMap` (`scope ->
+ *  Map<name, value>`) by walking `scopeChain(node, sourceFile)` innermost
+ *  first and returning the first scope's binding for `node.text` — i.e. the
+ *  nearest LEXICALLY VISIBLE declaration, never a same-named binding from an
+ *  unrelated scope. `undefined` when no scope on the chain binds that name at
+ *  all (the caller's own fail-closed handling decides what that means). */
+function lookupInScopeChain(scopedMap, node, sourceFile) {
+  for (const scope of scopeChain(node, sourceFile)) {
+    const local = scopedMap.get(scope);
+    if (local && local.has(node.text)) return local.get(node.text);
+  }
+  return undefined;
 }
 
 /** Every `TypeReferenceNode` name reachable from `typeNode` through a union/
@@ -2129,16 +2219,17 @@ function typeNamesOf(typeNode) {
  * a recognized global", never as a silent pass for a DIFFERENT reason.
  *
  * @param {object} node
- * @param {Map<string, 'document'|'window'>} aliasMap
+ * @param {Map<object, Map<string, 'document'|'window'>>} aliasMap scope -> name -> kind
+ * @param {object} sourceFile
  * @returns {'document'|'window'|null}
  */
-function resolveGlobalKind(node, aliasMap) {
+function resolveGlobalKind(node, aliasMap, sourceFile) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return null;
   if (expr.kind === SyntaxKind.Identifier) {
     if (expr.text === 'document') return 'document';
     if (expr.text === 'window') return 'window';
-    return aliasMap.get(expr.text) ?? null;
+    return lookupInScopeChain(aliasMap, expr, sourceFile) ?? null;
   }
   if (expr.kind === SyntaxKind.PropertyAccessExpression) {
     if (expr.name.text === 'document') return 'document';
@@ -2156,48 +2247,89 @@ function resolveGlobalKind(node, aliasMap) {
   if (expr.kind === SyntaxKind.BinaryExpression) {
     const op = expr.operatorToken.kind;
     if (op === SyntaxKind.BarBarToken || op === SyntaxKind.QuestionQuestionToken) {
-      return resolveGlobalKind(expr.left, aliasMap) ?? resolveGlobalKind(expr.right, aliasMap);
+      return resolveGlobalKind(expr.left, aliasMap, sourceFile) ?? resolveGlobalKind(expr.right, aliasMap, sourceFile);
     }
-    if (op === SyntaxKind.AmpersandAmpersandToken) return resolveGlobalKind(expr.right, aliasMap);
+    if (op === SyntaxKind.AmpersandAmpersandToken) return resolveGlobalKind(expr.right, aliasMap, sourceFile);
     return null;
   }
   if (expr.kind === SyntaxKind.ConditionalExpression) {
-    return resolveGlobalKind(expr.whenTrue, aliasMap) ?? resolveGlobalKind(expr.whenFalse, aliasMap);
+    return resolveGlobalKind(expr.whenTrue, aliasMap, sourceFile) ?? resolveGlobalKind(expr.whenFalse, aliasMap, sourceFile);
   }
   return null;
 }
 
+/** `openInDetachedTab`'s `mount()` callback destructures its one parameter —
+ *  `({ doc, bar, body, close, closeBtn }: MountCtx) => {...}` — and `doc` is
+ *  a real `Document` (`MountCtx.doc`, `src/ui/detached-view.ts`), but it's
+ *  bound via PLAIN (non-renamed) destructuring of a parameter whose OWN type
+ *  annotation names `MountCtx`, not `Document` directly — a shape none of
+ *  `buildGlobalAliasMap`'s other rules can see on their own (its Parameter
+ *  rule only looks at a plain-IDENTIFIER parameter's own type; its
+ *  BindingElement rule only recognizes a RENAMED `{ document: doc }` form).
+ *  This module has no real type checker (`typescript/unstable/sync` is
+ *  parse-only — see the module header), so `MountCtx` is named explicitly
+ *  here rather than inferred — the one #592-reviewed real shape, confirmed
+ *  at its three real call sites (`explain-graph.ts` ×2, `results.ts` ×1). */
+const MOUNT_CTX_TYPE_NAME = 'MountCtx';
+
 /**
- * Build the per-file `name -> 'document'|'window'` alias map: every
+ * Build the per-file `scope -> name -> 'document'|'window'` alias map: every
  * `Parameter`/`VariableDeclaration` whose declared TYPE names `Document`/
  * `Window` (`childDoc: Document`, `mainDoc: Document`), every destructuring
  * rename whose `propertyName` is `document`/`window` (`const { document: doc
  * } = opts` — `menu.ts`'s real shape), and every `VariableDeclaration` whose
- * INITIALIZER resolves via `resolveGlobalKind` against the map built so far.
- * A single forward walk over the whole file suffices for every real
- * occurrence in this codebase (parameters are visited before the statements
- * that reference them by `forEachChild`'s own declaration order, and no
- * alias here is ever referenced before its own declaration) — this is a
- * bounded architecture-guard heuristic, not a general dataflow engine; see
- * this module's own header comment on accepted-risk scope.
+ * INITIALIZER resolves via `resolveGlobalKind` against the map built so far,
+ * each recorded under its OWN declaring scope (`scopeOwnerOf`) rather than
+ * one flat file-wide key. A single forward walk over the whole file still
+ * suffices for every real occurrence in this codebase (parameters are
+ * visited before the statements that reference them by `forEachChild`'s own
+ * declaration order, and no alias here is ever referenced before its own
+ * declaration) — this is a bounded architecture-guard heuristic, not a
+ * general dataflow engine; see this module's own header comment on
+ * accepted-risk scope. Per-scope keying is what makes that heuristic sound
+ * under same-file shadowing: a later sibling `doc: Window` in an unrelated
+ * function no longer overwrites an earlier `doc: Document` bound in a
+ * different scope (the reviewed #672 P1 — same bare name, different scopes,
+ * used to collapse to one file-wide last-write-wins entry).
  *
  * @param {object} sourceFile
- * @returns {Map<string, 'document'|'window'>}
+ * @returns {Map<object, Map<string, 'document'|'window'>>}
  */
 function buildGlobalAliasMap(sourceFile) {
-  const aliasMap = new Map();
+  const aliasMap = new Map(); // scope -> Map<name, kind>
+  const setAlias = (scope, name, kind) => {
+    let local = aliasMap.get(scope);
+    if (!local) { local = new Map(); aliasMap.set(scope, local); }
+    local.set(name, kind);
+  };
   walkTree(sourceFile, (node) => {
     if (node.kind === SyntaxKind.Parameter && node.name && node.name.kind === SyntaxKind.Identifier && node.type) {
       const names = typeNamesOf(node.type);
-      if (names.includes('Document')) aliasMap.set(node.name.text, 'document');
-      else if (names.includes('Window')) aliasMap.set(node.name.text, 'window');
+      const scope = scopeOwnerOf(node, sourceFile);
+      if (names.includes('Document')) setAlias(scope, node.name.text, 'document');
+      else if (names.includes('Window')) setAlias(scope, node.name.text, 'window');
+    }
+    if (
+      node.kind === SyntaxKind.Parameter && node.name && node.name.kind === SyntaxKind.ObjectBindingPattern && node.type
+      && typeNamesOf(node.type).includes(MOUNT_CTX_TYPE_NAME)
+    ) {
+      const scope = scopeOwnerOf(node, sourceFile);
+      for (const el of node.name.elements) {
+        if (
+          el.kind === SyntaxKind.BindingElement && !el.propertyName && el.name && el.name.kind === SyntaxKind.Identifier
+          && el.name.text === 'doc'
+        ) {
+          setAlias(scope, el.name.text, 'document');
+        }
+      }
     }
     if (
       node.kind === SyntaxKind.BindingElement && node.propertyName
       && node.propertyName.kind === SyntaxKind.Identifier && node.name.kind === SyntaxKind.Identifier
     ) {
-      if (node.propertyName.text === 'document') aliasMap.set(node.name.text, 'document');
-      else if (node.propertyName.text === 'window') aliasMap.set(node.name.text, 'window');
+      const scope = scopeOwnerOf(node, sourceFile);
+      if (node.propertyName.text === 'document') setAlias(scope, node.name.text, 'document');
+      else if (node.propertyName.text === 'window') setAlias(scope, node.name.text, 'window');
     }
     if (node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier) {
       let kind = null;
@@ -2206,35 +2338,44 @@ function buildGlobalAliasMap(sourceFile) {
         if (names.includes('Document')) kind = 'document';
         else if (names.includes('Window')) kind = 'window';
       }
-      if (!kind && node.initializer) kind = resolveGlobalKind(node.initializer, aliasMap);
-      if (kind) aliasMap.set(node.name.text, kind);
+      if (!kind && node.initializer) kind = resolveGlobalKind(node.initializer, aliasMap, sourceFile);
+      if (kind) setAlias(scopeOwnerOf(node, sourceFile), node.name.text, kind);
     }
   });
   return aliasMap;
 }
 
-/** Every `name -> [{node, pos}]` binding of a `FunctionDeclaration` or a
- *  `const name = (…) => {}` / `const name = function (…) {}` in `sourceFile`
- *  — used to resolve a plain-identifier `addEventListener` handler argument
- *  (`doc.addEventListener('keydown', onKey, true)`) back to the function it
- *  names. Multiple same-named entries are kept (never overwritten) so
- *  `resolveHandlerNode` can pick the one nearest-preceding a given use. */
+/** Every `scope -> name -> [{node, pos}]` binding of a `FunctionDeclaration`
+ *  or a `const name = (…) => {}` / `const name = function (…) {}` in
+ *  `sourceFile`, keyed by the declaration's OWN declaring scope
+ *  (`scopeOwnerOf`) rather than one flat file-wide name — used to resolve a
+ *  plain-identifier `addEventListener` handler argument (`doc.
+ *  addEventListener('keydown', onKey, true)`) back to the function it names
+ *  through `resolveHandlerNode`'s lexical scope-chain lookup, never through a
+ *  same-named declaration in an unrelated sibling or nested-below scope (the
+ *  reviewed #672 P1 handler-shadowing case). Multiple same-named entries
+ *  WITHIN one scope are kept (never overwritten) so `resolveHandlerNode` can
+ *  pick the one nearest-preceding a given use inside that scope. */
 function buildFunctionDeclMap(sourceFile) {
-  const map = new Map();
-  const add = (name, node) => {
-    const list = map.get(name) ?? [];
+  const map = new Map(); // scope -> Map<name, {node, pos}[]>
+  const add = (scope, name, node) => {
+    let local = map.get(scope);
+    if (!local) { local = new Map(); map.set(scope, local); }
+    const list = local.get(name) ?? [];
     list.push({ node, pos: node.getStart(sourceFile) });
-    map.set(name, list);
+    local.set(name, list);
   };
   walkTree(sourceFile, (node) => {
-    if (node.kind === SyntaxKind.FunctionDeclaration && node.name) add(node.name.text, node);
+    if (node.kind === SyntaxKind.FunctionDeclaration && node.name) {
+      add(scopeOwnerOf(node, sourceFile), node.name.text, node);
+    }
     if (
       node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier
       && node.initializer
     ) {
       const init = unwrapCastWrappers(node.initializer);
       if (init && (init.kind === SyntaxKind.ArrowFunction || init.kind === SyntaxKind.FunctionExpression)) {
-        add(node.name.text, init);
+        add(scopeOwnerOf(node, sourceFile), node.name.text, init);
       }
     }
   });
@@ -2244,24 +2385,27 @@ function buildFunctionDeclMap(sourceFile) {
 /**
  * Resolve an `addEventListener` handler argument to the `FUNCTION_LIKE_KINDS`
  * node it actually runs — an inline arrow/function expression directly, or a
- * plain `Identifier` resolved to the NEAREST PRECEDING (by source position)
- * declaration of that name in `funcDeclMap` (`buildFunctionDeclMap`). `null`
- * for anything else (a member access, a call, a conditional, …) — the plan's
- * own fail-closed requirement: "if a global capture keydown handler cannot be
- * statically resolved, report it as uncheckable rather than treating it as
- * non-Escape", so the caller must treat `null` as an unconditional violation,
- * never as "assume clean".
+ * plain `Identifier` resolved through `sourceFile`'s lexical scope chain
+ * (`lookupInScopeChain`) to the NEAREST enclosing scope that declares that
+ * name in `funcDeclMap` (`buildFunctionDeclMap`), then the NEAREST PRECEDING
+ * (by source position) declaration of that name within THAT scope. `null`
+ * for anything else (a member access, a call, a conditional, an identifier no
+ * scope on the chain binds, …) — the plan's own fail-closed requirement: "if
+ * a global capture keydown handler cannot be statically resolved, report it
+ * as uncheckable rather than treating it as non-Escape", so the caller must
+ * treat `null` as an unconditional violation, never as "assume clean".
  *
  * @param {object} handlerArg
- * @param {Map<string, {node: object, pos: number}[]>} funcDeclMap
+ * @param {Map<object, Map<string, {node: object, pos: number}[]>>} funcDeclMap
+ * @param {object} sourceFile
  * @returns {object | null}
  */
-function resolveHandlerNode(handlerArg, funcDeclMap) {
+function resolveHandlerNode(handlerArg, funcDeclMap, sourceFile) {
   const expr = unwrapCastWrappers(handlerArg);
   if (!expr) return null;
   if (FUNCTION_LIKE_KINDS.has(expr.kind)) return expr;
   if (expr.kind === SyntaxKind.Identifier) {
-    const entries = funcDeclMap.get(expr.text);
+    const entries = lookupInScopeChain(funcDeclMap, expr, sourceFile);
     if (!entries || entries.length === 0) return null;
     const pos = expr.getStart();
     let best = null;
@@ -2298,13 +2442,22 @@ function resolveObjectCaptureLiteral(node) {
   return hasSpread ? null : false;
 }
 
-/** Every `name -> true|false|null` binding of a `const name = true` / `const
- *  name = false` / `const name = { capture: … }` (via
- *  `resolveObjectCaptureLiteral`) in `sourceFile` — backs the plan's "simple
- *  local const aliases of either form" requirement for the THIRD
- *  `addEventListener` argument. */
+/** Every `scope -> name -> true|false|null` binding of a `const name = true`
+ *  / `const name = false` / `const name = { capture: … }` (via
+ *  `resolveObjectCaptureLiteral`) in `sourceFile`, keyed by the declaration's
+ *  own declaring scope (`scopeOwnerOf`) — backs the plan's "simple local
+ *  const aliases of either form" requirement for the THIRD
+ *  `addEventListener` argument, resolved through `resolveCaptureFlag`'s
+ *  lexical scope-chain lookup so a same-named alias in an unrelated sibling
+ *  scope (the reviewed #672 P1 capture-alias-overwrite case) can never
+ *  satisfy a different scope's lookup. */
 function buildCaptureAliasMap(sourceFile) {
-  const map = new Map();
+  const map = new Map(); // scope -> Map<name, true|false|null>
+  const setAlias = (scope, name, value) => {
+    let local = map.get(scope);
+    if (!local) { local = new Map(); map.set(scope, local); }
+    local.set(name, value);
+  };
   walkTree(sourceFile, (node) => {
     if (
       node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier
@@ -2312,9 +2465,12 @@ function buildCaptureAliasMap(sourceFile) {
     ) {
       const init = unwrapCastWrappers(node.initializer);
       if (!init) return;
-      if (init.kind === SyntaxKind.TrueKeyword) map.set(node.name.text, true);
-      else if (init.kind === SyntaxKind.FalseKeyword) map.set(node.name.text, false);
-      else if (init.kind === SyntaxKind.ObjectLiteralExpression) map.set(node.name.text, resolveObjectCaptureLiteral(init));
+      const scope = scopeOwnerOf(node, sourceFile);
+      if (init.kind === SyntaxKind.TrueKeyword) setAlias(scope, node.name.text, true);
+      else if (init.kind === SyntaxKind.FalseKeyword) setAlias(scope, node.name.text, false);
+      else if (init.kind === SyntaxKind.ObjectLiteralExpression) {
+        setAlias(scope, node.name.text, resolveObjectCaptureLiteral(init));
+      }
     }
   });
   return map;
@@ -2331,16 +2487,20 @@ function buildCaptureAliasMap(sourceFile) {
  * conditional, an unresolved identifier) is `null`.
  *
  * @param {object} node
- * @param {Map<string, boolean|null>} captureAliasMap
+ * @param {Map<object, Map<string, boolean|null>>} captureAliasMap
+ * @param {object} sourceFile
  * @returns {boolean | null}
  */
-function resolveCaptureFlag(node, captureAliasMap) {
+function resolveCaptureFlag(node, captureAliasMap, sourceFile) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return null;
   if (expr.kind === SyntaxKind.TrueKeyword) return true;
   if (expr.kind === SyntaxKind.FalseKeyword) return false;
   if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr);
-  if (expr.kind === SyntaxKind.Identifier) return captureAliasMap.has(expr.text) ? captureAliasMap.get(expr.text) : null;
+  if (expr.kind === SyntaxKind.Identifier) {
+    const found = lookupInScopeChain(captureAliasMap, expr, sourceFile);
+    return found === undefined ? null : found;
+  }
   return null;
 }
 
@@ -2466,7 +2626,7 @@ function bodyMountCandidates(sourceFile) {
       const init = unwrapCastWrappers(node.initializer);
       if (
         init && init.kind === SyntaxKind.PropertyAccessExpression && init.name.text === 'body'
-        && resolveGlobalKind(init.expression, aliasMap) === 'document'
+        && resolveGlobalKind(init.expression, aliasMap, sourceFile) === 'document'
       ) {
         bodyAliasNames.add(node.name.text);
       }
@@ -2499,13 +2659,13 @@ function bodyMountCandidates(sourceFile) {
     if (recv.kind === SyntaxKind.Identifier && bodyAliasNames.has(recv.text)) {
       isBody = true;
     } else if (recv.kind === SyntaxKind.PropertyAccessExpression && recv.name.text === 'body'
-      && resolveGlobalKind(recv.expression, aliasMap) === 'document') {
+      && resolveGlobalKind(recv.expression, aliasMap, sourceFile) === 'document') {
       isBody = true;
     } else if (recv.kind === SyntaxKind.ElementAccessExpression) {
       const argN = recv.argumentExpression;
       if (
         argN && (argN.kind === SyntaxKind.StringLiteral || argN.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
-        && argN.text === 'body' && resolveGlobalKind(recv.expression, aliasMap) === 'document'
+        && argN.text === 'body' && resolveGlobalKind(recv.expression, aliasMap, sourceFile) === 'document'
       ) {
         isBody = true;
       }
@@ -2526,7 +2686,14 @@ function bodyMountCandidates(sourceFile) {
  *  occurrence in an entry whose `requiresLifecycle` composition is missing.
  *  Flagging the EXCESS occurrences specifically (not the whole group) means
  *  the first N approved mounts stay clean while a genuinely new (N+1)th one
- *  is pinpointed. */
+ *  is pinpointed. A SECOND pass then walks every `SHELL_BODY_MOUNT_POLICY`
+ *  entry for THIS file and flags the ones whose approved count is no longer
+ *  matched by the current tree — the reviewed #672 P1: the excess-only loop
+ *  above only ever visits a scope that still has at least one candidate, so
+ *  a scope whose LAST occurrence disappeared (or whose count dropped below
+ *  its frozen baseline) would otherwise produce zero violations, comparing
+ *  the policy and the discovered candidates as an exact multiset in only one
+ *  direction. */
 function shellBodyMountViolations(sourceFile, filename) {
   const byScope = new Map();
   for (const c of bodyMountCandidates(sourceFile)) {
@@ -2554,6 +2721,20 @@ function shellBodyMountViolations(sourceFile, filename) {
           + 'use the docked inspectorHost + SurfaceLifecycle, an established dialog/popover primitive, or deliberately update the documented exception snapshot',
       ));
     }
+  }
+  const declaredScopes = declaredScopeKeys(sourceFile);
+  for (const entry of SHELL_BODY_MOUNT_POLICY) {
+    if (entry.filename !== filename) continue;
+    const key = scopeKey(entry.scopePath);
+    if (!declaredScopes.has(key)) continue; // scope not part of what was scanned — see declaredScopeKeys
+    const actualCount = (byScope.get(key) ?? []).length;
+    if (actualCount >= entry.count) continue;
+    violations.push(makeViolation(
+      'shell-body-mount', filename, 0,
+      `the approved #592 body-mount snapshot expects ${entry.count} Document-body mount(s) in scope "${key}" `
+        + `(${entry.category}), but only ${actualCount} remain — deliberately update the reviewed baseline if this `
+        + 'mount was intentionally removed, or restore it if this is unintended drift',
+    ));
   }
   return violations;
 }
@@ -2642,15 +2823,15 @@ function captureEscapeCandidates(sourceFile) {
       !evtArg || (evtArg.kind !== SyntaxKind.StringLiteral && evtArg.kind !== SyntaxKind.NoSubstitutionTemplateLiteral)
       || evtArg.text !== 'keydown'
     ) return;
-    if (!resolveGlobalKind(callee.expression, aliasMap)) return; // not Document/Window — not a candidate
+    if (!resolveGlobalKind(callee.expression, aliasMap, sourceFile)) return; // not Document/Window — not a candidate
     const pos = node.getStart(sourceFile);
     const scopePath = enclosingScopePath(node);
     const third = args[2];
     if (!third) return; // no options at all — provably non-capture (bubble phase)
-    const captureFlag = resolveCaptureFlag(third, captureAliasMap);
+    const captureFlag = resolveCaptureFlag(third, captureAliasMap, sourceFile);
     if (captureFlag === false) return; // provably non-capture
     if (captureFlag === null) { out.push({ kind: 'uncheckable-options', scopePath, pos }); return; }
-    const handlerNode = resolveHandlerNode(args[1], funcDeclMap);
+    const handlerNode = resolveHandlerNode(args[1], funcDeclMap, sourceFile);
     if (!handlerNode) { out.push({ kind: 'uncheckable-handler', scopePath, pos }); return; }
     out.push({ kind: containsEscapeSemantics(handlerNode) ? 'escape' : 'clean', scopePath, pos });
   });
@@ -2663,7 +2844,12 @@ function captureEscapeCandidates(sourceFile) {
  *  candidate is dropped (no Escape semantics — outside this rule entirely);
  *  every `'escape'` candidate is grouped by scope path and compared against
  *  the frozen policy the same excess-occurrence way `shellBodyMountViolations`
- *  compares body mounts. */
+ *  compares body mounts — plus the same SECOND, reverse pass over every
+ *  `SHELL_CAPTURE_ESCAPE_POLICY` entry for this file, flagging any whose
+ *  approved count is no longer matched (the reviewed #672 P1: a disappeared
+ *  frozen Escape listener is exactly as much a drift from the baseline as an
+ *  added one, and the excess-only loop below can never see a scope that lost
+ *  its last occurrence). */
 function shellCaptureEscapeViolations(sourceFile, filename) {
   const byScope = new Map();
   const violations = [];
@@ -2703,6 +2889,20 @@ function shellCaptureEscapeViolations(sourceFile, filename) {
           + 'narrow documented exception/non-panel gesture exclusion where that is genuinely the architecture',
       ));
     }
+  }
+  const declaredScopes = declaredScopeKeys(sourceFile);
+  for (const entry of SHELL_CAPTURE_ESCAPE_POLICY) {
+    if (entry.filename !== filename) continue;
+    const key = scopeKey(entry.scopePath);
+    if (!declaredScopes.has(key)) continue; // scope not part of what was scanned — see declaredScopeKeys
+    const actualCount = (byScope.get(key) ?? []).length;
+    if (actualCount >= entry.count) continue;
+    violations.push(makeViolation(
+      'shell-capture-escape', filename, 0,
+      `the approved #592 capture-Escape snapshot expects ${entry.count} listener(s) in scope "${key}" `
+        + `(${entry.category}), but only ${actualCount} remain — deliberately update the reviewed baseline if this `
+        + 'listener was intentionally removed, or restore it if this is unintended drift',
+    ));
   }
   return violations;
 }
@@ -2894,10 +3094,32 @@ const SHELL_FIXED_POSITION_POLICY = Object.freeze([
   { selector: '.inspector-host', atRule: '@media (max-width: 768px)' },
 ]);
 
+/** The one fingerprint convention every `(selector, atRule)` comparison in
+ *  this guard shares — `JSON.stringify([selector, atRule])`, so `null`
+ *  (no enclosing at-rule) and the empty string are never conflated with each
+ *  other, and no separator character or escaping scheme has to be invented
+ *  (unlike a hand-joined string key, which risks exactly the kind of
+ *  accidental-separator collision this guard exists to rule out). */
+function fixedPositionKey(selector, atRule) {
+  return JSON.stringify([selector, atRule]);
+}
+
 /**
- * The `shell-fixed-position` guard: every `scanFixedPositionDeclarations`
- * result in `cssSource` whose exact `(selector, atRule)` pair is not on
- * `SHELL_FIXED_POSITION_POLICY`.
+ * The `shell-fixed-position` guard's FORWARD half:
+ * `scanFixedPositionDeclarations(cssSource)` grouped by exact
+ * `(selector, atRule)` fingerprint, compared against
+ * `SHELL_FIXED_POSITION_POLICY` by COUNT, not mere membership — the
+ * reviewed #672 P1: the prior implementation was a `.some(...)` membership
+ * check with no count at all, so a SECOND declaration reusing an already-
+ * approved fingerprint silently passed. Every declaration beyond a
+ * fingerprint's approved count (1, today, for every entry — a duplicate of
+ * an approved snapshot row is exactly the same un-reviewed regrowth risk a
+ * brand-new selector is) is flagged.
+ *
+ * The REVERSE direction (an approved fingerprint that disappeared from the
+ * CSS entirely) is `findShellFixedPositionMissingBaselineViolations` — a
+ * deliberately separate export; see its own doc comment for why folding it
+ * in here would break this suite's many minimal single-selector fixtures.
  *
  * @param {string} cssSource
  * @param {string} filename repo-relative, forward-slash separated (report only)
@@ -2905,16 +3127,74 @@ const SHELL_FIXED_POSITION_POLICY = Object.freeze([
  */
 export function findShellFixedPositionViolations(cssSource, filename) {
   const violations = [];
+  const byKey = new Map(); // fingerprint -> decl[]
   for (const decl of scanFixedPositionDeclarations(cssSource)) {
-    const approved = SHELL_FIXED_POSITION_POLICY.some(
-      (p) => p.selector === decl.selector && p.atRule === decl.atRule,
-    );
-    if (approved) continue;
+    const key = fixedPositionKey(decl.selector, decl.atRule);
+    const list = byKey.get(key) ?? [];
+    list.push(decl);
+    byKey.set(key, list);
+  }
+  for (const [key, list] of byKey) {
+    const allowedCount = SHELL_FIXED_POSITION_POLICY.filter(
+      (p) => fixedPositionKey(p.selector, p.atRule) === key,
+    ).length;
+    for (let idx = 0; idx < list.length; idx++) {
+      if (idx < allowedCount) continue;
+      const decl = list[idx];
+      const reason = allowedCount === 0
+        ? 'is not on the approved #592 fixed-position snapshot'
+        : `duplicates an already-approved #592 fixed-position snapshot entry (approved count: ${allowedCount})`;
+      violations.push(makeViolation(
+        'shell-fixed-position', filename, decl.pos,
+        `position: fixed on selector "${decl.selector}"${decl.atRule ? ` inside ${decl.atRule}` : ''} ${reason} — `
+          + 'use shell/docked composition where appropriate, or deliberately extend the reviewed fixed-position '
+          + 'snapshot for a legitimate overlay',
+      ));
+    }
+  }
+  return violations;
+}
+
+/**
+ * The REVERSE half of the #672 P1 fixed-position fix: every
+ * `SHELL_FIXED_POSITION_POLICY` entry with ZERO matching occurrences in
+ * `cssSource` — a frozen approved fingerprint that has disappeared entirely,
+ * leaving stale permission for its silent, un-reviewed reintroduction.
+ *
+ * Deliberately a SEPARATE export from `findShellFixedPositionViolations`,
+ * unlike the TS body-mount/capture-escape guards' own reverse pass (which
+ * can safely stay INSIDE their single exported check, because a real
+ * function-like scope either is or isn't declared in whatever was parsed —
+ * `declaredScopeKeys` lets that check tell a partial synthetic fixture
+ * apart from the real file). CSS carries no equivalent structural signal: a
+ * `cssSource` naming only `.auth-host` could be the real, complete
+ * `src/styles.css` missing its other 13 entries, or it could be one of this
+ * suite's own many deliberately minimal single-selector fixtures — nothing
+ * about the string itself distinguishes the two. Folding this check into
+ * `findShellFixedPositionViolations` would make EVERY existing minimal CSS
+ * fixture in this test suite report 13+ false "missing" violations. This
+ * function is therefore meaningful only against something the caller
+ * already knows is the complete stylesheet — the real `check:arch` gate
+ * (`build/check-boundaries.mjs`) and the live-tree baseline test are its
+ * only two real callers, both scanning the actual, complete
+ * `src/styles.css`.
+ *
+ * @param {string} cssSource
+ * @param {string} filename repo-relative, forward-slash separated (report only)
+ * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
+ */
+export function findShellFixedPositionMissingBaselineViolations(cssSource, filename) {
+  const found = new Set(scanFixedPositionDeclarations(cssSource).map((d) => fixedPositionKey(d.selector, d.atRule)));
+  const violations = [];
+  for (const entry of SHELL_FIXED_POSITION_POLICY) {
+    const key = fixedPositionKey(entry.selector, entry.atRule);
+    if (found.has(key)) continue;
     violations.push(makeViolation(
-      'shell-fixed-position', filename, decl.pos,
-      `position: fixed on selector "${decl.selector}"${decl.atRule ? ` inside ${decl.atRule}` : ''} is not on the `
-        + 'approved #592 fixed-position snapshot — use shell/docked composition where appropriate, or deliberately '
-        + 'extend the reviewed fixed-position snapshot for a legitimate overlay',
+      'shell-fixed-position', filename, 0,
+      `the approved #592 fixed-position snapshot expects a position: fixed declaration on selector `
+        + `"${entry.selector}"${entry.atRule ? ` inside ${entry.atRule}` : ''}, but none remain in ${filename} — `
+        + 'deliberately update the reviewed baseline if this was intentionally removed, or restore it if this is '
+        + 'unintended drift',
     ));
   }
   return violations;
