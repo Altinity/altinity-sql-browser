@@ -1,0 +1,5 @@
+{"progress":{"read_rows":"0","read_bytes":"0","written_rows":"0","written_bytes":"0","total_rows_to_read":"0","result_rows":"0","result_bytes":"0","elapsed_ns":"0"}}
+{"progress":{"read_rows":"0","read_bytes":"0","written_rows":"0","written_bytes":"0","total_rows_to_read":"2","result_rows":"0","result_bytes":"0","elapsed_ns":"0"}}
+{"progress":{"read_rows":"2","read_bytes":"16","written_rows":"0","written_bytes":"0","total_rows_to_read":"2","result_rows":"0","result_bytes":"0","elapsed_ns":"0"}}
+{"row":{"id":"row-a","precise":"9007199254740993.12345678901234567890","lexical":"001.2300"}}
+{"row":{"id":"row-b","precise":"-9007199254740993.00000000000000000001","lexical":"0002"}}
