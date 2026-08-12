@@ -24,7 +24,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (`findShellGuardrailSourceContractViolations`,
   `build/lib/check-legacy-owners.mjs`), reusing this repo's established
   `withParsedSources`/`walkTree`/`SyntaxKind` idiom — no new parser
-  dependency. Also closes the inherited #586/#593-phase-1 finding: an
+  dependency. Root-cause circuit breaker (post-merge): three code-review
+  passes each found a variant of one root cause — a hand-rolled, Map-based
+  scope/alias-resolution layer re-deriving JS/TS name-binding semantics by
+  hand. Restructured to resolve every identifier-binding question (a
+  Document/Window alias, an `addEventListener` handler/capture-options
+  alias) through the REAL TypeScript checker `withParsedSources` already
+  had available (`checker.getSymbolAtLocation` against the identifier's
+  resolved declaration) instead — same-function block shadowing, for-loop-
+  header shadowing, and correct reversion after a shadow's scope ends are
+  now real binder behavior, not custom scope-tracking code; the retired
+  helpers (`scopeOwnerOf`/`scopeChain`/`buildGlobalAliasMap`/
+  `buildFunctionDeclMap`/`buildCaptureAliasMap`) are gone. Candidate
+  discovery (the AST shapes for `.appendChild`/`.append`/`addEventListener`/
+  Escape comparisons) and the CSS `shell-fixed-position` scanner are
+  unchanged; the three rules' policy and diagnostic shapes are unchanged.
+  Also closes the inherited #586/#593-phase-1 finding: an
   independent `tests/unit/resize-handle-thickness-contract.test.js` proves
   `src/ui/app-shell.ts`'s `HANDLE_PX` and `src/styles.css`'s
   `.col-resize`/`.inspector-resize` width cannot drift unnoticed. Enforcement-

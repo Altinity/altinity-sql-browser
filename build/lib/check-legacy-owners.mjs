@@ -177,6 +177,20 @@ export const PHASE8_NARROW_RULE_D_EXCEPTIONS = Object.freeze({
 // never collide, unlike the single-file wrapper's now-removed
 // basename-only scheme, which relied on there only ever being one entry to
 // namespace at all.
+// Issue #592 addendum (Architecture decision 6, post-PR-#672-review) — this
+// batch primitive also hands back each file's real TypeScript `checker:
+// Checker` (via its `Project`, `snapshot.getDefaultProjectForFile(virtualPath)
+// .checker`), alongside the `SourceFile` it always returned. Every prior
+// caller's callback still destructures/ignores whatever it likes from a
+// two-argument call — `fn(sourceFiles)` (the #630/#642/#587/#590 callers
+// above/below, none of which need name-binding resolution) keeps working
+// unchanged because JS simply drops an extra call argument a callback's own
+// signature never names. The `checkers` map exists so #592's own
+// `findShellGuardrailSourceContractViolations` (below) can ask the REAL
+// TypeScript binder "what does this identifier resolve to" instead of
+// re-deriving JS/TS scope semantics by hand — the root-cause fix for three
+// review passes' worth of hand-rolled-scope-walker defects (see this file's
+// `## Issue #592` section header comment for the retrospective).
 function withParsedSources(entries, fn) {
   const virtualPaths = new Map(); // filename -> virtualPath
   const files = {};
@@ -189,18 +203,19 @@ function withParsedSources(entries, fn) {
   try {
     const snapshot = api.updateSnapshot({ openFiles: [...virtualPaths.values()] });
     const sourceFiles = new Map(); // filename -> SourceFile
+    const checkers = new Map(); // filename -> Checker
     for (const [filename, virtualPath] of virtualPaths) {
-      const sourceFile = snapshot
-        .getDefaultProjectForFile(virtualPath)
-        ?.program.getSourceFile(virtualPath);
+      const project = snapshot.getDefaultProjectForFile(virtualPath);
+      const sourceFile = project?.program.getSourceFile(virtualPath);
       if (!sourceFile) {
         // Fail loud, never silently-clean: an unparseable probe must not read
         // as "no violations".
         throw new Error(`check-legacy-owners: could not parse ${filename}`);
       }
       sourceFiles.set(filename, sourceFile);
+      checkers.set(filename, project.checker);
     }
-    return fn(sourceFiles);
+    return fn(sourceFiles, checkers);
   } finally {
     api.close(); // always reap the native child process, on every return path
   }
@@ -210,9 +225,15 @@ function withParsedSources(entries, fn) {
 // TypeScript parser and hand back its root AST node — the original #630
 // single-source entry point, now a thin one-entry wrapper over
 // `withParsedSources` above. Every existing caller's behavior (including the
-// thrown-on-unparseable-source contract) is unchanged.
+// thrown-on-unparseable-source contract) is unchanged; `fn`'s optional SECOND
+// parameter (the file's own `Checker`, #592 addendum) is available to any
+// future single-source caller that wants it, but no current caller of this
+// wrapper does.
 function withParsedSource(source, filename, fn) {
-  return withParsedSources([{ source, filename }], (sourceFiles) => fn(sourceFiles.get(filename)));
+  return withParsedSources(
+    [{ source, filename }],
+    (sourceFiles, checkers) => fn(sourceFiles.get(filename), checkers.get(filename)),
+  );
 }
 
 /**
@@ -1996,6 +2017,33 @@ export function findSurfaceLifecycleSourceContractViolations(sources, { appFile,
 // own attachment underestimated — see the plan's "Verified repository
 // baseline" section. Deleting an exception below must SHRINK this table, not
 // leave the entry present with a stale rationale.
+//
+// Root-cause circuit breaker (Architecture decision 6, added post-PR-#672):
+// three formal code-review passes on the original implementation
+// (`570e089`/`ad4f71f`/`e76c8a7`) each found and fixed a real defect in a
+// hand-rolled, Map-based scope-resolution layer this section used to carry
+// (`scopeOwnerOf`/`scopeChain`/`declarationScopeOwnerOf`/
+// `buildGlobalAliasMap`/`buildFunctionDeclMap`/`buildCaptureAliasMap`/a
+// body-alias scope map) — flat file-wide maps (pass 1), then same-function
+// block shadowing not modeled (pass 2), then `var`/for-loop-header
+// declaration-kind-unaware scoping plus object-literal evaluation order (pass
+// 3). All three were variants of ONE root cause: re-deriving JavaScript/
+// TypeScript binding semantics by hand instead of asking the real TypeScript
+// binder. `withParsedSources`'s `Project` (above) already exposes a real
+// `checker: Checker` with genuine binder symbol resolution
+// (`getSymbolAtLocation`) that answers "what does this identifier resolve
+// to" correctly and for free — same-function block shadowing, for-loop-header
+// shadowing, sibling-scope non-pollution, and correct reversion to an outer
+// binding once a shadow's scope ends are all real TypeScript-binder behavior,
+// not something this module needs to model itself. Every place below that
+// used to answer that question through the hand-rolled maps now resolves it
+// through `checker.getSymbolAtLocation` against the identifier's real
+// declaration instead — the maps and their scope-chain-walking machinery are
+// deleted outright, not patched again. Candidate discovery (the AST shapes
+// for `.appendChild`/`.append`/`addEventListener`/Escape-comparison) and the
+// capture-options constant evaluator's own real object-literal evaluation-
+// order logic are UNCHANGED — neither is a name-binding question, so neither
+// is this addendum's concern.
 
 /** Every transparent cast/assertion wrapper a body-mount/capture-escape
  *  receiver or handler argument may sit behind — reused verbatim from the
@@ -2052,61 +2100,17 @@ function enclosingScopePath(node) {
  *  rather than assumed impossible). Deliberately FUNCTION-granular, not
  *  block-granular — `bodyMountCandidates`'s `scopeNode` and the
  *  `enclosingScopePath`/`fullScopePathOf`/`declaredScopeKeys` scope-PATH
- *  concept both need "the whole named function", never a narrower nested
- *  block, so this stays a distinct function from `innermostLexicalScopeNode`
- *  below rather than being generalized in place. */
+ *  concept both need "the whole named function" for POLICY matching, never a
+ *  narrower nested block; real lexical (block-level) name-BINDING resolution
+ *  is a different question, answered by the real TypeScript checker
+ *  (`checker.getSymbolAtLocation`, see the #592 addendum section header
+ *  comment above and `resolveGlobalKind`/`resolveHandlerNode`/
+ *  `resolveCaptureFlag`/`resolvesToDocumentBody` below), not by a hand-rolled
+ *  block-scope walk. */
 function innermostScopeNode(node) {
   let current = node.parent;
   while (current) {
     if (FUNCTION_LIKE_KINDS.has(current.kind)) return current;
-    current = current.parent;
-  }
-  return null;
-}
-
-/** True for a real lexical block-scope boundary — every bare `Block`
- *  (a function body, an `if`/`else` arm, a loop body, a `try`/`catch`/
- *  `finally` block, or a standalone `{ }`), `CaseBlock` (a `switch`'s
- *  whole clause list — matching real JS: every `case` in ONE switch shares a
- *  SINGLE lexical scope, there is no separate scope per `case`), or a
- *  `for`/`for-in`/`for-of` STATEMENT itself (#592 review pass 3: a `let`/
- *  `const` bound in a loop HEADER — `for (let i = 0; …)` — is scoped to the
- *  whole loop construct, including its body, but its declaration node sits
- *  in the header, one level ABOVE the loop's own body `Block` — so without
- *  the loop statement being its own boundary here, that header binding would
- *  resolve to whatever scope encloses the ENTIRE loop, colliding with a
- *  same-named outer binding exactly like the fixed #592 review-pass-2 block-
- *  shadowing bug, just one level up). Broader than `collectOrderingScopes`'s
- *  narrower ordering-only list (which deliberately omits `else`/`do`/`try`/a
- *  bare standalone block to match the retired textual opener) — this models
- *  real `let`/`const` shadowing wherever it actually occurs, not just the
- *  constructs one old regex happened to recognize. */
-function isBlockScopeNode(node) {
-  return node.kind === SyntaxKind.Block || node.kind === SyntaxKind.CaseBlock
-    || node.kind === SyntaxKind.ForStatement || node.kind === SyntaxKind.ForInStatement
-    || node.kind === SyntaxKind.ForOfStatement;
-}
-
-/** The nearest enclosing LEXICAL scope boundary for `node` — a
- *  `FUNCTION_LIKE_KINDS` ancestor OR a bare block-scope node
- *  (`isBlockScopeNode`), whichever is nearer. This is the fix for the #592
- *  review-pass-2 finding one level finer than #672 P1's own same-FUNCTION
- *  shadowing fix: a block-local `let`/`const` (`if (c) { const doc: Window =
- *  …; … } doc.body.appendChild(...)`) must shadow an outer function-scoped
- *  binding of the same name ONLY inside that block, exactly like real JS/TS
- *  lexical scoping — never collapse into the one flat per-FUNCTION bucket
- *  `innermostScopeNode` deliberately keeps for its own two callers (see that
- *  function's own doc comment on why they need the coarser granularity).
- *  `null` when `node` sits at module top level, same contract as
- *  `innermostScopeNode`. Used ONLY by `scopeOwnerOf`/`scopeChain` — every
- *  alias/handler/capture table keyed through those two (`buildGlobalAliasMap`,
- *  `buildFunctionDeclMap`, `buildCaptureAliasMap`, and `bodyMountCandidates`'s
- *  own `bodyAliasMap`) inherits real block-scoping from this one change. */
-function innermostLexicalScopeNode(node) {
-  let current = node.parent;
-  while (current) {
-    if (FUNCTION_LIKE_KINDS.has(current.kind)) return current;
-    if (isBlockScopeNode(current)) return current;
     current = current.parent;
   }
   return null;
@@ -2184,119 +2188,19 @@ function hasCallNamed(scopeNode, name) {
   return found;
 }
 
-/** The scope that directly owns a BINDING introduced at `node`, or that a
- *  REFERENCE at `node` resolves outward from: the nearest enclosing LEXICAL
- *  scope boundary (`innermostLexicalScopeNode` — a `FUNCTION_LIKE_KINDS`
- *  ancestor OR a bare block), or `sourceFile` itself when `node` sits at
- *  module top level. Deliberately `innermostLexicalScopeNode`, never the
- *  function-only `innermostScopeNode` — every alias/handler/capture table
- *  keyed through this function needs real block-scoped shadowing (the #592
- *  review-pass-2 fix), while `innermostScopeNode`'s own two callers
- *  (`bodyMountCandidates`'s `scopeNode`, and the scope-PATH helpers) still
- *  need the coarser function granularity and call it directly instead.
- *  Always returns a real, stable map key (never `null`), so every scoped
- *  alias/handler/capture table below has one uniform module-scope sentinel
- *  instead of a null special case. */
-function scopeOwnerOf(node, sourceFile) {
-  return innermostLexicalScopeNode(node) ?? sourceFile;
-}
-
-/** The scope that owns a `var` BINDING at `node` — real JS `var` hoisting is
- *  FUNCTION-scoped (module-scoped at top level), never block- or loop-
- *  scoped, so a `var` bound inside a nested `if`/loop/bare block, or inside a
- *  `for`/`for-in`/`for-of` HEADER, is still owned by the nearest enclosing
- *  `FUNCTION_LIKE_KINDS` node — never the block or loop it happens to sit
- *  inside. Deliberately built on `innermostScopeNode` (the function-only
- *  walk), never `innermostLexicalScopeNode` — the same "coarser granularity"
- *  contract `innermostScopeNode`'s own doc comment already describes for its
- *  other two callers now applies here too. */
-function varDeclarationScope(node, sourceFile) {
-  return innermostScopeNode(node) ?? sourceFile;
-}
-
-/** The nearest `VariableDeclarationList` ancestor that actually OWNS the
- *  binding at `node` (a `VariableDeclaration`, or a `BindingElement` nested
- *  inside one's destructuring pattern) — stopping the walk at the first
- *  `FUNCTION_LIKE_KINDS` ancestor encountered FIRST, which means a
- *  `Parameter`'s own destructuring pattern (which has no
- *  `VariableDeclarationList` of its own at all — a parameter is never
- *  `var`/`let`/`const`) correctly returns `null` rather than a wrong, unrelated
- *  outer declaration list several scopes up the real function-nesting chain. */
-function owningDeclarationList(node) {
-  let current = node.parent;
-  while (current) {
-    if (current.kind === SyntaxKind.VariableDeclarationList) return current;
-    if (FUNCTION_LIKE_KINDS.has(current.kind)) return null;
-    current = current.parent;
-  }
-  return null;
-}
-
-/** True when `declarationList` (a real `VariableDeclarationList`) is a `var`
- *  list — neither `NodeFlags.Let` nor `NodeFlags.Const` set, the same
- *  flag-based test `nonConstDeclarationKeyword` already uses for the
- *  unrelated surface-protected-declaration rule above. */
-function isVarDeclarationList(declarationList) {
-  return (declarationList.flags & (NodeFlags.Let | NodeFlags.Const)) === 0;
-}
-
-/** Declaration-KIND-aware `scopeOwnerOf`, for a real BINDING node
- *  (a `VariableDeclaration`, or a `BindingElement` nested inside one) —
- *  the #592 review-pass-3 fix: every alias/handler/capture/body-alias table
- *  below that registers a `var`/`let`/`const` binding must use THIS, never
- *  plain `scopeOwnerOf`, so a `var` gets real function-scoping
- *  (`varDeclarationScope`) instead of being silently treated as block- or
- *  loop-scoped like a `let`/`const` would be. A binding with no owning
- *  `VariableDeclarationList` at all (`owningDeclarationList` returns `null`
- *  — a `Parameter`'s own destructuring) falls through to plain
- *  `scopeOwnerOf`, which already gives every `Parameter` the right answer
- *  (the function itself — nothing block- or loop-scoped ever sits between a
- *  parameter and its own function). */
-function declarationScopeOwnerOf(node, sourceFile) {
-  const list = owningDeclarationList(node);
-  if (list && isVarDeclarationList(list)) return varDeclarationScope(node, sourceFile);
-  return scopeOwnerOf(node, sourceFile);
-}
-
-/** The full lexical scope chain for `node`, innermost first, ending at
- *  `sourceFile` (module scope) — every scope a name reference at `node` can
- *  actually resolve through, mirroring real JS/TS function-scope shadowing.
- *  A binding declared in a sibling scope, or in a scope nested BELOW `node`
- *  (a helper function declared inside the scope currently being resolved),
- *  is never a member of this chain, so it can never satisfy a lookup for
- *  `node` — the fix for the P1 "collects bindings by bare identifier across
- *  the entire source file" finding: every alias/handler/capture table below
- *  is now keyed `scope -> Map<name, value>` and resolved through this chain,
- *  never through one flat file-wide `Map<name, value>`. */
-function scopeChain(node, sourceFile) {
-  const chain = [];
-  let scope = scopeOwnerOf(node, sourceFile);
-  for (;;) {
-    chain.push(scope);
-    if (scope === sourceFile) return chain;
-    scope = scopeOwnerOf(scope, sourceFile);
-  }
-}
-
-/** Resolve `node` (an `Identifier`) through `scopedMap` (`scope ->
- *  Map<name, value>`) by walking `scopeChain(node, sourceFile)` innermost
- *  first and returning the first scope's binding for `node.text` — i.e. the
- *  nearest LEXICALLY VISIBLE declaration, never a same-named binding from an
- *  unrelated scope. `undefined` when no scope on the chain binds that name at
- *  all (the caller's own fail-closed handling decides what that means). */
-function lookupInScopeChain(scopedMap, node, sourceFile) {
-  for (const scope of scopeChain(node, sourceFile)) {
-    const local = scopedMap.get(scope);
-    if (local && local.has(node.text)) return local.get(node.text);
-  }
-  return undefined;
-}
-
 /** Every `TypeReferenceNode` name reachable from `typeNode` through a union/
  *  intersection/parenthesized type — e.g. `Document`, `Document | null`,
  *  `(Document)`. Used only to recognize a parameter/variable declared WITH a
  *  `: Document` / `: Window` annotation (`childDoc: Document`, `mainDoc:
- *  Document`) as a document/window alias — see `buildGlobalAliasMap`. */
+ *  Document`) as a document/window alias — see `classifyGlobalDeclaration`
+ *  below. Purely syntactic (reads the type annotation's own AST text), so it
+ *  works identically whether or not the checker can fully resolve the named
+ *  type — including a `Document`/`Window` ambient global whose OWN
+ *  declaration lives in `lib.dom.d.ts` (`resolveGlobalKind` below resolves
+ *  the bare identifiers `document`/`window` through the exact same real-
+ *  binder-then-inspect-the-declaration path as any local alias, since the
+ *  real TypeScript checker resolves them to `declare var document: Document`
+ *  / `declare var window: Window & typeof globalThis` either way). */
 function typeNamesOf(typeNode) {
   const names = [];
   const walk = (t) => {
@@ -2313,38 +2217,120 @@ function typeNamesOf(typeNode) {
   return names;
 }
 
+/** `openInDetachedTab`'s `mount()` callback destructures its one parameter —
+ *  `({ doc, bar, body, close, closeBtn }: MountCtx) => {...}` — and `doc` is
+ *  a real `Document` (`MountCtx.doc`, `src/ui/detached-view.ts`), but it's
+ *  bound via PLAIN (non-renamed) destructuring of a parameter whose OWN type
+ *  annotation names `MountCtx`, not `Document` directly — a shape
+ *  `classifyGlobalDeclaration` below's other rules can't see on their own
+ *  (its Parameter/VariableDeclaration rule only looks at a plain-IDENTIFIER
+ *  binding's own type; its BindingElement rule only recognizes a RENAMED
+ *  `{ document: doc }` form). Resolving `MountCtx`'s OWN member types would
+ *  need full type inference across a module graph (`MountCtx` is frequently
+ *  imported cross-file — see `explain-graph.ts`/`results.ts`), which this
+ *  check deliberately does not attempt (Architecture decision 6's own
+ *  non-goal: the checker answers "what does this name resolve to", not
+ *  general type checking) — so `MountCtx` is named explicitly here rather
+ *  than inferred, the one #592-reviewed real shape, confirmed at its three
+ *  real call sites (`explain-graph.ts` ×2, `results.ts` ×1). */
+const MOUNT_CTX_TYPE_NAME = 'MountCtx';
+
+/**
+ * Classify a real BINDING declaration node (what `checker.getSymbolAtLocation`
+ * resolved an identifier reference TO) as denoting a `Document`, a `Window`,
+ * or neither — the Architecture-decision-6 replacement for the #592 review
+ * passes' hand-rolled `buildGlobalAliasMap`: instead of pre-walking the whole
+ * file into a scope-keyed alias table, this inspects ONE already-resolved
+ * declaration node directly, purely structurally:
+ *   - a destructuring rename whose `propertyName` is `document`/`window`
+ *     (`const { document: doc } = opts` — `menu.ts`'s real shape);
+ *   - a plain (non-renamed) destructuring of a `doc` property from a
+ *     parameter/variable whose OWN type annotation names `MountCtx` (see
+ *     `MOUNT_CTX_TYPE_NAME` above);
+ *   - a `Parameter` or `VariableDeclaration` whose declared TYPE names
+ *     `Document`/`Window` (`childDoc: Document`, `mainDoc: Document`) — this
+ *     ALSO covers the bare globals `document`/`window` themselves: the real
+ *     TypeScript checker resolves each to its own ambient `declare var
+ *     document: Document` / `declare var window: Window & typeof
+ *     globalThis` declaration in `lib.dom.d.ts`, which has exactly this
+ *     shape, so no separate bare-identifier special case is needed;
+ *   - a `VariableDeclaration` with NO type annotation: classified through its
+ *     own initializer, recursively, via `resolveGlobalKind` below (`const doc
+ *     = document.body.ownerDocument` and similar chains).
+ * Every one of these is answered by inspecting real AST structure the
+ * checker's binder already led us to — no scope-chain walk, alias map, or
+ * declaration-kind (`var` vs `let`/`const`) tracking of any kind: the checker
+ * already resolved WHICH declaration this identifier means, respecting real
+ * block/function scoping, hoisting, and shadowing for free.
+ *
+ * @param {object} declNode
+ * @param {object} checker the file's real TypeScript `Checker` — needed only
+ *   for the no-type-annotation initializer branch's recursive call
+ * @returns {'document'|'window'|null}
+ */
+function classifyGlobalDeclaration(declNode, checker) {
+  if (
+    declNode.kind === SyntaxKind.BindingElement && declNode.propertyName
+    && declNode.propertyName.kind === SyntaxKind.Identifier
+  ) {
+    if (declNode.propertyName.text === 'document') return 'document';
+    if (declNode.propertyName.text === 'window') return 'window';
+  }
+  if (
+    declNode.kind === SyntaxKind.BindingElement && !declNode.propertyName
+    && declNode.name && declNode.name.kind === SyntaxKind.Identifier && declNode.name.text === 'doc'
+  ) {
+    const pattern = declNode.parent;
+    const owner = pattern && pattern.parent;
+    if (owner && owner.type && typeNamesOf(owner.type).includes(MOUNT_CTX_TYPE_NAME)) return 'document';
+  }
+  if ((declNode.kind === SyntaxKind.Parameter || declNode.kind === SyntaxKind.VariableDeclaration) && declNode.type) {
+    const names = typeNamesOf(declNode.type);
+    if (names.includes('Document')) return 'document';
+    if (names.includes('Window')) return 'window';
+  }
+  if (declNode.kind === SyntaxKind.VariableDeclaration && !declNode.type && declNode.initializer) {
+    return resolveGlobalKind(declNode.initializer, checker);
+  }
+  return null;
+}
+
 /**
  * Structurally resolve whether `node` denotes a `Document` (`'document'`), a
  * `Window` (`'window'`), or neither (`null`) — covering, per the plan's own
- * candidate-recognition list: the bare globals `document`/`window`; a simple
- * alias already in `aliasMap` (built by `buildGlobalAliasMap`); a member
- * access chain ending in `.document`/`.window` regardless of receiver
- * (`window.document`, `opts.document`, `deps.document`, `env.document` all
- * qualify — the plan is explicit that ANY receiver counts, since the exact
- * `opts.document` shape is what `dashboard-chart-interaction.ts`'s
- * `beginSelection` needs); the bracket-property spelling
- * (`doc['body']['appendChild']`'s own receiver chain uses the SAME check on
- * `doc`, but a literal `x['document']` also resolves here for symmetry); and
- * `||`/`??` (either operand) or `&&` (the right operand only — `a &&
- * a.document` evaluates to `a.document`, or a falsy `a`, so only the right
- * side is ever the actual receiver at runtime) short-circuit forms, plus a
- * ternary's either branch. Transparent cast/assertion wrappers are unwrapped
- * first. Every other shape (a call, a non-literal computed member, an
- * unresolvable identifier) returns `null` — the caller treats `null` as "not
- * a recognized global", never as a silent pass for a DIFFERENT reason.
+ * candidate-recognition list: the bare globals `document`/`window` and every
+ * simple alias of either (resolved through the REAL TypeScript checker —
+ * `checker.getSymbolAtLocation` against the identifier's own declaration,
+ * then `classifyGlobalDeclaration` above — never a hand-rolled scope-chain
+ * lookup); a member access chain ending in `.document`/`.window` regardless
+ * of receiver (`window.document`, `opts.document`, `deps.document`,
+ * `env.document` all qualify — the plan is explicit that ANY receiver
+ * counts, since the exact `opts.document` shape is what
+ * `dashboard-chart-interaction.ts`'s `beginSelection` needs); the
+ * bracket-property spelling (`doc['body']['appendChild']`'s own receiver
+ * chain uses the SAME check on `doc`, but a literal `x['document']` also
+ * resolves here for symmetry); and `||`/`??` (either operand) or `&&` (the
+ * right operand only — `a && a.document` evaluates to `a.document`, or a
+ * falsy `a`, so only the right side is ever the actual receiver at runtime)
+ * short-circuit forms, plus a ternary's either branch. Transparent cast/
+ * assertion wrappers are unwrapped first. Every other shape (a call, a
+ * non-literal computed member, an unresolvable identifier) returns `null` —
+ * the caller treats `null` as "not a recognized global", never as a silent
+ * pass for a DIFFERENT reason.
  *
  * @param {object} node
- * @param {Map<object, Map<string, 'document'|'window'>>} aliasMap scope -> name -> kind
- * @param {object} sourceFile
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {'document'|'window'|null}
  */
-function resolveGlobalKind(node, aliasMap, sourceFile) {
+function resolveGlobalKind(node, checker) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return null;
   if (expr.kind === SyntaxKind.Identifier) {
-    if (expr.text === 'document') return 'document';
-    if (expr.text === 'window') return 'window';
-    return lookupInScopeChain(aliasMap, expr, sourceFile) ?? null;
+    const symbol = checker.getSymbolAtLocation(expr);
+    if (!symbol) return null;
+    const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+    const declNode = handle?.resolve();
+    return declNode ? classifyGlobalDeclaration(declNode, checker) : null;
   }
   if (expr.kind === SyntaxKind.PropertyAccessExpression) {
     if (expr.name.text === 'document') return 'document';
@@ -2362,181 +2348,57 @@ function resolveGlobalKind(node, aliasMap, sourceFile) {
   if (expr.kind === SyntaxKind.BinaryExpression) {
     const op = expr.operatorToken.kind;
     if (op === SyntaxKind.BarBarToken || op === SyntaxKind.QuestionQuestionToken) {
-      return resolveGlobalKind(expr.left, aliasMap, sourceFile) ?? resolveGlobalKind(expr.right, aliasMap, sourceFile);
+      return resolveGlobalKind(expr.left, checker) ?? resolveGlobalKind(expr.right, checker);
     }
-    if (op === SyntaxKind.AmpersandAmpersandToken) return resolveGlobalKind(expr.right, aliasMap, sourceFile);
+    if (op === SyntaxKind.AmpersandAmpersandToken) return resolveGlobalKind(expr.right, checker);
     return null;
   }
   if (expr.kind === SyntaxKind.ConditionalExpression) {
-    return resolveGlobalKind(expr.whenTrue, aliasMap, sourceFile) ?? resolveGlobalKind(expr.whenFalse, aliasMap, sourceFile);
+    return resolveGlobalKind(expr.whenTrue, checker) ?? resolveGlobalKind(expr.whenFalse, checker);
   }
   return null;
-}
-
-/** `openInDetachedTab`'s `mount()` callback destructures its one parameter —
- *  `({ doc, bar, body, close, closeBtn }: MountCtx) => {...}` — and `doc` is
- *  a real `Document` (`MountCtx.doc`, `src/ui/detached-view.ts`), but it's
- *  bound via PLAIN (non-renamed) destructuring of a parameter whose OWN type
- *  annotation names `MountCtx`, not `Document` directly — a shape none of
- *  `buildGlobalAliasMap`'s other rules can see on their own (its Parameter
- *  rule only looks at a plain-IDENTIFIER parameter's own type; its
- *  BindingElement rule only recognizes a RENAMED `{ document: doc }` form).
- *  This module has no real type checker (`typescript/unstable/sync` is
- *  parse-only — see the module header), so `MountCtx` is named explicitly
- *  here rather than inferred — the one #592-reviewed real shape, confirmed
- *  at its three real call sites (`explain-graph.ts` ×2, `results.ts` ×1). */
-const MOUNT_CTX_TYPE_NAME = 'MountCtx';
-
-/**
- * Build the per-file `scope -> name -> 'document'|'window'` alias map: every
- * `Parameter`/`VariableDeclaration` whose declared TYPE names `Document`/
- * `Window` (`childDoc: Document`, `mainDoc: Document`), every destructuring
- * rename whose `propertyName` is `document`/`window` (`const { document: doc
- * } = opts` — `menu.ts`'s real shape), and every `VariableDeclaration` whose
- * INITIALIZER resolves via `resolveGlobalKind` against the map built so far,
- * each `BindingElement`/`VariableDeclaration` recorded under its OWN
- * declaration-KIND-aware declaring scope (`declarationScopeOwnerOf` — #592
- * review pass 3: `var` is function-scoped, `let`/`const` including a for-
- * loop-header binding is genuinely lexically scoped; a `Parameter` has no
- * declaration-list at all and keeps plain `scopeOwnerOf`, which already
- * gives it the right, function-level answer) rather than one flat file-wide
- * key. A single forward walk over the whole file still suffices for every
- * real occurrence in this codebase (parameters are visited before the
- * statements that reference them by `forEachChild`'s own declaration order,
- * and no alias here is ever referenced before its own declaration) — this is
- * a bounded architecture-guard heuristic, not a general dataflow engine; see
- * this module's own header comment on accepted-risk scope. Per-scope keying
- * is what makes that heuristic sound under same-file shadowing: a later
- * sibling `doc: Window` in an unrelated function no longer overwrites an
- * earlier `doc: Document` bound in a different scope (the reviewed #672 P1
- * — same bare name, different scopes, used to collapse to one file-wide
- * last-write-wins entry), and a loop-header `let doc = window` no longer
- * clobbers an outer `const doc: Document` bound in the SAME enclosing
- * function/block (the #592 review-pass-3 fix).
- *
- * @param {object} sourceFile
- * @returns {Map<object, Map<string, 'document'|'window'>>}
- */
-function buildGlobalAliasMap(sourceFile) {
-  const aliasMap = new Map(); // scope -> Map<name, kind>
-  const setAlias = (scope, name, kind) => {
-    let local = aliasMap.get(scope);
-    if (!local) { local = new Map(); aliasMap.set(scope, local); }
-    local.set(name, kind);
-  };
-  walkTree(sourceFile, (node) => {
-    if (node.kind === SyntaxKind.Parameter && node.name && node.name.kind === SyntaxKind.Identifier && node.type) {
-      const names = typeNamesOf(node.type);
-      const scope = scopeOwnerOf(node, sourceFile);
-      if (names.includes('Document')) setAlias(scope, node.name.text, 'document');
-      else if (names.includes('Window')) setAlias(scope, node.name.text, 'window');
-    }
-    if (
-      node.kind === SyntaxKind.Parameter && node.name && node.name.kind === SyntaxKind.ObjectBindingPattern && node.type
-      && typeNamesOf(node.type).includes(MOUNT_CTX_TYPE_NAME)
-    ) {
-      const scope = scopeOwnerOf(node, sourceFile);
-      for (const el of node.name.elements) {
-        if (
-          el.kind === SyntaxKind.BindingElement && !el.propertyName && el.name && el.name.kind === SyntaxKind.Identifier
-          && el.name.text === 'doc'
-        ) {
-          setAlias(scope, el.name.text, 'document');
-        }
-      }
-    }
-    if (
-      node.kind === SyntaxKind.BindingElement && node.propertyName
-      && node.propertyName.kind === SyntaxKind.Identifier && node.name.kind === SyntaxKind.Identifier
-    ) {
-      const scope = declarationScopeOwnerOf(node, sourceFile);
-      if (node.propertyName.text === 'document') setAlias(scope, node.name.text, 'document');
-      else if (node.propertyName.text === 'window') setAlias(scope, node.name.text, 'window');
-    }
-    if (node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier) {
-      let kind = null;
-      if (node.type) {
-        const names = typeNamesOf(node.type);
-        if (names.includes('Document')) kind = 'document';
-        else if (names.includes('Window')) kind = 'window';
-      }
-      if (!kind && node.initializer) kind = resolveGlobalKind(node.initializer, aliasMap, sourceFile);
-      if (kind) setAlias(declarationScopeOwnerOf(node, sourceFile), node.name.text, kind);
-    }
-  });
-  return aliasMap;
-}
-
-/** Every `scope -> name -> [{node, pos}]` binding of a `FunctionDeclaration`
- *  (always block-scoped like `let` in this module's strict-mode ES-module
- *  source, so plain `scopeOwnerOf` is already correct for it) or a
- *  `const`/`let`/`var name = (…) => {}` / `… = function (…) {}` (declaration-
- *  KIND-aware `declarationScopeOwnerOf` — #592 review pass 3, same `var`-is-
- *  function-scoped fix as `buildGlobalAliasMap`'s) in `sourceFile`, keyed by
- *  the declaration's OWN declaring scope rather than one flat file-wide
- *  name — used to resolve a plain-identifier `addEventListener` handler
- *  argument (`doc.
- *  addEventListener('keydown', onKey, true)`) back to the function it names
- *  through `resolveHandlerNode`'s lexical scope-chain lookup, never through a
- *  same-named declaration in an unrelated sibling or nested-below scope (the
- *  reviewed #672 P1 handler-shadowing case). Multiple same-named entries
- *  WITHIN one scope are kept (never overwritten) so `resolveHandlerNode` can
- *  pick the one nearest-preceding a given use inside that scope. */
-function buildFunctionDeclMap(sourceFile) {
-  const map = new Map(); // scope -> Map<name, {node, pos}[]>
-  const add = (scope, name, node) => {
-    let local = map.get(scope);
-    if (!local) { local = new Map(); map.set(scope, local); }
-    const list = local.get(name) ?? [];
-    list.push({ node, pos: node.getStart(sourceFile) });
-    local.set(name, list);
-  };
-  walkTree(sourceFile, (node) => {
-    if (node.kind === SyntaxKind.FunctionDeclaration && node.name) {
-      add(scopeOwnerOf(node, sourceFile), node.name.text, node);
-    }
-    if (
-      node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier
-      && node.initializer
-    ) {
-      const init = unwrapCastWrappers(node.initializer);
-      if (init && (init.kind === SyntaxKind.ArrowFunction || init.kind === SyntaxKind.FunctionExpression)) {
-        add(declarationScopeOwnerOf(node, sourceFile), node.name.text, init);
-      }
-    }
-  });
-  return map;
 }
 
 /**
  * Resolve an `addEventListener` handler argument to the `FUNCTION_LIKE_KINDS`
  * node it actually runs — an inline arrow/function expression directly, or a
- * plain `Identifier` resolved through `sourceFile`'s lexical scope chain
- * (`lookupInScopeChain`) to the NEAREST enclosing scope that declares that
- * name in `funcDeclMap` (`buildFunctionDeclMap`), then the NEAREST PRECEDING
- * (by source position) declaration of that name within THAT scope. `null`
- * for anything else (a member access, a call, a conditional, an identifier no
- * scope on the chain binds, …) — the plan's own fail-closed requirement: "if
- * a global capture keydown handler cannot be statically resolved, report it
- * as uncheckable rather than treating it as non-Escape", so the caller must
- * treat `null` as an unconditional violation, never as "assume clean".
+ * plain `Identifier` resolved through the REAL TypeScript checker
+ * (`checker.getSymbolAtLocation` against the identifier's own declaration —
+ * the Architecture-decision-6 replacement for the #592 review passes'
+ * hand-rolled `buildFunctionDeclMap`/lexical-scope-chain lookup): a
+ * `FunctionDeclaration` declaration resolves directly; a `VariableDeclaration`
+ * whose initializer is an arrow/function expression resolves to that
+ * initializer; anything else (a `Parameter`, a `BindingElement`, a
+ * `VariableDeclaration` with a non-function initializer, …) is unresolved.
+ * `null` for anything else at all (a member access, a call, a conditional, an
+ * identifier the checker can't bind, …) — the plan's own fail-closed
+ * requirement: "if a global capture keydown handler cannot be statically
+ * resolved, report it as uncheckable rather than treating it as non-Escape",
+ * so the caller must treat `null` as an unconditional violation, never as
+ * "assume clean". Because the checker's own binder resolves EACH reference to
+ * its correct governing declaration (respecting real block/function scoping
+ * and shadowing), there is no "nearest-preceding-by-source-position" heuristic
+ * needed here either — the checker already answers "which declaration does
+ * THIS specific reference mean".
  *
  * @param {object} handlerArg
- * @param {Map<object, Map<string, {node: object, pos: number}[]>>} funcDeclMap
- * @param {object} sourceFile
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {object | null}
  */
-function resolveHandlerNode(handlerArg, funcDeclMap, sourceFile) {
+function resolveHandlerNode(handlerArg, checker) {
   const expr = unwrapCastWrappers(handlerArg);
   if (!expr) return null;
   if (FUNCTION_LIKE_KINDS.has(expr.kind)) return expr;
-  if (expr.kind === SyntaxKind.Identifier) {
-    const entries = lookupInScopeChain(funcDeclMap, expr, sourceFile);
-    if (!entries || entries.length === 0) return null;
-    const pos = expr.getStart();
-    let best = null;
-    for (const e of entries) { if (e.pos <= pos && (!best || e.pos > best.pos)) best = e; }
-    return best ? best.node : entries[0].node;
+  if (expr.kind !== SyntaxKind.Identifier) return null;
+  const symbol = checker.getSymbolAtLocation(expr);
+  if (!symbol) return null;
+  const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+  const declNode = handle?.resolve();
+  if (!declNode) return null;
+  if (FUNCTION_LIKE_KINDS.has(declNode.kind)) return declNode;
+  if (declNode.kind === SyntaxKind.VariableDeclaration && declNode.initializer) {
+    const init = unwrapCastWrappers(declNode.initializer);
+    if (init && FUNCTION_LIKE_KINDS.has(init.kind)) return init;
   }
   return null;
 }
@@ -2597,12 +2459,18 @@ function staticPropertyKeyName(member) {
  *  pass 2 already fixed the narrower "recognize every `capture` key
  *  spelling" gap this order-aware walk preserves.
  *
+ * This evaluation-order logic is UNCHANGED by Architecture decision 6 (#592
+ * addendum) — real object-literal property/spread evaluation order is not a
+ * name-binding question, so the real TypeScript checker has no bearing on it.
+ * Only the recursive `resolveCaptureFlag` call below (for resolving an
+ * explicit `capture` VALUE that turns out to itself be an identifier alias)
+ * now goes through the checker instead of a hand-rolled alias map.
+ *
  * @param {object} node
- * @param {Map<object, Map<string, boolean|null>>} captureAliasMap
- * @param {object} sourceFile
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {boolean | null}
  */
-function resolveObjectCaptureLiteral(node, captureAliasMap, sourceFile) {
+function resolveObjectCaptureLiteral(node, checker) {
   let lastKnownValueNode = null; // meaningful only while `lastEventKnown === true`
   let lastEventKnown = null; // null: no capture-affecting property seen yet; true: known; false: unknown/override-capable
   for (const p of node.properties) {
@@ -2614,44 +2482,8 @@ function resolveObjectCaptureLiteral(node, captureAliasMap, sourceFile) {
     else if (p.kind === SyntaxKind.ShorthandPropertyAssignment) { lastKnownValueNode = p.name; lastEventKnown = true; }
     else lastEventKnown = false; // a method/get/set named `capture` — never a plain boolean
   }
-  if (lastEventKnown === true) return resolveCaptureFlag(lastKnownValueNode, captureAliasMap, sourceFile);
+  if (lastEventKnown === true) return resolveCaptureFlag(lastKnownValueNode, checker);
   return lastEventKnown === false ? null : false;
-}
-
-/** Every `scope -> name -> true|false|null` binding of a `const`/`let`/`var
- *  name = true` / `= false` / `= { capture: … }` (via
- *  `resolveObjectCaptureLiteral`) in `sourceFile`, keyed by the declaration's
- *  own declaration-KIND-aware declaring scope (`declarationScopeOwnerOf` —
- *  #592 review pass 3) — backs the plan's "simple local const aliases of
- *  either form" requirement for the THIRD `addEventListener` argument,
- *  resolved through `resolveCaptureFlag`'s lexical scope-chain lookup so a
- *  same-named alias in an unrelated sibling scope (the reviewed #672 P1
- *  capture-alias-overwrite case), OR a same-named `var`/for-header `let`
- *  binding that would otherwise land in the wrong scope bucket (the #592
- *  review-pass-3 fix), can never satisfy a different scope's lookup. */
-function buildCaptureAliasMap(sourceFile) {
-  const map = new Map(); // scope -> Map<name, true|false|null>
-  const setAlias = (scope, name, value) => {
-    let local = map.get(scope);
-    if (!local) { local = new Map(); map.set(scope, local); }
-    local.set(name, value);
-  };
-  walkTree(sourceFile, (node) => {
-    if (
-      node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier
-      && node.initializer
-    ) {
-      const init = unwrapCastWrappers(node.initializer);
-      if (!init) return;
-      const scope = declarationScopeOwnerOf(node, sourceFile);
-      if (init.kind === SyntaxKind.TrueKeyword) setAlias(scope, node.name.text, true);
-      else if (init.kind === SyntaxKind.FalseKeyword) setAlias(scope, node.name.text, false);
-      else if (init.kind === SyntaxKind.ObjectLiteralExpression) {
-        setAlias(scope, node.name.text, resolveObjectCaptureLiteral(init, map, sourceFile));
-      }
-    }
-  });
-  return map;
 }
 
 /**
@@ -2661,25 +2493,50 @@ function buildCaptureAliasMap(sourceFile) {
  * be resolved enough to prove it is non-capture, fail closed rather than
  * silently assuming capture: false"). Covers a bare boolean literal, an
  * options object literal (`resolveObjectCaptureLiteral`), and a simple local
- * const alias of either form; every other shape (a member access, a call, a
- * conditional, an unresolved identifier) is `null`.
+ * const alias of either form — resolved through the REAL TypeScript checker
+ * (`checker.getSymbolAtLocation` against the identifier's own
+ * `VariableDeclaration`, then recursing into its initializer) — the
+ * Architecture-decision-6 replacement for the #592 review passes'
+ * hand-rolled `buildCaptureAliasMap`/lexical-scope-chain lookup: a same-named
+ * alias in an unrelated sibling/nested scope, or a same-named `var`/
+ * for-header `let` binding, can never satisfy a lookup for a DIFFERENT real
+ * scope's own reference, because the checker's binder already resolved
+ * WHICH declaration this specific reference means. Every other shape (a
+ * member access, a call, a conditional, an unresolved identifier, or a
+ * resolved declaration that isn't a plain `VariableDeclaration` with an
+ * initializer — e.g. a destructured `BindingElement`, never supported here
+ * either) is `null`.
+ *
+ * A `ShorthandPropertyAssignment`'s own name node (`{ capture }`'s `capture`)
+ * is a special case the real checker itself distinguishes: plain
+ * `checker.getSymbolAtLocation` on that identifier resolves to the object
+ * LITERAL's own property symbol (an object-literal member named `capture`),
+ * not the outer variable it shorthand-references — `checker
+ * .getShorthandAssignmentValueSymbol` is the dedicated API for "what value
+ * does this shorthand property actually reference", so this function calls
+ * that instead whenever `node` is itself a shorthand property's name.
  *
  * @param {object} node
- * @param {Map<object, Map<string, boolean|null>>} captureAliasMap
- * @param {object} sourceFile
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {boolean | null}
  */
-function resolveCaptureFlag(node, captureAliasMap, sourceFile) {
+function resolveCaptureFlag(node, checker) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return null;
   if (expr.kind === SyntaxKind.TrueKeyword) return true;
   if (expr.kind === SyntaxKind.FalseKeyword) return false;
-  if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr, captureAliasMap, sourceFile);
-  if (expr.kind === SyntaxKind.Identifier) {
-    const found = lookupInScopeChain(captureAliasMap, expr, sourceFile);
-    return found === undefined ? null : found;
-  }
-  return null;
+  if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr, checker);
+  if (expr.kind !== SyntaxKind.Identifier) return null;
+  const isShorthandName = expr.parent
+    && expr.parent.kind === SyntaxKind.ShorthandPropertyAssignment && expr.parent.name === expr;
+  const symbol = isShorthandName
+    ? checker.getShorthandAssignmentValueSymbol(expr.parent)
+    : checker.getSymbolAtLocation(expr);
+  if (!symbol) return null;
+  const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+  const declNode = handle?.resolve();
+  if (!declNode || declNode.kind !== SyntaxKind.VariableDeclaration || !declNode.initializer) return null;
+  return resolveCaptureFlag(declNode.initializer, checker);
 }
 
 /** The one Escape literal every semantic check below compares against —
@@ -2778,75 +2635,81 @@ const SHELL_BODY_MOUNT_POLICY = Object.freeze([
 ]);
 
 /**
+ * Structurally resolve whether `node` denotes a `Document.body` — the
+ * Architecture-decision-6 replacement for the #592 review passes'
+ * hand-rolled `bodyAliasMap` (a pre-walked, scope-keyed alias table): rather
+ * than pre-registering every body alias in the file up front, this resolves
+ * ONE receiver expression on demand, recursively, through the REAL
+ * TypeScript checker wherever an identifier reference is involved. Covers,
+ * per the plan's candidate list: a direct `.body` access on a recognized
+ * Document (`document.body`, `doc.body`, `deps.document.body`, …, via
+ * `resolveGlobalKind`); the bracket-property spelling (`doc['body']`); a
+ * propagated alias — `const body = childDoc.body; body.appendChild(...)` —
+ * resolved by looking at the alias's OWN `VariableDeclaration` initializer
+ * (found via `checker.getSymbolAtLocation`, never a hand-rolled scope-chain
+ * lookup) and recursing; a FURTHER alias of that alias (the same recursion,
+ * one more hop); and a destructuring alias of `Document.body` — `const {
+ * body } = document;` or the renamed `const { body: host } = document;` —
+ * resolved by inspecting the `BindingElement`'s own destructuring pattern
+ * and its owning declaration's initializer. Never gated by a raw
+ * `source.includes(...)` prefilter — see this section's header comment on
+ * why a text prefilter is unsound for this check (the repo's own recorded
+ * recurring failure mode).
+ *
+ * @param {object} node
+ * @param {object} checker the file's real TypeScript `Checker`
+ * @returns {boolean}
+ */
+function resolvesToDocumentBody(node, checker) {
+  const expr = unwrapCastWrappers(node);
+  if (!expr) return false;
+  if (expr.kind === SyntaxKind.PropertyAccessExpression && expr.name.text === 'body') {
+    return resolveGlobalKind(expr.expression, checker) === 'document';
+  }
+  if (expr.kind === SyntaxKind.ElementAccessExpression) {
+    const arg = expr.argumentExpression;
+    if (
+      arg && (arg.kind === SyntaxKind.StringLiteral || arg.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
+      && arg.text === 'body'
+    ) {
+      return resolveGlobalKind(expr.expression, checker) === 'document';
+    }
+    return false;
+  }
+  if (expr.kind !== SyntaxKind.Identifier) return false;
+  const symbol = checker.getSymbolAtLocation(expr);
+  if (!symbol) return false;
+  const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+  const declNode = handle?.resolve();
+  if (!declNode) return false;
+  if (declNode.kind === SyntaxKind.BindingElement) {
+    const propName = declNode.propertyName && declNode.propertyName.kind === SyntaxKind.Identifier
+      ? declNode.propertyName.text
+      : (declNode.name && declNode.name.kind === SyntaxKind.Identifier ? declNode.name.text : null);
+    if (propName !== 'body') return false;
+    const pattern = declNode.parent; // ObjectBindingPattern
+    const owner = pattern && pattern.parent; // VariableDeclaration
+    return !!(owner && owner.initializer && resolveGlobalKind(owner.initializer, checker) === 'document');
+  }
+  if (declNode.kind === SyntaxKind.VariableDeclaration && declNode.initializer) {
+    return resolvesToDocumentBody(declNode.initializer, checker);
+  }
+  return false;
+}
+
+/**
  * Every real `.appendChild(...)`/`.append(...)` call in `sourceFile` whose
- * receiver structurally resolves to a recognized `Document.body` — covering,
- * per the plan's candidate list: `document.body.appendChild(...)`,
- * `doc.body.appendChild(...)`, `mainDoc.body.appendChild(...)`,
- * `childDoc.body.appendChild(...)`, `deps.document.body.appendChild(...)`,
- * `window.document.body.appendChild(...)`, the bracket-property spelling
- * (`doc['body']['appendChild'](...)`), a propagated body alias (`const body =
- * childDoc.body; body.appendChild(...)`), a further simple alias of that
- * body binding, and (#592 review pass 3) a destructuring alias of
- * `Document.body` — `const { body } = document;` or the renamed
- * `const { body: host } = document;` — which is a DIRECT `Document.body`
- * mount exactly like the plain-identifier `const body = document.body;`
- * form, not a shape this table can afford to leave unrecognized. Never
- * gated by a raw `source.includes(...)` prefilter — see this section's
- * header comment on why a text prefilter is unsound for this check (the
- * repo's own recorded recurring failure mode). The body-alias table
- * (`bodyAliasMap`) is keyed `scope -> Map<name, true>` and resolved through
- * `lookupInScopeChain`, exactly like `buildGlobalAliasMap`/
- * `buildFunctionDeclMap`/`buildCaptureAliasMap` — #592 review pass 2: this
- * used to be one flat file-wide `Set<string>`, so a block-local `const body
- * = …` unrelated to Document.body could still satisfy (or a block-local
- * shadow could still starve) a lookup anywhere else in the file — and #592
- * review pass 3: every registration now goes through the declaration-KIND-
- * aware `declarationScopeOwnerOf`, so a `var body = …` alias declared inside
- * a nested block is still visible for the rest of its enclosing FUNCTION
- * (real `var` hoisting), not just inside that block.
+ * receiver structurally resolves to a recognized `Document.body`
+ * (`resolvesToDocumentBody` above) — syntactic call-shape discovery
+ * (unchanged by Architecture decision 6: recognizing `.appendChild`/`.append`
+ * call SHAPES is not a name-binding question), receiver CLASSIFICATION
+ * delegated entirely to the real checker.
  *
  * @param {object} sourceFile
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {{node: object, api: 'appendChild'|'append', scopePath: string[], scopeNode: object|null, pos: number}[]}
  */
-function bodyMountCandidates(sourceFile) {
-  const aliasMap = buildGlobalAliasMap(sourceFile);
-  const bodyAliasMap = new Map(); // scope -> Map<name, true>
-  const setBodyAlias = (scope, name) => {
-    let local = bodyAliasMap.get(scope);
-    if (!local) { local = new Map(); bodyAliasMap.set(scope, local); }
-    local.set(name, true);
-  };
-  walkTree(sourceFile, (node) => {
-    if (
-      node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.Identifier
-      && node.initializer
-    ) {
-      const init = unwrapCastWrappers(node.initializer);
-      const scope = declarationScopeOwnerOf(node, sourceFile);
-      if (
-        init && init.kind === SyntaxKind.PropertyAccessExpression && init.name.text === 'body'
-        && resolveGlobalKind(init.expression, aliasMap, sourceFile) === 'document'
-      ) {
-        setBodyAlias(scope, node.name.text);
-      }
-      if (init && init.kind === SyntaxKind.Identifier && lookupInScopeChain(bodyAliasMap, init, sourceFile) !== undefined) {
-        setBodyAlias(scope, node.name.text);
-      }
-    }
-    if (
-      node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.ObjectBindingPattern
-      && node.initializer && resolveGlobalKind(node.initializer, aliasMap, sourceFile) === 'document'
-    ) {
-      const scope = declarationScopeOwnerOf(node, sourceFile);
-      for (const el of node.name.elements) {
-        if (el.kind !== SyntaxKind.BindingElement || !el.name || el.name.kind !== SyntaxKind.Identifier) continue;
-        const propName = el.propertyName && el.propertyName.kind === SyntaxKind.Identifier
-          ? el.propertyName.text
-          : el.name.text;
-        if (propName === 'body') setBodyAlias(scope, el.name.text);
-      }
-    }
-  });
+function bodyMountCandidates(sourceFile, checker) {
   const candidates = [];
   walkTree(sourceFile, (node) => {
     if (node.kind !== SyntaxKind.CallExpression) return;
@@ -2865,24 +2728,7 @@ function bodyMountCandidates(sourceFile) {
     }
     if (apiName !== 'appendChild' && apiName !== 'append') return;
     if (!receiver) return;
-    const recv = unwrapCastWrappers(receiver);
-    if (!recv) return;
-    let isBody = false;
-    if (recv.kind === SyntaxKind.Identifier && lookupInScopeChain(bodyAliasMap, recv, sourceFile) !== undefined) {
-      isBody = true;
-    } else if (recv.kind === SyntaxKind.PropertyAccessExpression && recv.name.text === 'body'
-      && resolveGlobalKind(recv.expression, aliasMap, sourceFile) === 'document') {
-      isBody = true;
-    } else if (recv.kind === SyntaxKind.ElementAccessExpression) {
-      const argN = recv.argumentExpression;
-      if (
-        argN && (argN.kind === SyntaxKind.StringLiteral || argN.kind === SyntaxKind.NoSubstitutionTemplateLiteral)
-        && argN.text === 'body' && resolveGlobalKind(recv.expression, aliasMap, sourceFile) === 'document'
-      ) {
-        isBody = true;
-      }
-    }
-    if (!isBody) return;
+    if (!resolvesToDocumentBody(receiver, checker)) return;
     candidates.push({
       node, api: apiName, scopePath: enclosingScopePath(node), scopeNode: innermostScopeNode(node),
       pos: node.getStart(sourceFile),
@@ -2906,9 +2752,9 @@ function bodyMountCandidates(sourceFile) {
  *  its frozen baseline) would otherwise produce zero violations, comparing
  *  the policy and the discovered candidates as an exact multiset in only one
  *  direction. */
-function shellBodyMountViolations(sourceFile, filename) {
+function shellBodyMountViolations(sourceFile, filename, checker) {
   const byScope = new Map();
-  for (const c of bodyMountCandidates(sourceFile)) {
+  for (const c of bodyMountCandidates(sourceFile, checker)) {
     const key = scopeKey(c.scopePath);
     const list = byScope.get(key) ?? [];
     list.push(c);
@@ -3016,13 +2862,17 @@ const SHELL_CAPTURE_ESCAPE_POLICY = Object.freeze([
  *     `noteInteraction`/`clear` — structurally excluded here, before any
  *     policy table is consulted, exactly as the plan requires).
  *
+ * Receiver/options/handler resolution is delegated entirely to the real
+ * TypeScript checker (`resolveGlobalKind`/`resolveCaptureFlag`/
+ * `resolveHandlerNode`, Architecture decision 6) — this function's own job
+ * stays purely syntactic call-shape discovery (`addEventListener('keydown',
+ * …)` call sites) and dispatch, unchanged.
+ *
  * @param {object} sourceFile
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {{kind: 'escape'|'clean'|'uncheckable-handler'|'uncheckable-options', scopePath: string[], pos: number}[]}
  */
-function captureEscapeCandidates(sourceFile) {
-  const aliasMap = buildGlobalAliasMap(sourceFile);
-  const funcDeclMap = buildFunctionDeclMap(sourceFile);
-  const captureAliasMap = buildCaptureAliasMap(sourceFile);
+function captureEscapeCandidates(sourceFile, checker) {
   const out = [];
   walkTree(sourceFile, (node) => {
     if (node.kind !== SyntaxKind.CallExpression) return;
@@ -3035,15 +2885,15 @@ function captureEscapeCandidates(sourceFile) {
       !evtArg || (evtArg.kind !== SyntaxKind.StringLiteral && evtArg.kind !== SyntaxKind.NoSubstitutionTemplateLiteral)
       || evtArg.text !== 'keydown'
     ) return;
-    if (!resolveGlobalKind(callee.expression, aliasMap, sourceFile)) return; // not Document/Window — not a candidate
+    if (!resolveGlobalKind(callee.expression, checker)) return; // not Document/Window — not a candidate
     const pos = node.getStart(sourceFile);
     const scopePath = enclosingScopePath(node);
     const third = args[2];
     if (!third) return; // no options at all — provably non-capture (bubble phase)
-    const captureFlag = resolveCaptureFlag(third, captureAliasMap, sourceFile);
+    const captureFlag = resolveCaptureFlag(third, checker);
     if (captureFlag === false) return; // provably non-capture
     if (captureFlag === null) { out.push({ kind: 'uncheckable-options', scopePath, pos }); return; }
-    const handlerNode = resolveHandlerNode(args[1], funcDeclMap, sourceFile);
+    const handlerNode = resolveHandlerNode(args[1], checker);
     if (!handlerNode) { out.push({ kind: 'uncheckable-handler', scopePath, pos }); return; }
     out.push({ kind: containsEscapeSemantics(handlerNode) ? 'escape' : 'clean', scopePath, pos });
   });
@@ -3062,10 +2912,10 @@ function captureEscapeCandidates(sourceFile) {
  *  frozen Escape listener is exactly as much a drift from the baseline as an
  *  added one, and the excess-only loop below can never see a scope that lost
  *  its last occurrence). */
-function shellCaptureEscapeViolations(sourceFile, filename) {
+function shellCaptureEscapeViolations(sourceFile, filename, checker) {
   const byScope = new Map();
   const violations = [];
-  for (const c of captureEscapeCandidates(sourceFile)) {
+  for (const c of captureEscapeCandidates(sourceFile, checker)) {
     if (c.kind === 'uncheckable-handler') {
       violations.push(makeViolation(
         'shell-capture-escape', filename, c.pos,
@@ -3124,17 +2974,22 @@ function shellCaptureEscapeViolations(sourceFile, filename) {
  * parser-backed, over ONE shared `withParsedSources` batch for the complete
  * `sources` set (never one parser process per rule or per file — Architecture
  * decision 4). Returns `shell-body-mount` and `shell-capture-escape`
- * violations together.
+ * violations together. Each file's real TypeScript `checker` (also produced
+ * by that same one batch — Architecture decision 6, #592 addendum) is handed
+ * to both guards so identifier-binding questions ("what does this receiver/
+ * handler/options identifier resolve to") are answered by the real binder,
+ * never a hand-rolled scope walk.
  *
  * @param {readonly {filename: string, source: string}[]} sources
  * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
  */
 export function findShellGuardrailSourceContractViolations(sources) {
-  return withParsedSources(sources, (sourceFiles) => {
+  return withParsedSources(sources, (sourceFiles, checkers) => {
     const violations = [];
     for (const [filename, sourceFile] of sourceFiles) {
-      violations.push(...shellBodyMountViolations(sourceFile, filename));
-      violations.push(...shellCaptureEscapeViolations(sourceFile, filename));
+      const checker = checkers.get(filename);
+      violations.push(...shellBodyMountViolations(sourceFile, filename, checker));
+      violations.push(...shellCaptureEscapeViolations(sourceFile, filename, checker));
     }
     return violations;
   });

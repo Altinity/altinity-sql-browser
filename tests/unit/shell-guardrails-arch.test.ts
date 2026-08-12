@@ -1069,6 +1069,110 @@ describe('#592 shell guardrails: files with none of the governed shapes stay cle
   });
 });
 
+// ── Architecture decision 6 (#592 addendum): checker-based identifier
+// resolution ─────────────────────────────────────────────────────────────
+// Direct proof — through the public entry point, over synthetic fixtures —
+// that name-binding resolution for both guards now goes through the REAL
+// TypeScript checker rather than the retired hand-rolled scope-tracking
+// machinery (`scopeOwnerOf`/`scopeChain`/`buildGlobalAliasMap`/
+// `buildFunctionDeclMap`/`buildCaptureAliasMap`, all deleted). These mirror
+// the coordinator's own pre-implementation spike: same-function block
+// shadow, for-loop-header shadow, sibling-scope non-pollution, and correct
+// reversion to the outer binding once a shadow's scope ends — checked here
+// for BOTH the Document/Window alias question (`shell-body-mount`) and the
+// handler/capture-options alias question (`shell-capture-escape`), asserting
+// exact violation COUNTS (not just "something failed"), unlike the
+// pre-existing sabotage tests above which only assert `length > 0`.
+
+describe('#592 Architecture decision 6: checker-based resolution (mirrors the pre-implementation spike)', () => {
+  it('Document/Window: a same-function block shadow classifies each occurrence against its own lexical scope', () => {
+    // Outer `doc: Document` parameter; an inner if-block shadows it with a
+    // real `doc: Window`, used there for a capture-Escape listener (Window is
+    // a recognized addEventListener receiver, so this IS a candidate); after
+    // the block, the SAME name reverts to the outer Document for a body
+    // mount. Real TypeScript binder semantics, not a hand-rolled scope walk.
+    const source = [
+      'function openRogueA6a(doc: Document) {',
+      '  if (cond) {',
+      '    const doc: Window = getPopup();',
+      "    const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      "    doc.addEventListener('keydown', onKey, true);",
+      '  }',
+      '  doc.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_a6-block-shadow.ts', source }]);
+    expect(found.filter((v) => v.rule === 'shell-capture-escape')).toHaveLength(1);
+    expect(found.filter((v) => v.rule === 'shell-body-mount')).toHaveLength(1);
+    expect(found).toHaveLength(2);
+  });
+
+  it('Document: a for-loop-header shadow is isolated to the loop, with correct reversion to the outer alias on BOTH sides', () => {
+    const source = [
+      'function openRogueA6b() {',
+      '  const doc = document;',
+      '  doc.body.appendChild(before);', // outer, BEFORE the loop
+      '  for (let doc = window; false; ) {',
+      "    const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      "    doc.addEventListener('keydown', onKey, true);", // loop-scoped Window
+      '  }',
+      '  doc.body.appendChild(after);', // outer, AFTER the loop
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_a6-for-header-shadow.ts', source }]);
+    expect(found.filter((v) => v.rule === 'shell-body-mount')).toHaveLength(2);
+    expect(found.filter((v) => v.rule === 'shell-capture-escape')).toHaveLength(1);
+    expect(found).toHaveLength(3);
+  });
+
+  it('Document/Window: sibling scopes reusing the same local alias name resolve independently (no cross-pollution)', () => {
+    // `fnA`'s `doc: Document` really is a body mount; `fnB`'s SAME bare name
+    // `doc: Window` is NOT — the checker resolves each reference to its own
+    // function's own parameter, never a sibling's, so `fnB`'s call is not
+    // even a `shell-body-mount` CANDIDATE at all (Window has no `.body`
+    // Document semantics), not merely "excused by policy".
+    const source = [
+      'function fnA(doc: Document) { doc.body.appendChild(panel); }',
+      'function fnB(doc: Window) { doc.body.appendChild(panel); }',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_a6-sibling-scopes.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found).toHaveLength(1);
+  });
+
+  it('handler resolution: a block-local non-Escape handler shadow does not change the outer handler classification, and reverts correctly outside the block', () => {
+    const source = [
+      'function openRogueA6c(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };", // outer real handler
+      '  if (cond) {',
+      '    const onKey = (e) => { flag = true; };', // block-local shadow, non-Escape
+      "    document.addEventListener('click', onKey);", // no capture arg — not even a candidate
+      '  }',
+      "  doc.addEventListener('keydown', onKey, true);", // must resolve to the OUTER handler
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_a6-handler-block-shadow.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found).toHaveLength(1);
+  });
+
+  it('capture-options alias: a for-loop-header shadow resolves independently inside vs. outside the loop', () => {
+    const source = [
+      'function openRogueA6d(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      '  const opts = { capture: true };',
+      '  for (let opts = false; false; ) {',
+      "    document.addEventListener('click', () => {}, opts);", // inner shadow: opts=false, non-capture
+      '  }',
+      "  doc.addEventListener('keydown', onKey, opts);", // outer: opts=true, must be flagged
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_a6-capture-for-header-shadow.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found).toHaveLength(1);
+  });
+});
+
 // Typed-only compile-time proof the DTOs above are what the strict `.d.mts`
 // boundary declares — never executed, just type-checked by `tsc --noEmit`.
 function typeCheckOnly(): void {
