@@ -69,26 +69,61 @@ function flatCssRules(cssSource) {
   }));
 }
 
+/** True when `selector` (one already-trimmed token from a comma-split
+ *  selector LIST — never the whole list) TARGETS `className`'s OWN box — a
+ *  bare `.col-resize`, a COMPOUND selector (`.inspector-resize.dragging`,
+ *  class order either way, including a pseudo-CLASS like `:hover`, which
+ *  still styles the same element's own box), or a DESCENDANT/combinator
+ *  selector (`.shell .inspector-resize`, `.shell > .inspector-resize`).
+ *  #592 review pass 3: the prior check was `selectors.includes('.col-
+ *  resize')` — exact string-list membership — so a compound or descendant
+ *  selector naming the SAME class was invisible to the extractor below even
+ *  though it can still win the real cascade for that class. Matched with a
+ *  negative lookahead for another identifier/hyphen character immediately
+ *  after the class name, so `.col-resize` never false-matches a DIFFERENT,
+ *  longer class that merely starts with the same text (`.col-resized`,
+ *  `.col-resize-handle`). Deliberately EXCLUDES any selector containing a
+ *  pseudo-ELEMENT (`::before`/`::after`, real occurrences in
+ *  `src/styles.css` today, e.g. `.col-resize::before`,
+ *  `.col-resize:hover::before, .col-resize.dragging::before`): a
+ *  pseudo-element is an entirely separate generated box with its own
+ *  independent `width` — styling it is not an override of the handle
+ *  element's OWN width, so it is correctly out of this contract's scope
+ *  (matching how the prior exact-match check already, if incidentally,
+ *  never matched any of these either). */
+function selectorTargetsResizeHandleClass(selector, className) {
+  if (selector.includes('::')) return false;
+  return new RegExp(`\\.${className}(?![\\w-])`).test(selector);
+}
+
 /** Every `width: <number>px` value declared by ANY flat rule whose selector
  *  list names `.col-resize` and/or `.inspector-resize` — together (the rule
- *  that governs both classes' shared width) OR alone (a more-specific, later-
+ *  that governs both classes' shared width), alone (a more-specific, later-
  *  declared, or media-query-scoped override that could still win the real
  *  cascade for just one of the two classes even though it never mentions the
  *  other — the P1 gap `flatCssRules`'s own brace-agnostic regex already sees
  *  through one level of `@media { … }` nesting for: an inner flat rule is
  *  matched on its own, the outer at-rule prelude is simply skipped as
- *  unmatched text). Order-independent; additional selectors in the same
- *  group, e.g. `.row-resize`, are allowed. Zero, one, or many, across however
- *  many matching rule groups exist: the caller decides what count is valid —
- *  and the contract below requires EXACTLY one, so ANY standalone or
- *  media-scoped override of either class's `width` makes the count 2+ and
- *  the contract fails closed (`css-ambiguous`) instead of silently reading
- *  only the grouped rule's own value while the browser's real cascade could
- *  render a completely different pixel width. */
+ *  unmatched text), OR as part of a COMPOUND/DESCENDANT selector naming
+ *  either class (`selectorTargetsResizeHandleClass`, the pass-3 fix — a
+ *  bare-class-list membership check alone missed `.inspector-
+ *  resize.dragging { width: 8px; }` and `.shell .inspector-resize { width:
+ *  8px; }` entirely, so either override silently escaped this contract).
+ *  Order-independent; additional selectors in the same group, e.g.
+ *  `.row-resize`, are allowed. Zero, one, or many, across however many
+ *  matching rule groups exist: the caller decides what count is valid — and
+ *  the contract below requires EXACTLY one, so ANY standalone, compound,
+ *  descendant, or media-scoped override of either class's `width` makes the
+ *  count 2+ and the contract fails closed (`css-ambiguous`) instead of
+ *  silently reading only the grouped rule's own value while the browser's
+ *  real cascade could render a completely different pixel width. */
 function extractSharedResizeWidthPx(cssSource) {
   const values = [];
   for (const rule of flatCssRules(cssSource)) {
-    if (!rule.selectors.includes('.col-resize') && !rule.selectors.includes('.inspector-resize')) continue;
+    const targets = rule.selectors.some(
+      (s) => selectorTargetsResizeHandleClass(s, 'col-resize') || selectorTargetsResizeHandleClass(s, 'inspector-resize'),
+    );
+    if (!targets) continue;
     for (const m of rule.body.matchAll(/\bwidth\s*:\s*(-?\d+(?:\.\d+)?)px\s*;/g)) values.push(Number(m[1]));
   }
   return values;
@@ -216,5 +251,66 @@ describe('#592 resize-handle thickness contract sabotage (synthetic — independ
   it('a comment-only mention of the shared width rule does not count as a declaration', () => {
     const css = '/* .col-resize, .inspector-resize { width: 7px; } */\n';
     expect(extractSharedResizeWidthPx(css)).toEqual([]);
+  });
+
+  // #592 review pass 3: a COMPOUND selector (two classes on the same
+  // element, `.inspector-resize.dragging`) or a DESCENDANT selector
+  // (`.shell .inspector-resize`) still targets `.inspector-resize` — and can
+  // still win the real cascade for it — but `selectors.includes('.inspector-
+  // resize')`'s exact-string-list membership check made both invisible to
+  // the extractor entirely, so a `width` override written either way never
+  // even reached the `cssValues.length !== 1` gate.
+
+  it('a compound-selector override (.inspector-resize.dragging) with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.inspector-resize.dragging { width: 8px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 8] });
+  });
+
+  it('a compound-selector override with the classes in the opposite order (.dragging.inspector-resize) fails', () => {
+    const css = `${CLEAN_CSS}.dragging.inspector-resize { width: 9px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 9] });
+  });
+
+  it('a descendant-selector override (.shell .inspector-resize) with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.shell .inspector-resize { width: 10px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 10] });
+  });
+
+  it('a compound-selector override on .col-resize (.col-resize.active) with a DIFFERENT width fails', () => {
+    const css = `${CLEAN_CSS}.col-resize.active { width: 11px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 11] });
+  });
+
+  it('a same-prefix but DIFFERENT class name is never mistaken for a match (.col-resized)', () => {
+    // Sanity check on the negative-lookahead boundary: `.col-resized` must
+    // never be treated as targeting `.col-resize`.
+    const css = `${CLEAN_CSS}.col-resized { width: 99px; }\n`;
+    expect(extractSharedResizeWidthPx(css)).toEqual([7]);
+  });
+
+  it('a pseudo-CLASS compound override (.inspector-resize:hover) with a DIFFERENT width fails', () => {
+    // Unlike a pseudo-ELEMENT (below), `:hover` still styles the SAME
+    // element's own box — a real override this contract must catch.
+    const css = `${CLEAN_CSS}.inspector-resize:hover { width: 12px; }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 12] });
+  });
+
+  it('a pseudo-ELEMENT selector (.col-resize::before) is never mistaken for the handle\'s own width', () => {
+    // Real shape from src/styles.css: `.col-resize::before { width: 1px; … }`
+    // styles the decorative `::before` pseudo-element — an entirely separate
+    // generated box with its own independent width, not an override of the
+    // handle element's OWN width, so it correctly stays out of scope.
+    const css = `${CLEAN_CSS}.col-resize::before { width: 1px; }\n`;
+    expect(extractSharedResizeWidthPx(css)).toEqual([7]);
+  });
+
+  it('a compound-then-pseudo-element selector (.col-resize.dragging::before) is never mistaken for the handle\'s own width', () => {
+    const css = `${CLEAN_CSS}.col-resize.dragging::before { width: 1px; }\n`;
+    expect(extractSharedResizeWidthPx(css)).toEqual([7]);
   });
 });

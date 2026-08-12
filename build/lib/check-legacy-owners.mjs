@@ -2066,16 +2066,25 @@ function innermostScopeNode(node) {
 
 /** True for a real lexical block-scope boundary — every bare `Block`
  *  (a function body, an `if`/`else` arm, a loop body, a `try`/`catch`/
- *  `finally` block, or a standalone `{ }`) or `CaseBlock` (a `switch`'s
+ *  `finally` block, or a standalone `{ }`), `CaseBlock` (a `switch`'s
  *  whole clause list — matching real JS: every `case` in ONE switch shares a
- *  SINGLE lexical scope, there is no separate scope per `case`). Broader
- *  than `collectOrderingScopes`'s narrower ordering-only list (which
- *  deliberately omits `else`/`do`/`try`/a bare standalone block to match the
- *  retired textual opener) — this models real `let`/`const` shadowing
- *  wherever it actually occurs, not just the constructs one old regex
- *  happened to recognize. */
+ *  SINGLE lexical scope, there is no separate scope per `case`), or a
+ *  `for`/`for-in`/`for-of` STATEMENT itself (#592 review pass 3: a `let`/
+ *  `const` bound in a loop HEADER — `for (let i = 0; …)` — is scoped to the
+ *  whole loop construct, including its body, but its declaration node sits
+ *  in the header, one level ABOVE the loop's own body `Block` — so without
+ *  the loop statement being its own boundary here, that header binding would
+ *  resolve to whatever scope encloses the ENTIRE loop, colliding with a
+ *  same-named outer binding exactly like the fixed #592 review-pass-2 block-
+ *  shadowing bug, just one level up). Broader than `collectOrderingScopes`'s
+ *  narrower ordering-only list (which deliberately omits `else`/`do`/`try`/a
+ *  bare standalone block to match the retired textual opener) — this models
+ *  real `let`/`const` shadowing wherever it actually occurs, not just the
+ *  constructs one old regex happened to recognize. */
 function isBlockScopeNode(node) {
-  return node.kind === SyntaxKind.Block || node.kind === SyntaxKind.CaseBlock;
+  return node.kind === SyntaxKind.Block || node.kind === SyntaxKind.CaseBlock
+    || node.kind === SyntaxKind.ForStatement || node.kind === SyntaxKind.ForInStatement
+    || node.kind === SyntaxKind.ForOfStatement;
 }
 
 /** The nearest enclosing LEXICAL scope boundary for `node` — a
@@ -2190,6 +2199,63 @@ function hasCallNamed(scopeNode, name) {
  *  instead of a null special case. */
 function scopeOwnerOf(node, sourceFile) {
   return innermostLexicalScopeNode(node) ?? sourceFile;
+}
+
+/** The scope that owns a `var` BINDING at `node` — real JS `var` hoisting is
+ *  FUNCTION-scoped (module-scoped at top level), never block- or loop-
+ *  scoped, so a `var` bound inside a nested `if`/loop/bare block, or inside a
+ *  `for`/`for-in`/`for-of` HEADER, is still owned by the nearest enclosing
+ *  `FUNCTION_LIKE_KINDS` node — never the block or loop it happens to sit
+ *  inside. Deliberately built on `innermostScopeNode` (the function-only
+ *  walk), never `innermostLexicalScopeNode` — the same "coarser granularity"
+ *  contract `innermostScopeNode`'s own doc comment already describes for its
+ *  other two callers now applies here too. */
+function varDeclarationScope(node, sourceFile) {
+  return innermostScopeNode(node) ?? sourceFile;
+}
+
+/** The nearest `VariableDeclarationList` ancestor that actually OWNS the
+ *  binding at `node` (a `VariableDeclaration`, or a `BindingElement` nested
+ *  inside one's destructuring pattern) — stopping the walk at the first
+ *  `FUNCTION_LIKE_KINDS` ancestor encountered FIRST, which means a
+ *  `Parameter`'s own destructuring pattern (which has no
+ *  `VariableDeclarationList` of its own at all — a parameter is never
+ *  `var`/`let`/`const`) correctly returns `null` rather than a wrong, unrelated
+ *  outer declaration list several scopes up the real function-nesting chain. */
+function owningDeclarationList(node) {
+  let current = node.parent;
+  while (current) {
+    if (current.kind === SyntaxKind.VariableDeclarationList) return current;
+    if (FUNCTION_LIKE_KINDS.has(current.kind)) return null;
+    current = current.parent;
+  }
+  return null;
+}
+
+/** True when `declarationList` (a real `VariableDeclarationList`) is a `var`
+ *  list — neither `NodeFlags.Let` nor `NodeFlags.Const` set, the same
+ *  flag-based test `nonConstDeclarationKeyword` already uses for the
+ *  unrelated surface-protected-declaration rule above. */
+function isVarDeclarationList(declarationList) {
+  return (declarationList.flags & (NodeFlags.Let | NodeFlags.Const)) === 0;
+}
+
+/** Declaration-KIND-aware `scopeOwnerOf`, for a real BINDING node
+ *  (a `VariableDeclaration`, or a `BindingElement` nested inside one) —
+ *  the #592 review-pass-3 fix: every alias/handler/capture/body-alias table
+ *  below that registers a `var`/`let`/`const` binding must use THIS, never
+ *  plain `scopeOwnerOf`, so a `var` gets real function-scoping
+ *  (`varDeclarationScope`) instead of being silently treated as block- or
+ *  loop-scoped like a `let`/`const` would be. A binding with no owning
+ *  `VariableDeclarationList` at all (`owningDeclarationList` returns `null`
+ *  — a `Parameter`'s own destructuring) falls through to plain
+ *  `scopeOwnerOf`, which already gives every `Parameter` the right answer
+ *  (the function itself — nothing block- or loop-scoped ever sits between a
+ *  parameter and its own function). */
+function declarationScopeOwnerOf(node, sourceFile) {
+  const list = owningDeclarationList(node);
+  if (list && isVarDeclarationList(list)) return varDeclarationScope(node, sourceFile);
+  return scopeOwnerOf(node, sourceFile);
 }
 
 /** The full lexical scope chain for `node`, innermost first, ending at
@@ -2328,18 +2394,25 @@ const MOUNT_CTX_TYPE_NAME = 'MountCtx';
  * rename whose `propertyName` is `document`/`window` (`const { document: doc
  * } = opts` — `menu.ts`'s real shape), and every `VariableDeclaration` whose
  * INITIALIZER resolves via `resolveGlobalKind` against the map built so far,
- * each recorded under its OWN declaring scope (`scopeOwnerOf`) rather than
- * one flat file-wide key. A single forward walk over the whole file still
- * suffices for every real occurrence in this codebase (parameters are
- * visited before the statements that reference them by `forEachChild`'s own
- * declaration order, and no alias here is ever referenced before its own
- * declaration) — this is a bounded architecture-guard heuristic, not a
- * general dataflow engine; see this module's own header comment on
- * accepted-risk scope. Per-scope keying is what makes that heuristic sound
- * under same-file shadowing: a later sibling `doc: Window` in an unrelated
- * function no longer overwrites an earlier `doc: Document` bound in a
- * different scope (the reviewed #672 P1 — same bare name, different scopes,
- * used to collapse to one file-wide last-write-wins entry).
+ * each `BindingElement`/`VariableDeclaration` recorded under its OWN
+ * declaration-KIND-aware declaring scope (`declarationScopeOwnerOf` — #592
+ * review pass 3: `var` is function-scoped, `let`/`const` including a for-
+ * loop-header binding is genuinely lexically scoped; a `Parameter` has no
+ * declaration-list at all and keeps plain `scopeOwnerOf`, which already
+ * gives it the right, function-level answer) rather than one flat file-wide
+ * key. A single forward walk over the whole file still suffices for every
+ * real occurrence in this codebase (parameters are visited before the
+ * statements that reference them by `forEachChild`'s own declaration order,
+ * and no alias here is ever referenced before its own declaration) — this is
+ * a bounded architecture-guard heuristic, not a general dataflow engine; see
+ * this module's own header comment on accepted-risk scope. Per-scope keying
+ * is what makes that heuristic sound under same-file shadowing: a later
+ * sibling `doc: Window` in an unrelated function no longer overwrites an
+ * earlier `doc: Document` bound in a different scope (the reviewed #672 P1
+ * — same bare name, different scopes, used to collapse to one file-wide
+ * last-write-wins entry), and a loop-header `let doc = window` no longer
+ * clobbers an outer `const doc: Document` bound in the SAME enclosing
+ * function/block (the #592 review-pass-3 fix).
  *
  * @param {object} sourceFile
  * @returns {Map<object, Map<string, 'document'|'window'>>}
@@ -2376,7 +2449,7 @@ function buildGlobalAliasMap(sourceFile) {
       node.kind === SyntaxKind.BindingElement && node.propertyName
       && node.propertyName.kind === SyntaxKind.Identifier && node.name.kind === SyntaxKind.Identifier
     ) {
-      const scope = scopeOwnerOf(node, sourceFile);
+      const scope = declarationScopeOwnerOf(node, sourceFile);
       if (node.propertyName.text === 'document') setAlias(scope, node.name.text, 'document');
       else if (node.propertyName.text === 'window') setAlias(scope, node.name.text, 'window');
     }
@@ -2388,17 +2461,21 @@ function buildGlobalAliasMap(sourceFile) {
         else if (names.includes('Window')) kind = 'window';
       }
       if (!kind && node.initializer) kind = resolveGlobalKind(node.initializer, aliasMap, sourceFile);
-      if (kind) setAlias(scopeOwnerOf(node, sourceFile), node.name.text, kind);
+      if (kind) setAlias(declarationScopeOwnerOf(node, sourceFile), node.name.text, kind);
     }
   });
   return aliasMap;
 }
 
 /** Every `scope -> name -> [{node, pos}]` binding of a `FunctionDeclaration`
- *  or a `const name = (…) => {}` / `const name = function (…) {}` in
- *  `sourceFile`, keyed by the declaration's OWN declaring scope
- *  (`scopeOwnerOf`) rather than one flat file-wide name — used to resolve a
- *  plain-identifier `addEventListener` handler argument (`doc.
+ *  (always block-scoped like `let` in this module's strict-mode ES-module
+ *  source, so plain `scopeOwnerOf` is already correct for it) or a
+ *  `const`/`let`/`var name = (…) => {}` / `… = function (…) {}` (declaration-
+ *  KIND-aware `declarationScopeOwnerOf` — #592 review pass 3, same `var`-is-
+ *  function-scoped fix as `buildGlobalAliasMap`'s) in `sourceFile`, keyed by
+ *  the declaration's OWN declaring scope rather than one flat file-wide
+ *  name — used to resolve a plain-identifier `addEventListener` handler
+ *  argument (`doc.
  *  addEventListener('keydown', onKey, true)`) back to the function it names
  *  through `resolveHandlerNode`'s lexical scope-chain lookup, never through a
  *  same-named declaration in an unrelated sibling or nested-below scope (the
@@ -2424,7 +2501,7 @@ function buildFunctionDeclMap(sourceFile) {
     ) {
       const init = unwrapCastWrappers(node.initializer);
       if (init && (init.kind === SyntaxKind.ArrowFunction || init.kind === SyntaxKind.FunctionExpression)) {
-        add(scopeOwnerOf(node, sourceFile), node.name.text, init);
+        add(declarationScopeOwnerOf(node, sourceFile), node.name.text, init);
       }
     }
   });
@@ -2490,26 +2567,35 @@ function staticPropertyKeyName(member) {
 }
 
 /** Resolve an `addEventListener` OPTIONS object literal's own `capture`
- *  member to `true`/`false`, or `null` when unresolvable — a `SpreadAssignment`
- *  anywhere in the object (its full shape can't be proven), an explicit
- *  `capture` member (however its key is spelled — plain identifier, string/
- *  computed-string-literal key, or `ShorthandPropertyAssignment` shorthand)
- *  whose VALUE isn't provably boolean (resolved recursively through
- *  `resolveCaptureFlag`, so a shorthand `{ capture }` reusing an in-scope
- *  boolean alias resolves exactly like `{ capture: someAlias }` would), or a
- *  `capture` key that exists only as a method/accessor (never a plain
- *  boolean value). An object literal with NO explicit `capture` key at all
- *  (every member's own static name resolves and none of them is `capture`)
- *  and no spread is provably `false` (the DOM default), matching
- *  `addEventListener`'s own spec default. #592 review pass 2: the prior
- *  implementation only ever recognized a plain-identifier-keyed
- *  `PropertyAssignment`, so a string-literal key (`{'capture': true}`), a
- *  computed string-literal key (`{['capture']: true}`), or shorthand
- *  (`{ capture }`) fell through to the "no capture key" branch and resolved
- *  `false` — provably non-capture — even though each is a REAL `capture`
- *  member. Any member whose own static key name is unresolvable
- *  (`staticPropertyKeyName` returns `undefined`) now also fails closed to
- *  `null`, since it might be the very `capture` key being looked for.
+ *  member to `true`/`false`, or `null` when unresolvable, respecting REAL
+ *  object-literal property EVALUATION ORDER (#592 review pass 3): a real JS
+ *  object literal evaluates its properties left to right, and a LATER
+ *  property or spread always overrides an EARLIER same-key value — so this
+ *  walks `node.properties` in source order and tracks only the LAST
+ *  capture-affecting event, never "the first/any explicit `capture` member
+ *  found", which is what let a later `SpreadAssignment` or unresolvable key
+ *  silently fail to override an earlier explicit `capture: false` (e.g.
+ *  `{ capture: false, ...{ capture: true } }`, which really runs
+ *  capture-phase). Each property is one of two effects on the running
+ *  result: a KNOWN effect (an explicit `capture` member — plain identifier,
+ *  string/computed-string-literal key, or `ShorthandPropertyAssignment`
+ *  shorthand — resolved recursively through `resolveCaptureFlag`, so a
+ *  shorthand `{ capture }` reusing an in-scope boolean alias resolves
+ *  exactly like `{ capture: someAlias }` would) that OVERWRITES whatever the
+ *  running result was, or an UNKNOWN effect (a `SpreadAssignment`, a
+ *  `capture` key whose own static name can't be determined at all —
+ *  `staticPropertyKeyName` returns `undefined`, since it MIGHT be the very
+ *  `capture` key being looked for — or a `capture` key that exists only as a
+ *  method/accessor, never a plain boolean value) that conservatively makes
+ *  the running result unresolvable, since its real contents can't be proven
+ *  NOT to (re)define `capture`. A property whose static key resolves to
+ *  anything OTHER than `capture` has no effect on `capture` at all and is
+ *  skipped, exactly like before. The FINAL running result — after the last
+ *  property is processed — is this function's answer: no capture-affecting
+ *  property/spread was ever seen at all is provably `false` (the DOM
+ *  default), matching `addEventListener`'s own spec default; #592 review
+ *  pass 2 already fixed the narrower "recognize every `capture` key
+ *  spelling" gap this order-aware walk preserves.
  *
  * @param {object} node
  * @param {Map<object, Map<string, boolean|null>>} captureAliasMap
@@ -2517,31 +2603,32 @@ function staticPropertyKeyName(member) {
  * @returns {boolean | null}
  */
 function resolveObjectCaptureLiteral(node, captureAliasMap, sourceFile) {
-  let hasSpread = false;
-  let captureValueNode = null;
-  let hasUnresolvableCaptureKey = false;
+  let lastKnownValueNode = null; // meaningful only while `lastEventKnown === true`
+  let lastEventKnown = null; // null: no capture-affecting property seen yet; true: known; false: unknown/override-capable
   for (const p of node.properties) {
-    if (p.kind === SyntaxKind.SpreadAssignment) { hasSpread = true; continue; }
+    if (p.kind === SyntaxKind.SpreadAssignment) { lastEventKnown = false; continue; }
     const keyName = staticPropertyKeyName(p);
-    if (keyName === undefined) { hasUnresolvableCaptureKey = true; continue; }
+    if (keyName === undefined) { lastEventKnown = false; continue; }
     if (keyName !== 'capture') continue;
-    if (p.kind === SyntaxKind.PropertyAssignment) captureValueNode = p.initializer;
-    else if (p.kind === SyntaxKind.ShorthandPropertyAssignment) captureValueNode = p.name;
-    else hasUnresolvableCaptureKey = true; // a method/get/set named `capture` — never a plain boolean
+    if (p.kind === SyntaxKind.PropertyAssignment) { lastKnownValueNode = p.initializer; lastEventKnown = true; }
+    else if (p.kind === SyntaxKind.ShorthandPropertyAssignment) { lastKnownValueNode = p.name; lastEventKnown = true; }
+    else lastEventKnown = false; // a method/get/set named `capture` — never a plain boolean
   }
-  if (captureValueNode) return resolveCaptureFlag(captureValueNode, captureAliasMap, sourceFile);
-  return (hasSpread || hasUnresolvableCaptureKey) ? null : false;
+  if (lastEventKnown === true) return resolveCaptureFlag(lastKnownValueNode, captureAliasMap, sourceFile);
+  return lastEventKnown === false ? null : false;
 }
 
-/** Every `scope -> name -> true|false|null` binding of a `const name = true`
- *  / `const name = false` / `const name = { capture: … }` (via
+/** Every `scope -> name -> true|false|null` binding of a `const`/`let`/`var
+ *  name = true` / `= false` / `= { capture: … }` (via
  *  `resolveObjectCaptureLiteral`) in `sourceFile`, keyed by the declaration's
- *  own declaring scope (`scopeOwnerOf`) — backs the plan's "simple local
- *  const aliases of either form" requirement for the THIRD
- *  `addEventListener` argument, resolved through `resolveCaptureFlag`'s
- *  lexical scope-chain lookup so a same-named alias in an unrelated sibling
- *  scope (the reviewed #672 P1 capture-alias-overwrite case) can never
- *  satisfy a different scope's lookup. */
+ *  own declaration-KIND-aware declaring scope (`declarationScopeOwnerOf` —
+ *  #592 review pass 3) — backs the plan's "simple local const aliases of
+ *  either form" requirement for the THIRD `addEventListener` argument,
+ *  resolved through `resolveCaptureFlag`'s lexical scope-chain lookup so a
+ *  same-named alias in an unrelated sibling scope (the reviewed #672 P1
+ *  capture-alias-overwrite case), OR a same-named `var`/for-header `let`
+ *  binding that would otherwise land in the wrong scope bucket (the #592
+ *  review-pass-3 fix), can never satisfy a different scope's lookup. */
 function buildCaptureAliasMap(sourceFile) {
   const map = new Map(); // scope -> Map<name, true|false|null>
   const setAlias = (scope, name, value) => {
@@ -2556,7 +2643,7 @@ function buildCaptureAliasMap(sourceFile) {
     ) {
       const init = unwrapCastWrappers(node.initializer);
       if (!init) return;
-      const scope = scopeOwnerOf(node, sourceFile);
+      const scope = declarationScopeOwnerOf(node, sourceFile);
       if (init.kind === SyntaxKind.TrueKeyword) setAlias(scope, node.name.text, true);
       else if (init.kind === SyntaxKind.FalseKeyword) setAlias(scope, node.name.text, false);
       else if (init.kind === SyntaxKind.ObjectLiteralExpression) {
@@ -2698,16 +2785,25 @@ const SHELL_BODY_MOUNT_POLICY = Object.freeze([
  * `childDoc.body.appendChild(...)`, `deps.document.body.appendChild(...)`,
  * `window.document.body.appendChild(...)`, the bracket-property spelling
  * (`doc['body']['appendChild'](...)`), a propagated body alias (`const body =
- * childDoc.body; body.appendChild(...)`), and a further simple alias of that
- * body binding. Never gated by a raw `source.includes(...)` prefilter — see
- * this section's header comment on why a text prefilter is unsound for this
- * check (the repo's own recorded recurring failure mode). The body-alias
- * table (`bodyAliasMap`) is keyed `scope -> Map<name, true>` and resolved
- * through `lookupInScopeChain`, exactly like `buildGlobalAliasMap`/
+ * childDoc.body; body.appendChild(...)`), a further simple alias of that
+ * body binding, and (#592 review pass 3) a destructuring alias of
+ * `Document.body` — `const { body } = document;` or the renamed
+ * `const { body: host } = document;` — which is a DIRECT `Document.body`
+ * mount exactly like the plain-identifier `const body = document.body;`
+ * form, not a shape this table can afford to leave unrecognized. Never
+ * gated by a raw `source.includes(...)` prefilter — see this section's
+ * header comment on why a text prefilter is unsound for this check (the
+ * repo's own recorded recurring failure mode). The body-alias table
+ * (`bodyAliasMap`) is keyed `scope -> Map<name, true>` and resolved through
+ * `lookupInScopeChain`, exactly like `buildGlobalAliasMap`/
  * `buildFunctionDeclMap`/`buildCaptureAliasMap` — #592 review pass 2: this
  * used to be one flat file-wide `Set<string>`, so a block-local `const body
  * = …` unrelated to Document.body could still satisfy (or a block-local
- * shadow could still starve) a lookup anywhere else in the file.
+ * shadow could still starve) a lookup anywhere else in the file — and #592
+ * review pass 3: every registration now goes through the declaration-KIND-
+ * aware `declarationScopeOwnerOf`, so a `var body = …` alias declared inside
+ * a nested block is still visible for the rest of its enclosing FUNCTION
+ * (real `var` hoisting), not just inside that block.
  *
  * @param {object} sourceFile
  * @returns {{node: object, api: 'appendChild'|'append', scopePath: string[], scopeNode: object|null, pos: number}[]}
@@ -2726,7 +2822,7 @@ function bodyMountCandidates(sourceFile) {
       && node.initializer
     ) {
       const init = unwrapCastWrappers(node.initializer);
-      const scope = scopeOwnerOf(node, sourceFile);
+      const scope = declarationScopeOwnerOf(node, sourceFile);
       if (
         init && init.kind === SyntaxKind.PropertyAccessExpression && init.name.text === 'body'
         && resolveGlobalKind(init.expression, aliasMap, sourceFile) === 'document'
@@ -2735,6 +2831,19 @@ function bodyMountCandidates(sourceFile) {
       }
       if (init && init.kind === SyntaxKind.Identifier && lookupInScopeChain(bodyAliasMap, init, sourceFile) !== undefined) {
         setBodyAlias(scope, node.name.text);
+      }
+    }
+    if (
+      node.kind === SyntaxKind.VariableDeclaration && node.name && node.name.kind === SyntaxKind.ObjectBindingPattern
+      && node.initializer && resolveGlobalKind(node.initializer, aliasMap, sourceFile) === 'document'
+    ) {
+      const scope = declarationScopeOwnerOf(node, sourceFile);
+      for (const el of node.name.elements) {
+        if (el.kind !== SyntaxKind.BindingElement || !el.name || el.name.kind !== SyntaxKind.Identifier) continue;
+        const propName = el.propertyName && el.propertyName.kind === SyntaxKind.Identifier
+          ? el.propertyName.text
+          : el.name.text;
+        if (propName === 'body') setBodyAlias(scope, el.name.text);
       }
     }
   });
@@ -3048,6 +3157,34 @@ function normalizeCssText(text) {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/** Decode real CSS identifier ESCAPE SEQUENCES (#592 review pass 3) — a
+ *  backslash followed by 1-6 hex digits (optionally consuming ONE trailing
+ *  whitespace character that terminates the hex run, per the CSS spec) is
+ *  that Unicode code point; a backslash followed by any other single
+ *  character is that literal character. `scanFixedPositionDeclarations`'s
+ *  main scan loop deliberately copies a backslash escape into its buffer
+ *  VERBATIM (never decoding it) purely so an escaped delimiter char — `\;`,
+ *  `\{`, `\}` — can never be mistaken for real CSS structure; it was never
+ *  claiming the escaped TEXT itself was already normalized. Without this
+ *  decode step, valid CSS like `\70osition: fixed;` (property) or
+ *  `position: \66ixed;` (value) — both real, spec-legal escapes that every
+ *  real CSS engine parses as plain `position: fixed` — stayed textually
+ *  distinct from `'position'`/`'fixed'` and silently bypassed
+ *  `processDeclaration`'s exact string comparisons. Applied ONLY to the
+ *  already-colon-split property/value text right before comparison, never
+ *  to the raw buffer used for colon/brace/semicolon SPLITTING itself (a
+ *  decoded escape could change the text's length, which must never disturb
+ *  where a declaration was actually delimited). */
+function decodeCssEscapes(text) {
+  return text.replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([\s\S])/g, (_m, hex, literal) => {
+    if (hex !== undefined) {
+      const code = Number.parseInt(hex, 16);
+      return Number.isNaN(code) ? '' : String.fromCodePoint(code);
+    }
+    return literal ?? '';
+  });
+}
+
 /** `normalizeCssText`, plus deterministic `,`-separated selector-list
  *  spacing (`', '` between each selector) regardless of the source's own
  *  comma spacing — so `.a,.b` and `.a, .b` produce the identical policy key,
@@ -3100,7 +3237,12 @@ function firstMeaningfulCssOffset(source, from) {
  * matching its own "associates a real position: fixed declaration with its
  * rule prelude" contract. Comments/strings/escapes never contribute a
  * phantom brace/semicolon/colon, so lexical trickery can't hide or spoof a
- * declaration (see this section's own header comment).
+ * declaration (see this section's own header comment) — and (#592 review
+ * pass 3) a real CSS identifier escape (`\70osition: fixed;`,
+ * `position: \66ixed;`) can't hide one either: `processDeclaration` decodes
+ * the property/value text (`decodeCssEscapes`) before comparing, so an
+ * escaped spelling that real CSS parses identically to `position`/`fixed`
+ * is recognized identically here too.
  *
  * @param {string} source
  * @returns {{selector: string, atRule: string | null, pos: number}[]}
@@ -3127,10 +3269,13 @@ export function scanFixedPositionDeclarations(source) {
   function processDeclaration(raw) {
     const trimmed = raw.trim();
     if (!trimmed) return;
+    // Colon-split on the RAW (still-escaped) text — decoding first could
+    // shift where the real declaration boundary sits; only the two SIDES
+    // are decoded, right before the property-name/value comparisons below.
     const colonIdx = trimmed.indexOf(':');
     if (colonIdx === -1) return;
-    const prop = trimmed.slice(0, colonIdx).trim();
-    const value = trimmed.slice(colonIdx + 1).trim();
+    const prop = decodeCssEscapes(trimmed.slice(0, colonIdx)).trim();
+    const value = decodeCssEscapes(trimmed.slice(colonIdx + 1)).trim();
     if (prop.toLowerCase() !== 'position') return;
     if (!/^fixed(\s*!\s*important)?$/i.test(normalizeCssText(value))) return;
     const innermost = frames[frames.length - 1];

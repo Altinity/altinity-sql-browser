@@ -340,6 +340,81 @@ describe('#592 shell-body-mount: nested block-local shadowing sabotage (each mus
   });
 });
 
+// ── Body-mount declaration-kind-aware scoping sabotage (review pass 3) ─────
+// Every table keyed through `scopeOwnerOf` used to assign EVERY binding to
+// the nearest Block/CaseBlock/function regardless of `var` vs `let`/`const`
+// — so a `var` bound inside a nested block (real JS: function-scoped, not
+// block-scoped) could disappear from analysis for a later use OUTSIDE that
+// block, and a `let`/`const` bound in a `for`/`for-in`/`for-of` HEADER (real
+// JS: scoped to the whole loop construct, never the same scope as code
+// physically outside it) could clobber a same-named outer binding in the
+// SAME enclosing scope map.
+
+describe('#592 shell-body-mount: declaration-kind-aware scoping sabotage (each must fail)', () => {
+  it('a var bound ONLY inside a nested block is still visible for a mount AFTER the block (var is function-scoped)', () => {
+    const source = [
+      'function openRogue() {',
+      '  if (c) {',
+      '    var d = document;',
+      '  }',
+      '  d.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-var-block-escape.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a for-header let does not clobber an outer const Document alias in the same enclosing scope', () => {
+    const source = [
+      'function openRogue() {',
+      '  const doc = document;',
+      '  for (let doc = window; false; ) { }',
+      '  doc.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-for-header-let-leak.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a for-header var still leaks to the enclosing function scope (real var hoisting) and is still caught', () => {
+    const source = [
+      'function openRogue() {',
+      '  for (var d = document; false; ) { }',
+      '  d.body.appendChild(panel);',
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-for-header-var-leak.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Body-mount destructuring alias sabotage (review pass 3) ────────────────
+// `const { body } = document;` and the renamed `const { body: host } =
+// document;` are direct `Document.body` mounts exactly like the plain-
+// identifier `const body = document.body;` form above — `bodyAliasMap`'s own
+// alias-building walk used to recognize only a plain-`Identifier` binding
+// name, so a destructuring alias of either shape registered no candidate at
+// all and bypassed the guard entirely.
+
+describe('#592 shell-body-mount: destructuring alias sabotage (each must fail)', () => {
+  it('const { body } = document; body.appendChild(panel) fails', () => {
+    const source = 'function openRogue() { const { body } = document; body.appendChild(panel); }';
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-destructure-body.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('const { body: host } = document; host.append(panel) (renamed) fails', () => {
+    const source = 'function openRogue() { const { body: host } = document; host.append(panel); }';
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-destructure-body-renamed.ts', source }])
+      .filter((v) => v.rule === 'shell-body-mount');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
 // ── Capture-Escape positive cases ───────────────────────────────────────────
 
 function captureEscapeRulesFor(filename: string, scopePath: readonly string[], body: string): string[] {
@@ -402,6 +477,16 @@ describe('#592 shell-capture-escape: positive characterization (sanctioned curre
     expect(found).toEqual([]);
   });
 
+  // #592 review pass 3: `resolveObjectCaptureLiteral` respects real object-
+  // literal property EVALUATION ORDER — a LATER explicit `capture` property
+  // still correctly wins over an EARLIER one when nothing override-capable
+  // (a spread, an unresolved key) sits between them.
+  it('{ capture: true, ...{}, capture: false } (last explicit key still wins over an intervening empty spread) stays clean', () => {
+    const found = captureEscapeRulesFor('src/ui/_noncapture-last-explicit-wins.ts', ['openSomethingElseAgain'],
+      "const onKey = (e) => { if (e.key === 'Escape') close(); }; document.addEventListener('keydown', onKey, { capture: true, ...{}, capture: false });");
+    expect(found).toEqual([]);
+  });
+
   it('comments/strings containing listener lookalikes stay clean', () => {
     const found = captureEscapeRulesFor('src/ui/_lookalike.ts', ['openLookalike'], [
       "// document.addEventListener('keydown', onKey, true);",
@@ -446,6 +531,25 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
   it('a simple capture-options alias fails', () => {
     const found = captureEscapeRulesFor('src/ui/_sabotage-d.ts', ['openRogueD'],
       `${escapeHandler} const opts2 = { capture: true }; document.addEventListener('keydown', onKey, opts2);`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // #592 review pass 3: the prior implementation returned as soon as ANY
+  // explicit `capture` property was found, ignoring whether a LATER spread
+  // or unresolvable key could override it — real object-literal evaluation
+  // order means a later property/spread ALWAYS overrides an earlier same-key
+  // value, so `{ capture: false, ...{ capture: true } }` really runs
+  // capture-phase in the browser even though an earlier explicit property
+  // says `false`.
+  it('{ capture: false, ...{ capture: true } } (a later spread can override an earlier explicit false) fails', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-spread-override.ts', ['openRogueSpreadOverride'],
+      `${escapeHandler} document.addEventListener('keydown', onKey, { capture: false, ...{ capture: true } });`);
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it('{ capture: false, [k]: 1 } (an unresolved computed key AFTER an explicit false) fails', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-unresolved-key-after-false.ts', ['openRogueUnresolvedKeyAfterFalse'],
+      `${escapeHandler} document.addEventListener('keydown', onKey, { capture: false, [k]: 1 });`);
     expect(found).toEqual(['shell-capture-escape']);
   });
 
@@ -662,6 +766,47 @@ describe('#592 shell-capture-escape: nested block-local shadowing sabotage (each
   });
 });
 
+// ── Capture-Escape declaration-kind-aware scoping sabotage (review pass 3) ─
+// The identical for-loop-header fix `shell-body-mount`'s own scoping
+// sabotage exercises above, reproduced against `buildCaptureAliasMap`'s
+// capture-options alias table and `buildFunctionDeclMap`'s handler-name
+// table — both keyed through the SAME shared `declarationScopeOwnerOf`/
+// `scopeOwnerOf` machinery, so both inherit the identical bug and fix.
+
+describe('#592 shell-capture-escape: declaration-kind-aware scoping sabotage (each must fail)', () => {
+  it('a for-header let capture-options alias does not clobber an outer real { capture: true } alias', () => {
+    const source = [
+      'function openRogue(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      '  const opts = { capture: true };',
+      '  for (let opts = false; false; ) { }',
+      "  doc.addEventListener('keydown', onKey, opts);",
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-for-header-let-leak-capture.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('a for-header let handler alias does not clobber (or get preferred over) the outer real Escape handler', () => {
+    // `resolveHandlerNode` picks the NEAREST-PRECEDING same-named
+    // declaration WITHIN one scope — if the for-header's own `onKey` wrongly
+    // shared the outer function's scope bucket, it would be nearer to the
+    // `addEventListener` call than the real outer handler and would win,
+    // resolving to a handler with no Escape branch and hiding the violation.
+    const source = [
+      'function openRogue(doc: Document) {',
+      "  const onKey = (e) => { if (e.key === 'Escape') close(); };",
+      '  for (let onKey = () => { flag = true; }; false; ) { }',
+      "  doc.addEventListener('keydown', onKey, true);",
+      '}',
+    ].join('\n');
+    const found = shellViolations([{ filename: 'src/ui/_sabotage-for-header-let-leak-handler.ts', source }])
+      .filter((v) => v.rule === 'shell-capture-escape');
+    expect(found.length).toBeGreaterThan(0);
+  });
+});
+
 // ── Fixed-position positive cases ───────────────────────────────────────────
 
 describe('#592 shell-fixed-position: positive characterization', () => {
@@ -785,6 +930,27 @@ describe('#592 shell-fixed-position: sabotage (each must fail)', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.rule).toBe('shell-fixed-position');
     expect(found[0]!.detail).toContain('.inspector-host');
+  });
+
+  // #592 review pass 3: the scanner copied a backslash escape into its
+  // internal buffer VERBATIM (deliberately, so an escaped delimiter char
+  // could never be mistaken for real CSS structure) but never DECODED it
+  // before comparing the property/value text — so a real, spec-legal CSS
+  // identifier escape that every browser parses as plain `position`/`fixed`
+  // stayed textually distinct from those literal strings and bypassed the
+  // guard entirely.
+  it('an escaped property name (\\70osition, decodes to "position") with position: fixed fails', () => {
+    const css = '.sabotage-escaped-prop { \\70osition: fixed; }';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('shell-fixed-position');
+  });
+
+  it('an escaped value (\\66ixed, decodes to "fixed") on a real position property fails', () => {
+    const css = '.sabotage-escaped-value { position: \\66ixed; }';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('shell-fixed-position');
   });
 });
 
