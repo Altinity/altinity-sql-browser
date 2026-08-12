@@ -24,6 +24,17 @@ describe('detectLogsView', () => {
     expect(detectLogsView([{ name: 'ts', type: 'DateTime' }, { name: 'host', type: 'String' }])).toBeNull();
     expect(detectLogsView(undefined)).toBeNull();
   });
+  // #627: a meta-less ClickHouse 24.8 stream reports `type: ''` for every
+  // column. Even highly suggestive names (event_time/message/level) must not
+  // manufacture typed log semantics from names alone — the type regexes all
+  // reject '', so detection fails closed to null.
+  it('highly suggestive column names with type "" never qualify as a logs shape (meta-less #627 result)', () => {
+    expect(detectLogsView([
+      { name: 'event_time', type: '' },
+      { name: 'message', type: '' },
+      { name: 'level', type: '' },
+    ])).toBeNull();
+  });
   it('strips nested Nullable(LowCardinality(...)) wrappers before the type check', () => {
     const shape = detectLogsView([
       { name: 'ts', type: 'Nullable(DateTime)' },

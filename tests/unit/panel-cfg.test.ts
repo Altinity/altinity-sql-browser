@@ -169,6 +169,15 @@ describe('autoPanel', () => {
     expect(autoPanel(strCols).cfg).toEqual({ type: 'table' });
     expect(autoPanel([]).cfg).toEqual({ type: 'table' });
   });
+  // #627: a meta-less ClickHouse 24.8 result reports `type: ''` for every
+  // column, even when names/values plausibly resemble logs (event_time/
+  // message) or a KPI (single numeric-looking row). All three typed paths
+  // must fail closed on empty types, leaving the universal Table fallback.
+  it('falls back to Table for a one-row meta-less result whose names/values resemble logs/KPI/chart data', () => {
+    const cols = [{ name: 'event_time', type: '' }, { name: 'message', type: '' }, { name: 'requests', type: '' }];
+    const out = autoPanel({ columns: cols, rows: [['2026-01-01 00:00:00', 'boom', 42]] });
+    expect(out.cfg).toEqual({ type: 'table' });
+  });
 });
 
 describe('switchPanelType', () => {

@@ -407,6 +407,25 @@ describe('Spec editor adapter', () => {
       .toMatchObject({ documentation: 'x' });
     expect(createSpecCompletionSources().resultColumnIndexes({ context: { tab: { lastSuccessfulResultColumns: [{ name: 'x' }] } } })[0])
       .toMatchObject({ detail: 'x', documentation: 'x' });
+    // #627: a meta-less ClickHouse 24.8 column carries the explicit unknown-type
+    // sentinel `type: ''`, not an absent `type` field — the falsy check above
+    // must treat it identically: name/value completion still appears, and
+    // documentation/detail stay name-only with no separator or fabricated type.
+    const emptyTypeColumn = { name: 'unknown', type: '' };
+    const emptyTypeResultColumn = createSpecCompletionSources().resultColumns({
+      context: { tab: { lastSuccessfulResultColumns: [emptyTypeColumn] } },
+    })[0];
+    expect(emptyTypeResultColumn).toMatchObject({
+      label: 'unknown', value: 'unknown', detail: '', documentation: 'unknown',
+    });
+    expect(emptyTypeResultColumn.documentation).not.toContain('·');
+    const emptyTypeIndexColumn = createSpecCompletionSources().resultColumnIndexes({
+      context: { tab: { lastSuccessfulResultColumns: [emptyTypeColumn] } },
+    })[0];
+    expect(emptyTypeIndexColumn).toMatchObject({
+      label: '0', value: 0, detail: 'unknown', documentation: 'unknown',
+    });
+    expect(emptyTypeIndexColumn.documentation).not.toContain('·');
     expect(createSpecCompletionSources().queryParameters({ context: { tab: { sqlDraft: '' } } })).toEqual([]);
     expect(createSpecCompletionSources().queryParameters({ context: { tab: {
       sqlDraft: 'CREATE VIEW v AS SELECT {ddl_only:String}, {mixed:String}; SELECT {mixed:UInt8}',
