@@ -147,10 +147,22 @@ semantics. This ADR's final Rejected decision rests on that new finding,
 not on either of the two gates above (both remain exactly as characterized
 by the 2026-08-07 methodology amendment).
 
-**This does not mean ClickHouse 24.8 is newly supported.** #627 is
-unaffected by this decision either way — the current transport and the
-candidate share the identical meta-line defect, and fixing it is
-independent, ongoing work tracked on its own.
+**This did not mean ClickHouse 24.8 was newly supported at the time of this
+decision.** #627 was unaffected by this decision either way — the current
+transport and the candidate shared the identical meta-line defect, and
+fixing it was independent, ongoing work tracked on its own. See the
+"#627 production compatibility follow-up" note immediately below: that work
+has since landed.
+
+**#627 production compatibility follow-up:** ClickHouse 24.8 now has
+limited, data-safe support for ordinary query execution and Table results.
+When result metadata is absent, SQL Browser establishes column names from
+the first row and records the unknown ClickHouse result type as `type: ''`,
+preserving returned values without inventing type semantics. This resolves
+the production compatibility defect observed by the #585 spike. It does
+**not** adopt, authorize, or reopen `@clickhouse/client-web`; ADR-0005
+remains **Rejected**. The committed #585 matrix remains historical evidence
+of the pre-#627 behavior.
 
 **The current custom transport (`src/net/ch-client.ts`) remains
 authoritative — no cutover was ever attempted or is now authorized.** No

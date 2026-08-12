@@ -782,16 +782,24 @@ panel-sizing spec.
 
 The full system-requirements matrix — minimum browser versions, supported
 ClickHouse server versions, and IdP/OAuth requirements — is tracked in #71.
-A known ClickHouse-version compatibility gap that any such matrix needs to
-account for is tracked in #627: query results render silently empty on
-servers predating a 2025 ClickHouse streaming-format change (see
-`docs/ADR-0005-clickhouse-web-client.md`).
 
 One feature is narrower than the rest of the app: [**Export**](#export) needs
 the File System Access API, which today is **Chromium-only** (Chrome/Edge) over
 HTTPS or `localhost`. On Firefox, Safari, or plain HTTP, the Export button stays
 visible but disabled with a tooltip explaining why — no other feature is
 affected.
+
+## ClickHouse server compatibility
+
+**ClickHouse 24.8: Limited support — query execution and Table results are
+supported. Typed result features such as automatic charts, KPI
+interpretation, logs detection, and type-aware formatting may be unavailable
+because these servers do not provide result metadata in the streaming format
+used by SQL Browser.**
+
+SQL Browser does not infer ClickHouse result types from returned values. The
+exact first 25.x release that supplies the missing streaming metadata has
+not been established.
 
 ## Development
 

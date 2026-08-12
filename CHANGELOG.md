@@ -483,6 +483,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   changed at any point across either amendment.
 
 ### Fixed
+- **#627: preserve Table results from ClickHouse 24.8 streams that omit result
+  metadata.** The first meta-less row now establishes column names in response
+  object-key order with the explicit unknown-type sentinel `type: ''`, and
+  later rows retain that established order without value-based type inference.
+  Meta-first streams keep their existing typed behavior. ClickHouse 24.8 is
+  documented as limited support: query execution and Table results are
+  supported, while typed-result features may degrade when metadata is absent.
 - **#642: `check:arch`'s generic layering rules (and Rule B) now fail closed
   on a computed dynamic `import(...)` instead of silently skipping it.**
   `extractSpecifiers` (renamed `extractStaticSpecifiers`) used to include a

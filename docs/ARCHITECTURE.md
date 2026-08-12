@@ -237,6 +237,20 @@ section below). A single automatic token refresh on 401/403/
 `authenticatedRequest()` (#630 Phase 6): before `authConfirmed` flips, an
 auth failure signs out; after, it is a query error.
 
+`applyStreamLine` normalizes both shapes a progress stream can take. A
+meta-first stream (a `{meta:[...]}` line before any row) establishes
+server-provided names/types directly. **#627**: if a `row` line arrives
+before any columns exist — ClickHouse 24.8 and earlier never emit `meta` for
+ordinary queries — SQL Browser establishes name-only columns from that
+row's object keys instead, using the unknown-type sentinel `type: ''`, and
+every subsequent row maps through that established name order. This
+fallback is SQL Browser result POLICY owned by `core/stream.ts`, not
+package protocol parsing — `packages/clickhouse-http` never synthesizes
+metadata; it only decodes whatever the server actually sent. Typed result
+consumers (chart auto-detection, KPI/logs interpretation, type-aware
+formatting) degrade to their existing generic/fail-closed behavior when a
+column's type is unknown, rather than inferring a type from values.
+
 ### Transport seam (#585 Phase 1) and the clickhouse-http package (#630 Phases 2-4)
 
 Generic request construction and stream mechanics are split out behind a
