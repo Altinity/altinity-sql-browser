@@ -8,10 +8,42 @@ these two rows are pinned, immutable digests, not a maintained-forever regressio
 
 ## Tested commit
 
-`036760afe565db89a43f112fa37db3bf7f192257` (branch `wip/627-metaless-stream-columns`) —
-`src/core/stream.ts`'s meta-less fallback was introduced in this branch's first commit,
-`fe19ab7` (`fix(#627): preserve Table results from ClickHouse 24.8 meta-less streams`),
-and is unchanged since.
+The live Docker capture below (raw `*.ndjson` bytes, `docker pull`/`docker run`,
+image digests, and asserted `SELECT version()`) was performed against
+`036760afe565db89a43f112fa37db3bf7f192257` (branch `wip/627-metaless-stream-columns`
+— the same commit/branch as this repo's `fix/627-metaless-stream-columns`, not a
+diverged fork). At that commit, `src/core/stream.ts`'s meta-less fallback had been
+unchanged since this branch's first commit, `fe19ab7` (`fix(#627): preserve Table
+results from ClickHouse 24.8 meta-less streams`).
+
+That is **not** the branch's final head. A later commit on this same branch,
+`edcb8ba7` (`fix(#627): restore row-width invariant for zero-key rows...`), added a
+guard to the exact `json.row` fallback arm this evidence exercises: a zero-key `{}`
+row arriving before columns are established is now declined rather than used to
+"establish" zero-length columns (see that arm's comment in `src/core/stream.ts` for
+the invariant it protects). Since acceptance criterion 7 is evidence-backed, this
+document must attest to the code at the branch's final head, not only the commit
+the live capture happened to run against — so the distinction matters:
+
+* The guard **does not require re-running the live Docker capture** to validate: it
+  is provably inert against the two `*.ndjson` captures committed here, because both
+  carry only 3-key rows (`id`/`precise`/`lexical`) in every `row` line — never a
+  zero-key `{}` row — so `keys.length === 0` never fires for this corpus, and
+  replaying these exact bytes through `edcb8ba7`'s `stream.ts` reproduces the
+  committed `*.normalized.json` files byte-for-byte.
+* That replay is not just asserted here — it is a real, permanent regression test:
+  `tests/unit/evidence-627-replay.test.ts` feeds both committed raw `*.ndjson`
+  captures through the production `streamLines()` -> `applyStreamLine()` path at
+  whatever commit `npm test` is run against, and asserts the result matches the
+  committed `*.normalized.json` files exactly (and that the guard's zero-key branch
+  never fires on this corpus). That test currently passes at `edcb8ba7` and every
+  commit after it that leaves the corpus/guard behavior unchanged.
+
+In short: the pinned image digests, `SELECT version()` assertions, and raw
+`*.ndjson` bytes below are provenance of the **live capture**, dated to `036760a`;
+the **decoder/accumulator behavior** they were run through is attested at the
+branch's final head, `edcb8ba7`, via the committed replay test above — not frozen
+at the live-capture commit.
 
 ## Execution date
 
@@ -116,6 +148,14 @@ cell text through the real `renderGrid()` — see that test for the DOM-level pr
 not re-run against these captured bytes here, since it already covers the
 `StreamResult -> renderGrid` half of the pipeline with its own independently declared
 literals.
+
+`tests/unit/evidence-627-replay.test.ts` (added in PR review pass 1, see "Tested
+commit" above) is the ongoing, head-tracking counterpart to the one-off verifier
+above: it replays these exact two committed `*.ndjson` files through the real
+`streamLines()`/`applyStreamLine()` production path at whatever commit `npm test`
+runs against, and fails the suite if that ever stops matching the committed
+`*.normalized.json` files — so this evidence's attestation does not silently go
+stale again the next time `src/core/stream.ts`'s fallback changes.
 
 ## Transient pull retries
 
