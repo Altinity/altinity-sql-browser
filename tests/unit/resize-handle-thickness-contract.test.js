@@ -1,0 +1,174 @@
+// Issue #592 (inherited from #586/#593 phase 1, filed against this issue's own
+// "Extra acceptance") — an independent JS↔CSS drift contract, the same
+// precedent `typography-contract.test.js` already establishes for
+// `FONT_BYTE_BUDGET`/the type ramp: a layout constant JS reserves space for
+// and CSS separately declares must not drift unnoticed.
+//
+// `src/ui/app-shell.ts`'s dock-aware width ceiling reserves space for the
+// resize handle(s) beside the docked inspector:
+//   reservedPx: state.sidebarPx + HANDLE_PX * 2      // src/ui/app-shell.ts
+//   const HANDLE_PX = 7;                              // src/ui/app-shell.ts
+// The real handle width is declared independently in CSS:
+//   .col-resize, .inspector-resize { width: 7px; }     // src/styles.css
+// Nothing links the two at compile time or runtime — a CSS-only edit to the
+// handle width would leave `reservedPx` wrong, silently narrowing the centre
+// surface below `CENTRE_MIN_PX`, with no test failing (happy-dom evaluates no
+// CSS layout, and the e2e assertions are inequalities, not exact geometry).
+//
+// This is a TEST-ONLY, enforcement-only addition per #592's non-goals: it
+// reads both production files as plain text and asserts agreement; it never
+// changes `HANDLE_PX`'s runtime ownership or the CSS declaration itself.
+//
+// Deliberately independent extraction: `extractHandlePxValues` and
+// `extractSharedResizeWidthPx` never share a helper or a source read with each
+// other — the whole point is to catch disagreement between two independently
+// declared values, so "expected" and "actual" must never be derived through
+// the same code path (a bug in a shared extractor would silently make both
+// sides agree with each other while disagreeing with reality).
+//
+// Stays `.js` (not `.ts`) for the same reason as `typography-contract.test.js`
+// and `schema-build.test.js`: it reads repo files through `node:fs`, and the
+// project carries no `@types/node` (ADR-0002's deliberate deferral).
+
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const root = resolve(process.cwd());
+const APP_SHELL_PATH = 'src/ui/app-shell.ts';
+const STYLES_PATH = 'src/styles.css';
+
+const realAppShellSource = () => readFileSync(resolve(root, APP_SHELL_PATH), 'utf8');
+const realStylesSource = () => readFileSync(resolve(root, STYLES_PATH), 'utf8');
+
+/** Every `const HANDLE_PX = <number>;` declaration found in `jsSource`, in
+ *  source order — comments stripped first (block AND line), so a comment
+ *  merely mentioning the declaration can never be mistaken for a real one.
+ *  Zero, one, or many: the caller decides what count is valid — this
+ *  extractor itself never assumes there is exactly one. */
+function extractHandlePxValues(jsSource) {
+  const stripped = jsSource
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:"'`])\/\/.*$/gm, '$1');
+  return [...stripped.matchAll(/\bconst\s+HANDLE_PX\s*=\s*(-?\d+(?:\.\d+)?)\s*;/g)].map((m) => Number(m[1]));
+}
+
+/** Every flat (non-nested) CSS rule in `cssSource` as `{ selectors, body }` —
+ *  comments stripped first. Deliberately naive (no brace-nesting/at-rule
+ *  awareness, unlike `scanFixedPositionDeclarations`'s general CSS lexer in
+ *  `build/lib/check-legacy-owners.mjs`): this helper exists ONLY to find the
+ *  one specific top-level `.col-resize, .inspector-resize { … }` rule this
+ *  contract cares about, matching this repo's existing narrow, regex-based
+ *  `typography-contract.test.js` precedent rather than reusing the general
+ *  architecture-guard scanner for an unrelated, independent test. */
+function flatCssRules(cssSource) {
+  const stripped = cssSource.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  return [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(',').map((s) => s.trim()).filter(Boolean),
+    body: m[2],
+  }));
+}
+
+/** Every `width: <number>px` value declared by a rule whose selector list
+ *  contains BOTH `.col-resize` AND `.inspector-resize` together (order-
+ *  independent; additional selectors in the same group, e.g. `.row-resize`,
+ *  are allowed) — i.e. the rule that governs both classes' shared width, not
+ *  just any rule that happens to mention either class alone. Zero, one, or
+ *  many, across however many matching rule groups exist: the caller decides
+ *  what count is valid. */
+function extractSharedResizeWidthPx(cssSource) {
+  const values = [];
+  for (const rule of flatCssRules(cssSource)) {
+    if (!rule.selectors.includes('.col-resize') || !rule.selectors.includes('.inspector-resize')) continue;
+    for (const m of rule.body.matchAll(/\bwidth\s*:\s*(-?\d+(?:\.\d+)?)px\s*;/g)) values.push(Number(m[1]));
+  }
+  return values;
+}
+
+/** The full contract, independently computed from both extractors: valid
+ *  only when the JS side names EXACTLY one `HANDLE_PX`, the CSS side names
+ *  EXACTLY one shared `.col-resize`/`.inspector-resize` width, and the two
+ *  numbers are equal. Every other combination (missing, duplicated, or
+ *  simply disagreeing) is invalid, with a `reason` a test can assert on. */
+function resizeHandleContractStatus(jsSource, cssSource) {
+  const jsValues = extractHandlePxValues(jsSource);
+  const cssValues = extractSharedResizeWidthPx(cssSource);
+  if (jsValues.length !== 1) return { ok: false, reason: 'js-ambiguous', jsValues, cssValues };
+  if (cssValues.length !== 1) return { ok: false, reason: 'css-ambiguous', jsValues, cssValues };
+  if (jsValues[0] !== cssValues[0]) return { ok: false, reason: 'mismatch', jsValues, cssValues };
+  return { ok: true, value: jsValues[0] };
+}
+
+describe('#592 resize-handle thickness contract (real production files)', () => {
+  it('exactly one HANDLE_PX declaration exists in app-shell.ts', () => {
+    expect(extractHandlePxValues(realAppShellSource())).toHaveLength(1);
+  });
+
+  it('.col-resize and .inspector-resize are governed by exactly one shared width declaration', () => {
+    expect(extractSharedResizeWidthPx(realStylesSource())).toHaveLength(1);
+  });
+
+  it('the CSS shared width exactly equals HANDLE_PX', () => {
+    const status = resizeHandleContractStatus(realAppShellSource(), realStylesSource());
+    expect(status.ok).toBe(true);
+    expect(status.value).toBe(extractHandlePxValues(realAppShellSource())[0]);
+  });
+});
+
+describe('#592 resize-handle thickness contract sabotage (synthetic — independent of the real files)', () => {
+  const CLEAN_JS = 'const HANDLE_PX = 7;\n';
+  const CLEAN_CSS = '.col-resize, .inspector-resize { width: 7px; cursor: col-resize; }\n';
+
+  it('the clean baseline pair is valid (sanity check on the extractors themselves)', () => {
+    expect(resizeHandleContractStatus(CLEAN_JS, CLEAN_CSS)).toMatchObject({ ok: true, value: 7 });
+  });
+
+  it('JS changes to 8 while CSS remains 7px: fails', () => {
+    const status = resizeHandleContractStatus('const HANDLE_PX = 8;\n', CLEAN_CSS);
+    expect(status).toMatchObject({ ok: false, reason: 'mismatch', jsValues: [8], cssValues: [7] });
+  });
+
+  it('CSS changes to 8px while JS remains 7: fails', () => {
+    const status = resizeHandleContractStatus(CLEAN_JS, '.col-resize, .inspector-resize { width: 8px; }\n');
+    expect(status).toMatchObject({ ok: false, reason: 'mismatch', jsValues: [7], cssValues: [8] });
+  });
+
+  it('.col-resize and .inspector-resize stop sharing the intended declaration: fails', () => {
+    const css = '.col-resize { width: 7px; }\n.inspector-resize { width: 7px; }\n';
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [] });
+  });
+
+  it('the JS constant is missing entirely: fails', () => {
+    const status = resizeHandleContractStatus('const OTHER = 7;\n', CLEAN_CSS);
+    expect(status).toMatchObject({ ok: false, reason: 'js-ambiguous', jsValues: [] });
+  });
+
+  it('the JS constant is duplicated: fails', () => {
+    const js = 'const HANDLE_PX = 7;\nfunction f() { const HANDLE_PX = 9; return HANDLE_PX; }\n';
+    const status = resizeHandleContractStatus(js, CLEAN_CSS);
+    expect(status).toMatchObject({ ok: false, reason: 'js-ambiguous', jsValues: [7, 9] });
+  });
+
+  it('the CSS width is missing from the shared rule: fails', () => {
+    const css = '.col-resize, .inspector-resize { cursor: col-resize; }\n';
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [] });
+  });
+
+  it('the CSS width is ambiguous (declared twice in the same shared rule): fails', () => {
+    const css = '.col-resize, .inspector-resize { width: 7px; width: 9px; }\n';
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 9] });
+  });
+
+  it('a comment-only mention of HANDLE_PX does not count as a declaration', () => {
+    const js = '// const HANDLE_PX = 7; (old value)\n/* const HANDLE_PX = 9; */\n';
+    expect(extractHandlePxValues(js)).toEqual([]);
+  });
+
+  it('a comment-only mention of the shared width rule does not count as a declaration', () => {
+    const css = '/* .col-resize, .inspector-resize { width: 7px; } */\n';
+    expect(extractSharedResizeWidthPx(css)).toEqual([]);
+  });
+});

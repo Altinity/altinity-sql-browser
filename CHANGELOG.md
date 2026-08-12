@@ -10,6 +10,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#592: lock in the #586/#587 shell primitive guardrails mechanically.**
+  `check:arch` now rejects three regrowth shapes the six-copy-pasted-overlays
+  problem #586 fixed: (1) a new `Document.body.append`/`.appendChild` call
+  outside an exact, reviewed baseline snapshot of sanctioned lifecycle/
+  primitive scopes (`shell-body-mount`); (2) a new `position: fixed` CSS
+  declaration in `src/styles.css` outside the current selector/at-rule
+  snapshot (`shell-fixed-position`, a focused CSS lexical scanner — no CSS
+  parser dependency); (3) a new global capture-phase Escape `keydown`
+  lifecycle outside `SurfaceLifecycle` and its exact documented exceptions/
+  non-panel gesture exclusions (`shell-capture-escape`). The two source-level
+  rules share one real-TypeScript-parser batch
+  (`findShellGuardrailSourceContractViolations`,
+  `build/lib/check-legacy-owners.mjs`), reusing this repo's established
+  `withParsedSources`/`walkTree`/`SyntaxKind` idiom — no new parser
+  dependency. Also closes the inherited #586/#593-phase-1 finding: an
+  independent `tests/unit/resize-handle-thickness-contract.test.js` proves
+  `src/ui/app-shell.ts`'s `HANDLE_PX` and `src/styles.css`'s
+  `.col-resize`/`.inspector-resize` width cannot drift unnoticed. Enforcement-
+  only — no runtime UI/DOM/CSS behavior changes.
 - **#630 Phase 8 (final phase — closes #630): make `@altinity/clickhouse-http`
   independently buildable/packable/typecheckable in isolation, and retire the
   `@clickhouse/client-web` vendor-comparison spike.** Claims A17/A18.

@@ -40,13 +40,22 @@ export type SurfaceLifecycleRule =
   | 'surface-current-workspace-null'
   | 'surface-retirement-ordering';
 
+/** The #592 shell-primitive-guardrail rule codes
+ * `findShellGuardrailSourceContractViolations` (`shell-body-mount` /
+ * `shell-capture-escape`) and `findShellFixedPositionViolations`
+ * (`shell-fixed-position`) may report. */
+export type ShellGuardrailRule =
+  | 'shell-body-mount'
+  | 'shell-capture-escape'
+  | 'shell-fixed-position';
+
 /** One reported source-contract violation — a plain, JSON-serializable DTO.
  * `pos` is the offending AST node's own `getStart(sourceFile)` (or `0` for a
  * whole-file "the required construct is entirely absent" finding, which
  * names no single node): a stable, deterministic identity, never a
  * line/column and never required in a user-facing diagnostic. */
 export interface SourceContractViolation {
-  readonly rule: SidePanelRule | SurfaceLifecycleRule;
+  readonly rule: SidePanelRule | SurfaceLifecycleRule | ShellGuardrailRule;
   readonly filename: string;
   readonly pos: number;
   readonly detail: string;
@@ -94,4 +103,57 @@ export interface SurfaceLifecycleOptions {
 export function findSurfaceLifecycleSourceContractViolations(
   sources: readonly SurfaceLifecycleSourceEntry[],
   options: SurfaceLifecycleOptions,
+): SourceContractViolation[];
+
+/** One (filename, raw source) entry in a #592 shell-guardrail batch —
+ * structurally identical to `SurfaceLifecycleSourceEntry` (both are just
+ * "a repo-relative filename plus that file's complete, unmodified text"),
+ * named separately so `findShellGuardrailSourceContractViolations`'s own
+ * signature documents its own #592 contract rather than borrowing a #590-
+ * named type. */
+export interface ShellGuardrailSourceEntry {
+  readonly filename: string;
+  readonly source: string;
+}
+
+/**
+ * The #592 shell-primitive-guardrail source contract (`shell-body-mount` +
+ * `shell-capture-escape`), real-TypeScript-parser-backed, over ONE shared
+ * parser batch for the complete `sources` set (never one parser process per
+ * rule or per file).
+ */
+export function findShellGuardrailSourceContractViolations(
+  sources: readonly ShellGuardrailSourceEntry[],
+): SourceContractViolation[];
+
+/** One `position: fixed` (optionally `!important`) CSS declaration found by
+ * `scanFixedPositionDeclarations` — `selector` is the enclosing rule's own
+ * normalized (whitespace-collapsed, comma-list-normalized) prelude; `atRule`
+ * is the nearest enclosing at-rule's normalized prelude (e.g.
+ * `'@media (max-width: 768px)'`), or `null` when the declaration sits at the
+ * stylesheet's top level; `pos` is the declaration's own offset into the
+ * scanned CSS text (the first non-whitespace, non-comment character). */
+export interface FixedPositionDeclaration {
+  readonly selector: string;
+  readonly atRule: string | null;
+  readonly pos: number;
+}
+
+/**
+ * The focused CSS lexical scanner (Architecture decision 2, #592) — no CSS
+ * parser dependency. Skips CSS block comments, respects quoted strings and
+ * escapes, tracks brace nesting, and normalizes whitespace/comma-selector-
+ * lists deterministically; see the `.mjs` implementation's own doc comment
+ * for the full contract.
+ */
+export function scanFixedPositionDeclarations(source: string): FixedPositionDeclaration[];
+
+/**
+ * The `shell-fixed-position` guard: every `scanFixedPositionDeclarations`
+ * result in `cssSource` whose exact `(selector, atRule)` pair is outside the
+ * frozen #592 baseline snapshot.
+ */
+export function findShellFixedPositionViolations(
+  cssSource: string,
+  filename: string,
 ): SourceContractViolation[];
