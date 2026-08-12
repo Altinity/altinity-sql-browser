@@ -101,7 +101,6 @@ import {
   findDynamicImportUsages,
   mightContainDynamicImport,
   findShellGuardrailSourceContractViolations,
-  findShellGuardrailMissingBaselineViolations,
   findShellFixedPositionViolations,
   findShellFixedPositionMissingBaselineViolations,
 } from './lib/check-legacy-owners.mjs';
@@ -896,9 +895,12 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
 // silently regrow. Two rules share ONE real-TypeScript-parser batch over the
 // whole scanned `src/**` tree (`findShellGuardrailSourceContractViolations`,
 // `build/lib/check-legacy-owners.mjs` — Architecture decision 4: never one
-// parser process per rule or per file); a third is a focused CSS lexical
-// scanner over `src/styles.css` alone (`findShellFixedPositionViolations` —
-// Architecture decision 2: no CSS parser dependency). `lineOfOffset` converts
+// parser process per rule or per file — including its own complete-tree
+// reverse-baseline half, folded in below via `completeTree: true` rather
+// than a second call opening a second batch, #592 review pass 2, ChatGPT PR
+// #672 pass 2 P2); a third is a focused CSS lexical scanner over
+// `src/styles.css` alone (`findShellFixedPositionViolations` — Architecture
+// decision 2: no CSS parser dependency). `lineOfOffset` converts
 // each analyzer's raw AST/lexer byte offset into the 1-based line number this
 // gate's own diagnostics use everywhere else.
 function lineOfOffset(source, pos) {
@@ -912,17 +914,16 @@ function lineOfOffset(source, pos) {
     return { filename: relFile, source: guardedFileSources.get(file) ?? fs.readFileSync(file, 'utf8') };
   });
   const bySource = new Map(shellSources.map((s) => [s.filename, s.source]));
-  for (const v of findShellGuardrailSourceContractViolations(shellSources)) {
-    const line = lineOfOffset(bySource.get(v.filename) ?? '', v.pos);
-    violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
-  }
-  // The complete-tree reverse half (PR #672 review pass 1 follow-up,
-  // ChatGPT) — meaningful only against the real, complete `src/**` tree,
-  // which `shellSources` (built from `collectFiles`'s live disk walk) always
-  // is here; see the function's own doc comment for why this is a separate
-  // export from `findShellGuardrailSourceContractViolations` rather than
-  // folded into it.
-  for (const v of findShellGuardrailMissingBaselineViolations(shellSources)) {
+  // `completeTree: true` folds the complete-tree reverse-baseline half (PR
+  // #672 review pass 1 follow-up, ChatGPT) into this SAME shared parser
+  // batch — meaningful only against the real, complete `src/**` tree, which
+  // `shellSources` (built from `collectFiles`'s live disk walk) always is
+  // here. #592 review pass 2 (ChatGPT PR #672 pass 2 P2): this used to be a
+  // separate call to `findShellGuardrailMissingBaselineViolations` over the
+  // identical `shellSources`, which opened its OWN second parser batch —
+  // see `findShellGuardrailSourceContractViolations`'s own doc comment for
+  // why that violated this file's "ONE shared parser batch" contract.
+  for (const v of findShellGuardrailSourceContractViolations(shellSources, { completeTree: true })) {
     const line = lineOfOffset(bySource.get(v.filename) ?? '', v.pos);
     violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
   }

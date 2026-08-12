@@ -116,14 +116,29 @@ export interface ShellGuardrailSourceEntry {
   readonly source: string;
 }
 
+/** Options for `findShellGuardrailSourceContractViolations`. */
+export interface ShellGuardrailSourceContractOptions {
+  /** Fold `findShellGuardrailMissingBaselineViolations`'s own complete-tree
+   * reverse-baseline check into this call's SAME shared parser batch,
+   * instead of a caller opening a second batch to get it separately (#592
+   * review pass 2, ChatGPT PR #672 pass 2 P2). Only pass `true` when
+   * `sources` really is the complete scanned tree — see
+   * `findShellGuardrailMissingBaselineViolations`'s own doc comment for why. */
+  readonly completeTree?: boolean;
+}
+
 /**
  * The #592 shell-primitive-guardrail source contract (`shell-body-mount` +
  * `shell-capture-escape`), real-TypeScript-parser-backed, over ONE shared
  * parser batch for the complete `sources` set (never one parser process per
- * rule or per file).
+ * rule or per file). `options.completeTree: true` additionally folds in the
+ * complete-tree reverse-baseline violations
+ * `findShellGuardrailMissingBaselineViolations` would otherwise report
+ * separately, over this SAME batch.
  */
 export function findShellGuardrailSourceContractViolations(
   sources: readonly ShellGuardrailSourceEntry[],
+  options?: ShellGuardrailSourceContractOptions,
 ): SourceContractViolation[];
 
 /**
@@ -137,14 +152,20 @@ export function findShellGuardrailSourceContractViolations(
  * fixtures, and cannot distinguish a genuinely complete file with an
  * approved function/scope deleted from a fixture that never declared that
  * scope to begin with. This export assumes `sources` IS the complete
- * scanned tree (its only real caller is `build/check-boundaries.mjs`'s live
- * `collectFiles(src/)` batch) and reports, without that softening, every
+ * scanned tree (its only real callers are `build/check-boundaries.mjs`'s
+ * live `collectFiles(src/)` batch — directly, and via
+ * `findShellGuardrailSourceContractViolations`'s own `completeTree: true`
+ * mode, #592 review pass 2) and reports, without that softening, every
  * `SHELL_BODY_MOUNT_POLICY`/`SHELL_CAPTURE_ESCAPE_POLICY` entry whose
  * approved occurrence count is not met in `sources` — covering a whole
  * approved FILE missing from `sources` entirely, a whole approved
  * function/scope deleted (or renamed) from a still-present file, and a
  * dropped occurrence count within a still-present scope, uniformly (PR #672
- * review pass 1 follow-up, ChatGPT).
+ * review pass 1 follow-up, ChatGPT). This standalone export still opens its
+ * own parser batch when called directly (kept for every existing caller
+ * with no batch already open); the production `check:arch` wiring instead
+ * reaches this identical logic through `findShellGuardrailSourceContractViolations`'s
+ * `completeTree` mode, so the production path never opens two.
  */
 export function findShellGuardrailMissingBaselineViolations(
   sources: readonly ShellGuardrailSourceEntry[],

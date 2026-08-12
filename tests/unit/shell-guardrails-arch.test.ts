@@ -212,6 +212,13 @@ describe('#592 shell-body-mount: sabotage (each must fail)', () => {
       'function f(childDoc: Document) { const body = childDoc.body; body.appendChild(panel); }'],
     ['simple propagated body alias (const b = body; b.appendChild(panel))',
       'function f(childDoc: Document) { const body = childDoc.body; const b = body; b.appendChild(panel); }'],
+    // ChatGPT PR #672 review pass 2 P1: `resolvesToDocumentBody` previously
+    // only ever looked at a `let`/`var` binding's OWN initializer — a LATER
+    // whole-binding reassignment to `document.body` (the value actually in
+    // effect at the real `.appendChild` call) was invisible, so this real
+    // mount silently escaped the guard entirely.
+    ['let body REASSIGNED to document.body after declaration (not the stale initializer)',
+      "let body = document.createElement('div'); body = document.body; body.appendChild(panel);"],
   ];
   for (const [label, body] of receiverCases) {
     it(`${label} fails`, () => {
@@ -220,6 +227,16 @@ describe('#592 shell-body-mount: sabotage (each must fail)', () => {
       expect(found.length).toBeGreaterThan(0);
     });
   }
+
+  // Negative control on the write-aware `let`/`var` resolution above: an
+  // ORDINARY `let`-bound element receiver that is NEVER reassigned to
+  // `document.body` must stay entirely unaffected — proving the fix isn't
+  // simply "treat every non-const .appendChild/.append receiver as a mount".
+  it('an ordinary let-bound container (never reassigned to document.body) stays clean', () => {
+    const source = "function openRogue() { let container = document.createElement('div'); container.appendChild(panel); }";
+    const found = shellViolations([{ filename: NEW_FILE, source }]).filter((v) => v.rule === 'shell-body-mount');
+    expect(found).toEqual([]);
+  });
 
   it('a second mount inside an otherwise approved scope fails (only the excess one)', () => {
     const found = bodyMountRulesFor('src/ui/toast.ts', ['flashToast'],
@@ -567,6 +584,18 @@ describe('#592 shell-capture-escape: positive characterization (sanctioned curre
     expect(found).toEqual([]);
   });
 
+  // Negative control on the const-alias Escape-value resolution
+  // (`resolveStringLiteralValue`/`classifyEscapeComparison`): a const alias
+  // that resolves to a DIFFERENT concrete literal is provably not Escape —
+  // this must stay clean, proving the alias fix isn't simply "treat every
+  // key/code comparison as Escape".
+  it("a const alias resolving to a DIFFERENT literal ('Enter') stays clean", () => {
+    const found = captureEscapeRulesFor('src/ui/_noncapture-other-alias.ts', ['openSomethingElseAgainStill'],
+      "const OTHER_KEY = 'Enter'; const onKey = (e) => { if (e.key === OTHER_KEY) submit(); }; "
+      + "document.addEventListener('keydown', onKey, true);");
+    expect(found).toEqual([]);
+  });
+
   it('a non-capture Escape listener (no third argument) stays clean', () => {
     const found = captureEscapeRulesFor('src/ui/_noncapture.ts', ['openSomething'],
       "const onKey = (e) => { if (e.key === 'Escape') close(); }; document.addEventListener('keydown', onKey);");
@@ -671,6 +700,25 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
     expect(found).toEqual(['shell-capture-escape']);
   });
 
+  // ChatGPT PR #672 review pass 2 P1: `resolveCaptureFlag` previously trusted
+  // a resolved CONST object literal's OWN properties forever, even when a
+  // LATER property write on that same object (still a `const` BINDING — the
+  // reference never changes, only the referenced object's OWN property does)
+  // changed the value actually in effect at the real `addEventListener` call.
+  it('a const capture-options object MUTATED via a later property write fails (not the original literal)', () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-const-opts-mutate.ts', ['openRogueConstOptsMutate'],
+      `${escapeHandler} const opts = { capture: false }; opts.capture = true; `
+      + "document.addEventListener('keydown', onKey, opts);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it("a const capture-options object mutated via bracket property write (opts['capture'] = true) fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-const-opts-mutate-bracket.ts', ['openRogueConstOptsMutateBracket'],
+      `${escapeHandler} const opts = { capture: false }; opts['capture'] = true; `
+      + "document.addEventListener('keydown', onKey, opts);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
   // The identical gap, for the HANDLER alias instead of the capture-options
   // alias: `resolveHandlerNode` used to trust a resolved `VariableDeclaration`
   // initializer regardless of const-ness too, so a `let` handler reassigned
@@ -764,6 +812,40 @@ describe('#592 shell-capture-escape: sabotage (each must fail)', () => {
       "const onKey = (e) => { switch (e.key) { case 'Escape': close(); break; default: break; } };",
       "document.addEventListener('keydown', onKey, true);",
     ].join('\n'));
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  // ChatGPT PR #672 review pass 2 P1: `containsEscapeSemantics` previously
+  // required the LITERAL string `'Escape'` directly in the comparison — a
+  // `const` alias of the same value was invisible, so the handler was
+  // misclassified `'clean'` (dropped, no policy check at all) instead of
+  // recognized as a real Escape listener.
+  it("a const alias of the Escape literal (const ESC = 'Escape'; e.key === ESC) fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-escape-alias.ts', ['openRogueEscapeAlias'],
+      "const ESC = 'Escape'; const onKey = (e) => { if (e.key === ESC) close(); }; "
+      + "document.addEventListener('keydown', onKey, true);");
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it("switch (event.key) with a const-alias Escape case (case ESC:) fails", () => {
+    const found = captureEscapeRulesFor('src/ui/_sabotage-escape-alias-switch.ts', ['openRogueEscapeAliasSwitch'], [
+      "const ESC = 'Escape';",
+      "const onKey = (e) => { switch (e.key) { case ESC: close(); break; default: break; } };",
+      "document.addEventListener('keydown', onKey, true);",
+    ].join('\n'));
+    expect(found).toEqual(['shell-capture-escape']);
+  });
+
+  it('an Escape comparison against an unresolvable (non-const) alias fails closed', () => {
+    // `let`/`var` aliases (and any other unresolvable expression) cannot be
+    // proven NOT to be 'Escape' either — fail closed rather than silently
+    // treating the handler as clean. `expectedValue` (not `key`/`code`)
+    // deliberately avoids `terminalNames`' own `key`/`code` text match, so
+    // this exercises the CANDIDATE-side resolution, not the property-name
+    // detection on the other operand.
+    const found = captureEscapeRulesFor('src/ui/_sabotage-escape-alias-unresolved.ts', ['openRogueEscapeAliasUnresolved'],
+      "let expectedValue = getExpectedValue(); const onKey = (e) => { if (e.key === expectedValue) close(); }; "
+      + "document.addEventListener('keydown', onKey, true);");
     expect(found).toEqual(['shell-capture-escape']);
   });
 
@@ -883,6 +965,53 @@ describe('#592 shell-guardrail missing-baseline: complete-tree strict reverse ch
       'src/ui/toast.ts', ['flashToastRenamed'], withDocAlias('doc', 'doc.body.appendChild(el);'),
     );
     expect(found).toEqual(['shell-body-mount']);
+  });
+});
+
+// ── `completeTree` mode folds the strict reverse check into ONE shared batch
+// (P2, ChatGPT PR #672 review pass 2) ───────────────────────────────────────
+// The production `check:arch` wiring used to call
+// `findShellGuardrailSourceContractViolations` AND
+// `findShellGuardrailMissingBaselineViolations` separately over the
+// identical complete `src/**` tree — each opening its OWN real-TypeScript-
+// parser batch, directly contradicting this module's own "ONE shared parser
+// batch" architecture (decision 4). `completeTree: true` folds BOTH
+// reverse-baseline halves (the parser-independent whole-file-absence check
+// and the parser-dependent per-scope strict count check) into the SAME
+// batch the forward check already opens.
+
+describe('#592 shell-guardrail source contract: completeTree mode', () => {
+  it('folds both reverse-baseline halves AND the forward check into ONE call, matching the union of running each separately', () => {
+    // src/ui/toast.ts is present but has an EXCESS mount (a real forward-
+    // check violation); every OTHER approved file (menu.ts, popover.ts, …)
+    // is entirely absent from this batch (real missing-baseline
+    // violations) — exercising both halves at once.
+    const toastSource = wrapScope(
+      ['flashToast'],
+      withDocAlias('doc', 'doc.body.appendChild(el); doc.body.appendChild(doc.createElement("div"));'),
+    );
+    const sources: ShellGuardrailSourceEntry[] = [{ filename: 'src/ui/toast.ts', source: toastSource }];
+    const key = (v: SourceContractViolation) => [v.rule, v.filename, v.pos, v.detail].join(' ');
+
+    const folded = findShellGuardrailSourceContractViolations(sources, { completeTree: true });
+    const forwardOnly = findShellGuardrailSourceContractViolations(sources);
+    const missingBaselineOnly = findShellGuardrailMissingBaselineViolations(sources);
+
+    expect(folded.map(key).sort()).toEqual([...forwardOnly, ...missingBaselineOnly].map(key).sort());
+    // Sanity: both halves actually contributed something here, so the
+    // equality above isn't vacuously true (e.g. `completeTree` doing
+    // nothing at all against two already-empty result sets).
+    expect(forwardOnly.length).toBeGreaterThan(0);
+    expect(missingBaselineOnly.length).toBeGreaterThan(0);
+  });
+
+  it('omitting completeTree (or the options argument entirely) is unaffected — no reverse-baseline violations leak into the plain forward check', () => {
+    const sources: ShellGuardrailSourceEntry[] = [
+      { filename: 'src/ui/_unrelated.ts', source: 'export const x = 1;\n' },
+    ];
+    expect(findShellGuardrailSourceContractViolations(sources)).toEqual([]);
+    expect(findShellGuardrailSourceContractViolations(sources, {})).toEqual([]);
+    expect(findShellGuardrailSourceContractViolations(sources, { completeTree: false })).toEqual([]);
   });
 });
 
@@ -1087,6 +1216,29 @@ describe('#592 shell-fixed-position: positive characterization', () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.nested).toBe(false);
   });
+
+  // ChatGPT PR #672 review pass 2 P1: `processDeclaration` previously
+  // inspected ONLY the single innermost frame and bailed the instant it
+  // wasn't a 'rule' frame — a BARE declaration sitting directly inside an
+  // at-rule that is itself nested inside a style rule (real, browser-
+  // supported CSS nesting: the declaration inherits the outer selector)
+  // produced ZERO candidates at all, not merely an unflagged one.
+  it('a bare declaration nested inside @media inside a plain rule is associated with the outer selector', () => {
+    const css = '.rogue {\n  @media (min-width: 0px) {\n    position: fixed;\n  }\n}\n';
+    const found = scanFixedPositionDeclarations(css);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.selector).toBe('.rogue');
+    expect(found[0]!.atRule).toBe('@media (min-width: 0px)');
+    expect(found[0]!.nested).toBe(false);
+  });
+
+  it('the same nesting shape under TWO at-rules records the full chain, outermost first', () => {
+    const css = '.rogue {\n  @supports (display: grid) {\n    @media (min-width: 0px) {\n      position: fixed;\n    }\n  }\n}\n';
+    const found = scanFixedPositionDeclarations(css);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.selector).toBe('.rogue');
+    expect(found[0]!.atRule).toBe('@supports (display: grid) > @media (min-width: 0px)');
+  });
 });
 
 // ── Fixed-position sabotage cases ───────────────────────────────────────────
@@ -1108,6 +1260,13 @@ describe('#592 shell-fixed-position: sabotage (each must fail)', () => {
     const css = '@supports (display: grid) {\n  .sabotage-supports { position: fixed; }\n}\n';
     const found = findShellFixedPositionViolations(css, 'src/styles.css');
     expect(found).toHaveLength(1);
+  });
+
+  it('a new selector using a bare declaration nested inside @media inside a plain rule fails (not invisible)', () => {
+    const css = '.sabotage-rogue {\n  @media (min-width: 0px) {\n    position: fixed;\n  }\n}\n';
+    const found = findShellFixedPositionViolations(css, 'src/styles.css');
+    expect(found).toHaveLength(1);
+    expect(found[0]!.rule).toBe('shell-fixed-position');
   });
 
   it('adding another selector to an approved selector group changes the key and fails', () => {

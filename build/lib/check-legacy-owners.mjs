@@ -2596,9 +2596,12 @@ function staticPropertyKeyName(member) {
  *
  * @param {object} node
  * @param {object} checker the file's real TypeScript `Checker`
+ * @param {object} [sourceFile] the file `node` was parsed from — threaded
+ *   through to `resolveCaptureFlag` so a nested identifier alias can itself
+ *   be checked for a later property mutation
  * @returns {boolean | null}
  */
-function resolveObjectCaptureLiteral(node, checker) {
+function resolveObjectCaptureLiteral(node, checker, sourceFile) {
   let lastKnownValueNode = null; // meaningful only while `lastEventKnown === true`
   let lastEventKnown = null; // null: no capture-affecting property seen yet; true: known; false: unknown/override-capable
   for (const p of node.properties) {
@@ -2610,8 +2613,62 @@ function resolveObjectCaptureLiteral(node, checker) {
     else if (p.kind === SyntaxKind.ShorthandPropertyAssignment) { lastKnownValueNode = p.name; lastEventKnown = true; }
     else lastEventKnown = false; // a method/get/set named `capture` — never a plain boolean
   }
-  if (lastEventKnown === true) return resolveCaptureFlag(lastKnownValueNode, checker);
+  if (lastEventKnown === true) return resolveCaptureFlag(lastKnownValueNode, checker, sourceFile);
   return lastEventKnown === false ? null : false;
+}
+
+/** True when ANY `<expr>.capture = …` / `<expr>['capture'] = …` assignment
+ *  exists anywhere in `sourceFile` whose OWN receiver resolves (via the real
+ *  checker) to the exact same binding as `declNode` — i.e. whether a
+ *  property write elsewhere can change what `resolveObjectCaptureLiteral`'s
+ *  snapshot of the object literal's OWN properties would otherwise
+ *  "provably" answer (#592 review pass 2, ChatGPT PR #672 pass 2 P1):
+ *  `const opts = { capture: false }; opts.capture = true;
+ *  document.addEventListener(..., opts)` previously trusted the literal's
+ *  OWN properties forever, even though the value actually in effect at the
+ *  real `addEventListener` call had already changed. This deliberately does
+ *  NOT attempt real control-flow/ordering analysis — unlike
+ *  `resolveObjectCaptureLiteral`'s own property-evaluation-order walk
+ *  (sound because object-literal property order is a real, unconditional JS
+ *  semantic), a later statement's execution order is not, once
+ *  branches/loops exist, and the PR's Architecture decision 6 addendum
+ *  frames that as out of this restructuring's scope — so ANY such write
+ *  anywhere fails this const object's own properties CLOSED (this resolver
+ *  returns `true`, the caller's existing "cannot resolve" contract), rather
+ *  than risk trusting a stale snapshot.
+ *
+ * @param {object} sourceFile
+ * @param {object} declNode the const `VariableDeclaration` binding the object literal
+ * @param {object} checker the file's real TypeScript `Checker`
+ * @returns {boolean}
+ */
+function hasCapturePropertyMutation(sourceFile, declNode, checker) {
+  let found = false;
+  walkTree(sourceFile, (node) => {
+    if (found) return;
+    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsToken) return;
+    const target = node.left;
+    let receiver = null;
+    let propName;
+    if (target.kind === SyntaxKind.PropertyAccessExpression) {
+      receiver = target.expression;
+      propName = target.name.text;
+    } else if (target.kind === SyntaxKind.ElementAccessExpression) {
+      const arg = unwrapCastWrappers(target.argumentExpression);
+      if (arg && (arg.kind === SyntaxKind.StringLiteral || arg.kind === SyntaxKind.NoSubstitutionTemplateLiteral)) {
+        receiver = target.expression;
+        propName = arg.text;
+      }
+    }
+    if (propName !== 'capture' || !receiver) return;
+    const rExpr = unwrapCastWrappers(receiver);
+    if (!rExpr || rExpr.kind !== SyntaxKind.Identifier) return;
+    const sym = checker.getSymbolAtLocation(rExpr);
+    if (!sym) return;
+    const handle = sym.valueDeclaration ?? sym.declarations[0];
+    if (handle?.resolve() === declNode) found = true;
+  });
+  return found;
 }
 
 /**
@@ -2651,16 +2708,28 @@ function resolveObjectCaptureLiteral(node, checker) {
  * does this shorthand property actually reference", so this function calls
  * that instead whenever `node` is itself a shorthand property's name.
  *
+ * A resolved `const` binding whose object literal is itself later mutated
+ * via a `.capture = …`/`['capture'] = …` property write anywhere in
+ * `sourceFile` (`hasCapturePropertyMutation`, #592 review pass 2, ChatGPT PR
+ * #672 pass 2 P1) is ALSO `null` — a property mutation reachable after
+ * construction makes the literal's own properties exactly as untrustworthy
+ * as a whole-binding `let`/`var` reassignment, even though the binding
+ * itself is `const`.
+ *
  * @param {object} node
  * @param {object} checker the file's real TypeScript `Checker`
+ * @param {object} [sourceFile] the file `node` was parsed from — required to
+ *   detect a later property mutation of a resolved const object literal;
+ *   every real caller has one, so only synthetic/legacy call sites without
+ *   one skip that specific check
  * @returns {boolean | null}
  */
-function resolveCaptureFlag(node, checker) {
+function resolveCaptureFlag(node, checker, sourceFile) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return null;
   if (expr.kind === SyntaxKind.TrueKeyword) return true;
   if (expr.kind === SyntaxKind.FalseKeyword) return false;
-  if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr, checker);
+  if (expr.kind === SyntaxKind.ObjectLiteralExpression) return resolveObjectCaptureLiteral(expr, checker, sourceFile);
   if (expr.kind !== SyntaxKind.Identifier) return null;
   const isShorthandName = expr.parent
     && expr.parent.kind === SyntaxKind.ShorthandPropertyAssignment && expr.parent.name === expr;
@@ -2674,31 +2743,101 @@ function resolveCaptureFlag(node, checker) {
     !declNode || declNode.kind !== SyntaxKind.VariableDeclaration || !declNode.initializer
     || !isConstVariableDeclaration(declNode)
   ) return null;
-  return resolveCaptureFlag(declNode.initializer, checker);
+  if (sourceFile && hasCapturePropertyMutation(sourceFile, declNode, checker)) return null;
+  return resolveCaptureFlag(declNode.initializer, checker, sourceFile);
 }
 
-/** The one Escape literal every semantic check below compares against —
- *  `event.key`/`event.code` forms alike (the plan does not distinguish
- *  between the two KeyboardEvent properties, only requires either to be
- *  recognized). */
-const ESCAPE_LITERAL_SET = new Set(['Escape']);
+/** The complete decoded string value `node` structurally resolves to, or
+ *  `undefined` when it cannot be reduced to one concrete literal at all —
+ *  a plain string/no-substitution-template literal directly, or a `const`
+ *  identifier alias (`const ESC = 'Escape';`) resolved through the REAL
+ *  TypeScript checker, recursively (a further alias of that alias resolves
+ *  the same way, one more hop). `undefined` is deliberately distinct from
+ *  any resolved string (including `''`) — a caller uses it to fail closed
+ *  on "cannot prove this ISN'T the Escape literal" rather than silently
+ *  treating an unresolvable comparison as definitely not Escape. Never
+ *  trusts a `let`/`var` binding's initializer (`isConstVariableDeclaration`,
+ *  same #592 review-pass rule every other alias resolver in this module
+ *  already applies): a reassignable alias's initializer is not reliably
+ *  the value in effect at any later reference.
+ *
+ * @param {object} node
+ * @param {object} checker the file's real TypeScript `Checker`
+ * @returns {string | undefined}
+ */
+function resolveStringLiteralValue(node, checker) {
+  const expr = unwrapCastWrappers(node);
+  if (!expr) return undefined;
+  if (expr.kind === SyntaxKind.StringLiteral || expr.kind === SyntaxKind.NoSubstitutionTemplateLiteral) {
+    return expr.text;
+  }
+  if (expr.kind !== SyntaxKind.Identifier) return undefined;
+  const symbol = checker.getSymbolAtLocation(expr);
+  if (!symbol) return undefined;
+  const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+  const declNode = handle?.resolve();
+  if (
+    !declNode || declNode.kind !== SyntaxKind.VariableDeclaration || !declNode.initializer
+    || !isConstVariableDeclaration(declNode)
+  ) return undefined;
+  return resolveStringLiteralValue(declNode.initializer, checker);
+}
+
+/** Classify one `===`/`!==` Escape-testing comparison candidate:
+ *  `'irrelevant'` when neither operand's terminal name is `key`/`code` at
+ *  all (this comparison isn't testing a keyboard event property, so it's
+ *  outside `containsEscapeSemantics`'s concern regardless of the other
+ *  operand); otherwise the OTHER operand is resolved
+ *  (`resolveStringLiteralValue`) to `'escape'` (resolves to exactly
+ *  `'Escape'`), `'not-escape'` (resolves to some other concrete literal —
+ *  provably not Escape), or `'ambiguous'` (cannot be resolved to any
+ *  concrete literal at all — a non-`const` alias, an unresolvable
+ *  identifier, or any other non-literal expression) — #592 review pass 2
+ *  (ChatGPT PR #672 pass 2 P1): a constant alias (`const ESC = 'Escape'; if
+ *  (e.key === ESC) …`) previously required the LITERAL string `'Escape'`
+ *  directly in the comparison, so an aliased comparison was misclassified
+ *  `'irrelevant'`-equivalent (silently dropped as `'clean'`) rather than
+ *  recognized or, failing that, treated as ambiguous. */
+function classifyEscapeComparison(node, checker) {
+  const leftNames = terminalNames(node.left, 1);
+  const rightNames = terminalNames(node.right, 1);
+  const leftIsKeyOrCode = leftNames.length === 1 && (leftNames[0] === 'key' || leftNames[0] === 'code');
+  const rightIsKeyOrCode = rightNames.length === 1 && (rightNames[0] === 'key' || rightNames[0] === 'code');
+  let candidate = null;
+  if (leftIsKeyOrCode && !rightIsKeyOrCode) candidate = node.right;
+  else if (rightIsKeyOrCode && !leftIsKeyOrCode) candidate = node.left;
+  if (!candidate) return 'irrelevant';
+  const resolved = resolveStringLiteralValue(candidate, checker);
+  if (resolved === undefined) return 'ambiguous';
+  return resolved === 'Escape' ? 'escape' : 'not-escape';
+}
 
 /**
  * True when `fnLikeNode`'s body contains real Escape-testing control flow —
  * per the plan's own recognition list: `event.key === 'Escape'` / `'Escape'
- * === event.key` (either operand order, `===` or `!==`, any quote style —
- * `exactLiteralMatch` already normalizes string vs. no-substitution-template
- * literals to the same decoded `.text`), the analogous `event.code` forms, and
- * `switch (event.key) { case 'Escape': … }`. A generic capture keydown
- * handler with NO Escape-specific branch (an activity/highlight listener,
- * e.g. `dashboard.ts`'s `noteInteraction`/`clear`) contains none of these and
- * is correctly classified clean — not governed by the #592 lifecycle rule at
- * all, structurally, before any policy table is even consulted.
+ * === event.key` (either operand order, `===` or `!==`, any quote style, and
+ * a `const` identifier alias of the literal — `resolveStringLiteralValue`
+ * resolves a plain string/no-substitution-template literal or such an alias
+ * identically), the analogous `event.code` forms, and `switch (event.key) {
+ * case 'Escape': … }` (the case expression resolved the same alias-aware
+ * way). A generic
+ * capture keydown handler with NO Escape-specific branch (an
+ * activity/highlight listener, e.g. `dashboard.ts`'s
+ * `noteInteraction`/`clear`) contains none of these and is correctly
+ * classified clean — not governed by the #592 lifecycle rule at all,
+ * structurally, before any policy table is even consulted. A comparison or
+ * `case` value that cannot be resolved to any concrete literal at all
+ * (`resolveStringLiteralValue` returns `undefined` — e.g. a non-`const`
+ * alias, or any other unresolvable expression) fails CLOSED as if it were a
+ * real Escape comparison, exactly like every other unresolved shape this
+ * module's #592 guards already treat as "cannot prove this ISN'T the
+ * governed case" rather than silently assuming clean.
  *
  * @param {object} fnLikeNode
+ * @param {object} checker the file's real TypeScript `Checker`
  * @returns {boolean}
  */
-function containsEscapeSemantics(fnLikeNode) {
+function containsEscapeSemantics(fnLikeNode, checker) {
   let found = false;
   const scanRoot = fnLikeNode.body ?? fnLikeNode; // a concise arrow body is an expression, not a Block
   walkTree(scanRoot, (node) => {
@@ -2708,22 +2847,16 @@ function containsEscapeSemantics(fnLikeNode) {
       && (node.operatorToken.kind === SyntaxKind.EqualsEqualsEqualsToken
         || node.operatorToken.kind === SyntaxKind.ExclamationEqualsEqualsToken)
     ) {
-      const leftIsEscape = exactLiteralMatch(node.left, ESCAPE_LITERAL_SET);
-      const rightIsEscape = exactLiteralMatch(node.right, ESCAPE_LITERAL_SET);
-      const other = leftIsEscape ? node.right : (rightIsEscape ? node.left : null);
-      if (other) {
-        const names = terminalNames(other, 1);
-        if (names.length === 1 && (names[0] === 'key' || names[0] === 'code')) found = true;
-      }
+      const outcome = classifyEscapeComparison(node, checker);
+      if (outcome === 'escape' || outcome === 'ambiguous') found = true;
     }
     if (node.kind === SyntaxKind.SwitchStatement) {
       const names = terminalNames(node.expression, 1);
       if (names.length === 1 && (names[0] === 'key' || names[0] === 'code')) {
         for (const clause of node.caseBlock.clauses) {
-          if (clause.kind === SyntaxKind.CaseClause && exactLiteralMatch(clause.expression, ESCAPE_LITERAL_SET)) {
-            found = true;
-            break;
-          }
+          if (clause.kind !== SyntaxKind.CaseClause) continue;
+          const resolved = resolveStringLiteralValue(clause.expression, checker);
+          if (resolved === undefined || resolved === 'Escape') { found = true; break; }
         }
       }
     }
@@ -2792,13 +2925,24 @@ const SHELL_BODY_MOUNT_POLICY = Object.freeze([
  * and its owning declaration's initializer. Never gated by a raw
  * `source.includes(...)` prefilter — see this section's header comment on
  * why a text prefilter is unsound for this check (the repo's own recorded
- * recurring failure mode).
+ * recurring failure mode). A `let`/`var` binding's initializer is not the
+ * only value it can ever hold: `laterAssignmentResolvesToDocumentBody`
+ * (#592 review pass 2, ChatGPT PR #672 pass 2 P1) also checks every
+ * whole-binding reassignment (`body = document.body;`) anywhere in
+ * `sourceFile` — a real Document-body mount reached only through a LATER
+ * reassignment (`let body = document.createElement('div'); body =
+ * document.body; body.appendChild(panel)`) previously resolved `false`
+ * (the initializer's own, stale value) and escaped this guard entirely.
  *
  * @param {object} node
  * @param {object} checker the file's real TypeScript `Checker`
+ * @param {object} [sourceFile] the file `node` was parsed from — required to
+ *   detect a later reassignment of a `let`/`var` binding; every real caller
+ *   has one, so only synthetic/legacy call sites without one skip that
+ *   specific check
  * @returns {boolean}
  */
-function resolvesToDocumentBody(node, checker) {
+function resolvesToDocumentBody(node, checker, sourceFile) {
   const expr = unwrapCastWrappers(node);
   if (!expr) return false;
   if (expr.kind === SyntaxKind.PropertyAccessExpression && expr.name.text === 'body') {
@@ -2833,9 +2977,43 @@ function resolvesToDocumentBody(node, checker) {
     return !!(owner && owner.initializer && resolveGlobalKind(owner.initializer, checker) === 'document');
   }
   if (declNode.kind === SyntaxKind.VariableDeclaration && declNode.initializer) {
-    return resolvesToDocumentBody(declNode.initializer, checker);
+    if (resolvesToDocumentBody(declNode.initializer, checker, sourceFile)) return true;
+    if (!isConstVariableDeclaration(declNode) && sourceFile
+      && laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker)) return true;
+    return false;
   }
   return false;
+}
+
+/** True when a `let`/`var` binding (`declNode`, already known non-`const`)
+ *  is EVER whole-binding reassigned (`<identifier> = <expr>;`) anywhere in
+ *  `sourceFile` to a value that ITSELF structurally resolves to
+ *  `Document.body`. Deliberately no control-flow/ordering analysis — unlike
+ *  `resolveObjectCaptureLiteral`'s own property-evaluation-order walk
+ *  (sound because object-literal property order is a real, unconditional JS
+ *  semantic), a later STATEMENT's execution order relative to the mount
+ *  call site is not, once branches/loops exist — ANY such reassignment
+ *  anywhere is conservatively enough to flag the whole binding as a
+ *  possible mount, matching this guard's own established bias: a
+ *  manually-reviewed false positive is far cheaper than a silently escaped
+ *  real mount. This is deliberately narrow (it only fires for a binding
+ *  reassigned to something that ITSELF resolves to `Document.body`), so an
+ *  ordinary `let container = createDiv(); container.appendChild(row);` —
+ *  never reassigned to `document.body` — is entirely unaffected. */
+function laterAssignmentResolvesToDocumentBody(sourceFile, declNode, checker) {
+  let found = false;
+  walkTree(sourceFile, (node) => {
+    if (found) return;
+    if (node.kind !== SyntaxKind.BinaryExpression || node.operatorToken.kind !== SyntaxKind.EqualsToken) return;
+    const target = node.left;
+    if (target.kind !== SyntaxKind.Identifier) return;
+    const symbol = checker.getSymbolAtLocation(target);
+    if (!symbol) return;
+    const handle = symbol.valueDeclaration ?? symbol.declarations[0];
+    if (handle?.resolve() !== declNode) return;
+    if (resolvesToDocumentBody(node.right, checker, sourceFile)) found = true;
+  });
+  return found;
 }
 
 /**
@@ -2869,7 +3047,7 @@ function bodyMountCandidates(sourceFile, checker) {
     }
     if (apiName !== 'appendChild' && apiName !== 'append') return;
     if (!receiver) return;
-    if (!resolvesToDocumentBody(receiver, checker)) return;
+    if (!resolvesToDocumentBody(receiver, checker, sourceFile)) return;
     candidates.push({
       node, api: apiName, scopePath: enclosingScopePath(node), scopeNode: innermostScopeNode(node),
       pos: node.getStart(sourceFile),
@@ -3031,12 +3209,12 @@ function captureEscapeCandidates(sourceFile, checker) {
     const scopePath = enclosingScopePath(node);
     const third = args[2];
     if (!third) return; // no options at all — provably non-capture (bubble phase)
-    const captureFlag = resolveCaptureFlag(third, checker);
+    const captureFlag = resolveCaptureFlag(third, checker, sourceFile);
     if (captureFlag === false) return; // provably non-capture
     if (captureFlag === null) { out.push({ kind: 'uncheckable-options', scopePath, pos }); return; }
     const handlerNode = resolveHandlerNode(args[1], checker);
     if (!handlerNode) { out.push({ kind: 'uncheckable-handler', scopePath, pos }); return; }
-    out.push({ kind: containsEscapeSemantics(handlerNode) ? 'escape' : 'clean', scopePath, pos });
+    out.push({ kind: containsEscapeSemantics(handlerNode, checker) ? 'escape' : 'clean', scopePath, pos });
   });
   return out;
 }
@@ -3121,16 +3299,38 @@ function shellCaptureEscapeViolations(sourceFile, filename, checker) {
  * handler/options identifier resolve to") are answered by the real binder,
  * never a hand-rolled scope walk.
  *
+ * `options.completeTree: true` (#592 review pass 2, ChatGPT PR #672 pass 2
+ * P2) additionally folds the STRICT (complete-tree) reverse-baseline half
+ * (`shellGuardrailStrictReverseViolations` below) into this SAME batch,
+ * instead of a caller opening a SECOND `withParsedSources` batch (a second
+ * native TypeScript-parser child process) to get it — the production
+ * `check:arch` wiring in `build/check-boundaries.mjs` previously called this
+ * function AND `findShellGuardrailMissingBaselineViolations` separately over
+ * the identical `sources`, each spinning up its own batch, directly
+ * contradicting this function's own "ONE shared parser batch" contract.
+ * Only pass `true` when `sources` really is the complete scanned tree (the
+ * same precondition `findShellGuardrailMissingBaselineViolations` already
+ * documents) — a partial/synthetic fixture batch must never set this.
+ *
  * @param {readonly {filename: string, source: string}[]} sources
+ * @param {{completeTree?: boolean}} [options]
  * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
  */
-export function findShellGuardrailSourceContractViolations(sources) {
+export function findShellGuardrailSourceContractViolations(sources, options) {
+  const completeTree = !!options?.completeTree;
   return withParsedSources(sources, (sourceFiles, checkers) => {
     const violations = [];
     for (const [filename, sourceFile] of sourceFiles) {
       const checker = checkers.get(filename);
       violations.push(...shellBodyMountViolations(sourceFile, filename, checker));
       violations.push(...shellCaptureEscapeViolations(sourceFile, filename, checker));
+    }
+    if (completeTree) {
+      // Both reverse-baseline halves — the parser-independent whole-file
+      // absence check and the parser-dependent per-scope count check — fold
+      // into this SAME batch; neither opens (or needs) a second one.
+      violations.push(...shellGuardrailMissingFileViolations(sources));
+      violations.push(...shellGuardrailStrictReverseViolations(sourceFiles, checkers));
     }
     return violations;
   });
@@ -3142,8 +3342,10 @@ export function findShellGuardrailSourceContractViolations(sources) {
  *  NEVER consults `declaredScopeKeys` first: a genuinely deleted approved
  *  function-like scope simply contributes zero occurrences here, exactly
  *  like a real disappeared mount within a still-present scope does, because
- *  this function's only caller (`findShellGuardrailMissingBaselineViolations`)
- *  already guarantees `sourceFile` is the complete real file, never a
+ *  this function's only callers (`shellGuardrailStrictReverseViolations`
+ *  below, reached either through `findShellGuardrailSourceContractViolations`'s
+ *  own `completeTree` mode or through `findShellGuardrailMissingBaselineViolations`)
+ *  already guarantee `sourceFile` is the complete real file, never a
  *  partial synthetic fixture. */
 function shellBodyMountMissingBaselineViolationsStrict(sourceFile, filename, checker) {
   const counts = new Map();
@@ -3196,46 +3398,43 @@ function shellCaptureEscapeMissingBaselineViolationsStrict(sourceFile, filename,
   return violations;
 }
 
-/**
- * The complete-tree REVERSE half of the #592 shell-guardrail source
- * contract — deliberately SEPARATE from `findShellGuardrailSourceContractViolations`,
- * for the exact reason `findShellFixedPositionMissingBaselineViolations` is
- * a separate export from `findShellFixedPositionViolations` (see that
- * pair's own doc comments): `declaredScopeKeys`'s own softening — "a scope
- * not part of what was scanned is not this call's concern" — exists ONLY to
- * keep the forward check's reverse pass safe for this suite's many minimal
- * single-scope synthetic fixtures (a fixture reproducing just ONE of a real
- * file's several approved scopes, under that file's real name). It CANNOT
- * tell a genuinely complete file with an approved function/scope deleted
- * apart from a fixture that never declared that scope to begin with — both
- * simply lack a function-like node at that scope path — so a real approved
- * function's outright deletion (or an approved FILE's outright deletion)
- * produced zero violations from the forward check's own reverse pass alone
- * (PR #672 review pass 1 follow-up, ChatGPT): the forward check's own
- * per-file loop (`findShellGuardrailSourceContractViolations` above) never
- * even iterates a filename `sources` doesn't contain, and its softened
- * reverse pass skips a scope that no longer parses out of a still-present
- * file exactly like it skips one that was never in scope at all.
+/** The parser-DEPENDENT half of the complete-tree reverse-baseline check —
+ *  `shellBodyMountMissingBaselineViolationsStrict`/
+ *  `shellCaptureEscapeMissingBaselineViolationsStrict` for every file
+ *  already present in an EXISTING parsed batch (`sourceFiles`/`checkers`,
+ *  exactly the shape `withParsedSources`'s own callback receives) — factored
+ *  out so a caller that already has a parsed batch open (either
+ *  `findShellGuardrailSourceContractViolations`'s own `completeTree` mode,
+ *  folding this into its ONE shared batch, or
+ *  `findShellGuardrailMissingBaselineViolations`'s own standalone batch
+ *  below) runs this reverse half WITHOUT opening a second one (#592 review
+ *  pass 2, ChatGPT PR #672 pass 2 P2; Architecture decision 4).
  *
- * This export assumes `sources` IS the complete scanned tree (its only real
- * caller is `build/check-boundaries.mjs`'s live `collectFiles(src/)` batch,
- * which reads every file under `src/**` from disk) and reports, WITHOUT
- * that softening:
- *   - every `SHELL_BODY_MOUNT_POLICY`/`SHELL_CAPTURE_ESCAPE_POLICY` entry
- *     whose OWN `filename` has no matching entry in `sources` at all — a
- *     whole approved FILE deleted outright;
- *   - every remaining entry whose approved scope's real occurrence count is
- *     below its frozen baseline — covering BOTH a dropped count within a
- *     still-present function AND an approved function deleted (or renamed)
- *     outright, uniformly: a deleted function-like node simply has no
- *     scope-path key in the real tree at all, so it counts as zero
- *     occurrences exactly like a real disappeared mount/listener, with no
- *     "declared at all" softening asked first.
+ * @param {Map<string, object>} sourceFiles filename -> parsed `SourceFile`
+ * @param {Map<string, object>} checkers filename -> that file's real `Checker`
+ * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
+ */
+function shellGuardrailStrictReverseViolations(sourceFiles, checkers) {
+  const out = [];
+  for (const [filename, sourceFile] of sourceFiles) {
+    const checker = checkers.get(filename);
+    out.push(...shellBodyMountMissingBaselineViolationsStrict(sourceFile, filename, checker));
+    out.push(...shellCaptureEscapeMissingBaselineViolationsStrict(sourceFile, filename, checker));
+  }
+  return out;
+}
+
+/** The parser-INDEPENDENT half of the complete-tree reverse-baseline check —
+ *  every `SHELL_BODY_MOUNT_POLICY`/`SHELL_CAPTURE_ESCAPE_POLICY` entry whose
+ *  OWN approved `filename` has no matching entry in `sources` at all (a
+ *  whole approved FILE deleted outright). A whole-file absence needs no AST
+ *  at all, so this half never needs (and never opens) a parser batch —
+ *  unlike `shellGuardrailStrictReverseViolations` above, which does.
  *
  * @param {readonly {filename: string, source: string}[]} sources
  * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
  */
-export function findShellGuardrailMissingBaselineViolations(sources) {
+function shellGuardrailMissingFileViolations(sources) {
   const present = new Set(sources.map((s) => s.filename));
   const violations = [];
   for (const entry of SHELL_BODY_MOUNT_POLICY) {
@@ -3258,21 +3457,70 @@ export function findShellGuardrailMissingBaselineViolations(sources) {
         + 'restore it if this is unintended drift',
     ));
   }
+  return violations;
+}
+
+/**
+ * The complete-tree REVERSE half of the #592 shell-guardrail source
+ * contract — deliberately SEPARATE from `findShellGuardrailSourceContractViolations`,
+ * for the exact reason `findShellFixedPositionMissingBaselineViolations` is
+ * a separate export from `findShellFixedPositionViolations` (see that
+ * pair's own doc comments): `declaredScopeKeys`'s own softening — "a scope
+ * not part of what was scanned is not this call's concern" — exists ONLY to
+ * keep the forward check's reverse pass safe for this suite's many minimal
+ * single-scope synthetic fixtures (a fixture reproducing just ONE of a real
+ * file's several approved scopes, under that file's real name). It CANNOT
+ * tell a genuinely complete file with an approved function/scope deleted
+ * apart from a fixture that never declared that scope to begin with — both
+ * simply lack a function-like node at that scope path — so a real approved
+ * function's outright deletion (or an approved FILE's outright deletion)
+ * produced zero violations from the forward check's own reverse pass alone
+ * (PR #672 review pass 1 follow-up, ChatGPT): the forward check's own
+ * per-file loop (`findShellGuardrailSourceContractViolations` above) never
+ * even iterates a filename `sources` doesn't contain, and its softened
+ * reverse pass skips a scope that no longer parses out of a still-present
+ * file exactly like it skips one that was never in scope at all.
+ *
+ * This export assumes `sources` IS the complete scanned tree (its only real
+ * callers are `build/check-boundaries.mjs`'s live `collectFiles(src/)` batch
+ * — directly, and via `findShellGuardrailSourceContractViolations`'s own
+ * `completeTree: true` mode, #592 review pass 2 — which reads every file
+ * under `src/**` from disk) and reports, WITHOUT that softening:
+ *   - every `SHELL_BODY_MOUNT_POLICY`/`SHELL_CAPTURE_ESCAPE_POLICY` entry
+ *     whose OWN `filename` has no matching entry in `sources` at all — a
+ *     whole approved FILE deleted outright;
+ *   - every remaining entry whose approved scope's real occurrence count is
+ *     below its frozen baseline — covering BOTH a dropped count within a
+ *     still-present function AND an approved function deleted (or renamed)
+ *     outright, uniformly: a deleted function-like node simply has no
+ *     scope-path key in the real tree at all, so it counts as zero
+ *     occurrences exactly like a real disappeared mount/listener, with no
+ *     "declared at all" softening asked first.
+ *
+ * This standalone export still opens its OWN `withParsedSources` batch when
+ * `sources` needs parsing at all (kept for every existing direct caller —
+ * this suite's own tests, and any future caller with no parsed batch
+ * already open); `build/check-boundaries.mjs`'s production wiring instead
+ * reaches the identical parser-dependent logic through
+ * `findShellGuardrailSourceContractViolations`'s `completeTree` mode, over
+ * that call's own already-open batch (#592 review pass 2, ChatGPT PR #672
+ * pass 2 P2) — never both, so the production path never opens two.
+ *
+ * @param {readonly {filename: string, source: string}[]} sources
+ * @returns {{rule: string, filename: string, pos: number, detail: string}[]}
+ */
+export function findShellGuardrailMissingBaselineViolations(sources) {
+  const violations = shellGuardrailMissingFileViolations(sources);
   const neededFilenames = new Set([
     ...SHELL_BODY_MOUNT_POLICY.map((e) => e.filename),
     ...SHELL_CAPTURE_ESCAPE_POLICY.map((e) => e.filename),
   ]);
   const toParse = sources.filter((s) => neededFilenames.has(s.filename));
   if (toParse.length === 0) return violations;
-  return violations.concat(withParsedSources(toParse, (sourceFiles, checkers) => {
-    const out = [];
-    for (const [filename, sourceFile] of sourceFiles) {
-      const checker = checkers.get(filename);
-      out.push(...shellBodyMountMissingBaselineViolationsStrict(sourceFile, filename, checker));
-      out.push(...shellCaptureEscapeMissingBaselineViolationsStrict(sourceFile, filename, checker));
-    }
-    return out;
-  }));
+  return violations.concat(withParsedSources(
+    toParse,
+    (sourceFiles, checkers) => shellGuardrailStrictReverseViolations(sourceFiles, checkers),
+  ));
 }
 
 // ── Guard 2: `shell-fixed-position` (focused CSS lexical scanner) ───────────
@@ -3386,7 +3634,14 @@ function firstMeaningfulCssOffset(source, from) {
  * ever recorded 'at'-kind ancestor frames, silently skipping over any
  * enclosing 'rule'-kind frame instead of folding it into the fingerprint or
  * rejecting it, so a nested plain rule fingerprinted identically to its
- * unwrapped, already-approved counterpart.
+ * unwrapped, already-approved counterpart. `processDeclaration` also
+ * searches OUTWARD past any number of intervening 'at' frames for the
+ * nearest enclosing 'rule' frame (#592 review pass 2, ChatGPT PR #672 pass
+ * 2 P1) rather than only ever inspecting the single innermost frame — a bare
+ * declaration directly inside an at-rule nested in a style rule (`.rogue {
+ * @media (...) { position: fixed; } }`, real CSS nesting: the declaration
+ * inherits `.rogue` as its selector) previously produced zero candidates at
+ * all, not merely an unflagged one.
  *
  * @param {string} source
  * @returns {{selector: string, atRule: string | null, nested: boolean, pos: number}[]}
@@ -3422,11 +3677,26 @@ export function scanFixedPositionDeclarations(source) {
     const value = decodeCssEscapes(trimmed.slice(colonIdx + 1)).trim();
     if (prop.toLowerCase() !== 'position') return;
     if (!/^fixed(\s*!\s*important)?$/i.test(normalizeCssText(value))) return;
-    const innermost = frames[frames.length - 1];
-    if (!innermost || innermost.kind !== 'rule') return; // no selector context — out of this rule's scope
+    // Find the NEAREST enclosing 'rule' frame, searching outward through any
+    // number of 'at' frames in between (#592 review pass 2, ChatGPT PR #672
+    // pass 2 P1) — a bare declaration can sit directly inside an at-rule that
+    // is itself nested inside a style rule (`.rogue { @media (...) {
+    // position: fixed; } }`, real, browser-supported CSS nesting: the
+    // declaration inherits `.rogue` as its selector). The prior version only
+    // ever inspected the SINGLE innermost frame and bailed the instant it
+    // wasn't a 'rule' frame, so this exact shape produced zero candidates —
+    // not merely unflagged, entirely invisible to the guard.
+    let ruleIdx = -1;
     const atChain = [];
+    for (let k = frames.length - 1; k >= 0; k--) {
+      if (frames[k].kind === 'at') { atChain.push(frames[k].prelude); continue; }
+      ruleIdx = k;
+      break;
+    }
+    if (ruleIdx === -1) return; // no enclosing rule at all — out of this rule's scope
+    const innermost = frames[ruleIdx];
     let nested = false;
-    for (let k = frames.length - 2; k >= 0; k--) {
+    for (let k = ruleIdx - 1; k >= 0; k--) {
       if (frames[k].kind === 'at') atChain.push(frames[k].prelude);
       else nested = true; // an enclosing 'rule'-kind frame, at ANY depth — real CSS nesting
     }

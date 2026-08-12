@@ -132,7 +132,15 @@ function selectorTargetsResizeHandleClass(selector, className) {
  *  cascade could render a completely different pixel width; a SOLE
  *  `calc()`/`var()` declaration (no clean numeric sibling at all) is a
  *  single `NaN` entry, which the exact-equality contract below can never
- *  treat as a match for the real `HANDLE_PX` either. */
+ *  treat as a match for the real `HANDLE_PX` either. The value-side regex's
+ *  terminator matches a trailing `;` OR the end of the rule body itself
+ *  (`(?:;|$)`, P1 follow-up, ChatGPT PR #672 review pass 2): a real CSS
+ *  engine terminates a rule's LAST declaration at the closing `}` even with
+ *  no trailing `;` (`.inspector-resize { width: 8px }`), but the prior
+ *  regex required a literal `;` — so that declaration contributed ZERO
+ *  entries, not even the NaN fail-closed entry a non-literal value gets,
+ *  silently passing the contract even though the real cascade renders that
+ *  width. */
 function extractSharedResizeWidthPx(cssSource) {
   const values = [];
   for (const rule of flatCssRules(cssSource)) {
@@ -140,7 +148,7 @@ function extractSharedResizeWidthPx(cssSource) {
       (s) => selectorTargetsResizeHandleClass(s, 'col-resize') || selectorTargetsResizeHandleClass(s, 'inspector-resize'),
     );
     if (!targets) continue;
-    for (const m of rule.body.matchAll(/\bwidth\s*:\s*([^;]+?)\s*;/g)) {
+    for (const m of rule.body.matchAll(/\bwidth\s*:\s*([^;]+?)\s*(?:;|$)/g)) {
       const numeric = /^(-?\d+(?:\.\d+)?)px(?:\s*!\s*important)?$/i.exec(m[1].trim());
       values.push(numeric ? Number(numeric[1]) : NaN);
     }
@@ -302,6 +310,16 @@ describe('#592 resize-handle thickness contract sabotage (synthetic — independ
     expect(status.cssValues).toHaveLength(2);
     expect(status.cssValues[0]).toBe(7);
     expect(Number.isNaN(status.cssValues[1])).toBe(true);
+  });
+
+  it('a later standalone override with NO trailing semicolon (end-of-rule-body terminator) is still counted', () => {
+    // P1 follow-up (ChatGPT PR #672 review pass 2): the value-side regex
+    // required a literal trailing `;`, but a real CSS engine terminates the
+    // LAST declaration in a rule at the closing `}` just as validly — this
+    // declaration must not silently contribute zero entries.
+    const css = `${CLEAN_CSS}.inspector-resize { width: 8px }\n`;
+    const status = resizeHandleContractStatus(CLEAN_JS, css);
+    expect(status).toMatchObject({ ok: false, reason: 'css-ambiguous', cssValues: [7, 8] });
   });
 
   it('a SOLE var(...) declaration (no clean numeric sibling) is a single unconvertible NaN value, never a false match', () => {
