@@ -80,42 +80,57 @@ its task notification; do not poll and do not start other review work meanwhile.
   `status: invalid_request`, exit before any prompt reaches ChatGPT) — this is
   enforced by the tool, not just the workflow script's loop bound, so re-invoking the
   workflow with that session's handle past pass 3 will fail outright, not silently
-  succeed.** Once a session's 3 formal `pr`-mode passes are spent, continue the SAME
-  conversation by driving the existing tab directly instead of the capped CLI: read
-  the DOM, submit a revision/advisory/final-verdict message via
-  `document.execCommand('insertText', ...)` + a real click on the send button (same
-  technique as the Chrome-crash recovery path in `SKILL.md` step 2.2), ask explicitly
-  for the standard `VERDICT: SHIP`/`VERDICT: REVISE` protocol if you need a formal
-  certification out of it, and post the result as a PR comment yourself (`gh pr
-  comment`) since no CLI publish step ran. A fresh conversation (no `--session` and no
-  `--seed-from-session`) is correct only when starting a genuinely new unit that has
-  never had one.
+  succeed.** Once a session's 3 formal `pr`-mode passes are spent, the chatgpt-review
+  skill's own current rule ("never drive ChatGPT manually... use the blocking Node
+  script for all browser interaction") forbids driving the existing tab's DOM directly
+  to route around the cap — do not do that, even for a one-off revision/verdict. The
+  sanctioned continuations are, in order:
+  1. The mandatory post-cap architecture consultation below (uncapped `issue` mode,
+     `--seed-from-session` naming this exhausted session), then `SKILL.md` step 2.7's
+     gate/FULL STOP.
+  2. If the human's ruling at that gate directs further formal review on the SAME
+     conversation, open a brand-new `pr`-mode session — `session: null`,
+     `seedFromSession` naming this exhausted session's handle — for a fresh 3-pass
+     budget that reopens the identical browser tab/conversation. This is not a
+     route-around of the exhausted session's own cap (that session's record and pass
+     count are untouched and never reused past 3); it is a new session record on the
+     same conversation, exactly like any other cross-mode handoff described above. A
+     genuinely fresh conversation (no `--session` and no `--seed-from-session`) is
+     correct only when starting a unit that has never had one.
 
-- **Recovering a stalled or hung generation.** Across every phase of issue #630 from
-  plan authoring onward, ChatGPT's own live tool calls (GitHub/repo investigation)
+- **Recovering a stalled or hung generation is now automatic, inside each loop's own
+  runner agent — never a manual coordinator step.** Across every phase of issue #630
+  from plan authoring onward, ChatGPT's own live tool calls (GitHub/repo investigation)
   repeatedly stalled mid-turn for 5-10+ minutes — a different failure from the
   plan-author completion-detection bug fixed in PR #650 (that one is a response that
   already finished but wasn't recognized; this one is a response still actively
-  "generating" with no new content appearing). **Before treating any loop's
-  `needs_human`/`error`/incomplete return as `SKILL.md`'s FULL STOP, rule out these two
-  usually-recoverable causes first** — most `needs_human` returns observed across
-  #630 were one of these, not a genuine plan/review impasse requiring the human's
-  judgment:
-  1. **A stalled generation.** Symptom: the tab shows a still-"generating" state (a
-     stop control present, e.g. `document.querySelector('[data-testid="stop-button"]')`
-     truthy) with no growth in the last assistant turn's content for several minutes.
-     Recovery: drive the existing tab directly (same technique as the pass-cap
-     paragraph above) — click the stop control, then send a short nudge in the SAME
-     conversation ("continue without further tool calls" or similarly specific), and
-     wait again. Never open a new session for this; it is not a conversation problem.
-  2. **A complete response already sitting in the DOM that a scripted runner's
-     completion check failed to recognize.** Read the last assistant turn's full text
-     directly from the tab before concluding nothing usable exists — a well-formed
-     verdict/plan-status line can be present even when the runner reported
-     incomplete.
+  "generating" with no new content appearing). Both loops' runner agents
+  (`code-review-pass.workflow.mjs`'s review pass, and the plan loop's equivalent) already
+  handle both cases via the script alone, never the DOM: on any non-complete result they
+  re-invoke the SAME `chatgpt-review` command with `--session <handle>` (replacing
+  whatever `--seed-from-session` it started with) for up to 4 total real CLI calls,
+  checking `response_text` for a parseable trailing verdict line FIRST regardless of the
+  literal `status` field (a well-formed verdict can be sitting in the response even when
+  `status` says `timed_out`/`rate_limited` — the runner treats that as complete, not
+  incomplete) before ever retrying. This is exactly the "complete response the checker
+  failed to recognize" and "stalled generation, resume without resending" cases handled
+  the sanctioned way — a script call, never `document.execCommand`/manual DOM reads,
+  consistent with the `chatgpt-review` skill's own "never drive ChatGPT manually" rule.
 
-  Only after ruling out both (or after they fail to actually resolve it) does
-  `SKILL.md`'s FULL STOP apply.
+  **By the time a loop returns `needs_human`, `error`, or `session-cap-exhausted` to the
+  coordinator, this automatic recovery has already run its course** — there is no
+  further manual recovery step left to try. Treat these returns as the real condition
+  they report per the tables above; do not attempt to "rule out" a stalled generation
+  yourself, and do not drive the tab directly to investigate it.
+
+  When the COORDINATOR itself drives `chatgpt-review` directly (an ad hoc consultation
+  or the post-cap architecture consultation below — no workflow-agent wrapper, no
+  built-in retry loop), the same principle applies manually but still script-only: if a
+  call returns incomplete, re-invoke the identical command with `--session <handle>`
+  from the returned JSON (never `--seed-from-session` a second time) up to a few times,
+  reading `response_text` for a parseable answer first. If it never resolves after a
+  handful of attempts, that is itself the FULL STOP condition — no manual tab-driving
+  fallback exists for the coordinator either.
 
 - **Ad hoc consultation for a genuinely hard judgment call.** The two formal loops certify
   a complete artifact against a verdict protocol — not the right tool for a single mid-cycle
@@ -129,10 +144,17 @@ its task notification; do not poll and do not start other review work meanwhile.
      plan-review/plan-author session from 2.2) — always continue THAT conversation (or a
      further-along code-review session), never open a new one, per "one unit, one ChatGPT
      conversation" above.
-  2. Drive the existing tab directly (the same technique as the pass-cap and
-     stalled-generation procedures above). Frame it explicitly as an ad hoc consultation, not
-     a formal review — no `VERDICT:` line, just the concrete question, the specific approaches
-     under consideration, and why internal review didn't settle it.
+  2. Use `chatgpt-review`'s `issue` mode (uncapped — the CLI's 3-pass check only fires for
+     `pr` mode) with `--seed-from-session <handle>` naming the most recent session for this
+     unit, e.g. `node skills/chatgpt-review/scripts/chatgpt-review.mjs issue <canonical
+     issue URL> --question-file <path>`. This reopens the SAME browser tab/conversation
+     under a brand-new, uncapped session record. No `--publish` — this stays private, not a
+     public review artifact. Frame the question file explicitly as an ad hoc consultation,
+     not a formal review — no `VERDICT:` line, just the concrete question, the specific
+     approaches under consideration, and why internal review didn't settle it. Never drive
+     the tab's DOM directly — the `chatgpt-review` skill's own rule ("never drive ChatGPT
+     manually... use the blocking Node script for all browser interaction") applies here
+     exactly as everywhere else.
   3. **Verify the answer yourself before acting on it** — the same standing principle as every
      formal finding, applied directly by the coordinator (read the real code/tests) since
      there is no separate fact-check pass for an ad hoc exchange.
@@ -196,8 +218,9 @@ returns `needs_human` (with the last round's raw `findings`, not an accepted/rej
 split) after five non-approved Fable passes or an authoring response that remains
 incomplete after bounded same-session retries — the latter case also carries
 `lastResponsePreview` (the final attempt's last ~500 raw characters) purely for
-diagnosis; before treating either as `SKILL.md`'s FULL STOP, check the two recoverable
-causes in "Recovering a stalled or hung generation" above.
+diagnosis — per "Recovering a stalled or hung generation" above, this loop's own runner
+already exhausted its retry attempts before returning `needs_human`, so no further
+manual recovery step exists; treat it as `SKILL.md`'s FULL STOP directly.
 
 ## Code review pass — `code-review-pass.workflow.mjs`
 
@@ -217,11 +240,11 @@ Coordinator loop per pass (max 3; the CLI errors on pass 4):
 | status | meaning | coordinator action |
 |---|---|---|
 | `certified-pending-proofs` | `VERDICT: SHIP`, no accepted findings | proceed to the gate (step 2.7) — still check SHA match, green CI, branch protection yourself |
-| `fixed-await-push` | accepted findings fixed, gate green, local commits made | verify the diff yourself, push, wait for green CI keyed on the head SHA, re-invoke with `pass+1` and the returned `session` |
-| `no-accepted-findings` | REVISE, but nothing survived verification | append the rebuttals to the question file; re-invoke (spends a pass) — or go to the gate's FULL STOP if this repeats |
-| `session-cap-exhausted` | the session's 3 total `pr`-mode CLI calls were already spent before this pass could get a real review (an earlier pass's own internal retry silently ate an extra slot) | **do not re-invoke this workflow with this session** — switch immediately to the manual continuation below |
+| `fixed-await-push` | accepted findings fixed, gate green, local commits made | verify the diff yourself, push, wait for green CI keyed on the head SHA; if `pass < 3`, re-invoke with `pass+1` and the returned `session`; if this WAS pass 3 (the cap), run the post-cap architecture consultation below instead of re-invoking |
+| `no-accepted-findings` | REVISE, but nothing survived verification | append the rebuttals to the question file; if `pass < 3`, re-invoke (spends a pass); if this WAS pass 3, run the post-cap architecture consultation below |
+| `session-cap-exhausted` | the session's 3 total `pr`-mode CLI calls were already spent before this pass could get a real review (an earlier pass's own internal retry silently ate an extra slot) | **do not re-invoke this workflow with this session** — run the post-cap architecture consultation below, then proceed to the gate/FULL STOP per its outcome |
 | `fix-failed` | fix agent died or could not reach a green gate | **FULL STOP** at the gate with the gate tail |
-| `needs_human` | pass still incomplete after 4 resume attempts | rule out the two recoverable causes in "Recovering a stalled or hung generation" below FIRST; only **FULL STOP** at the gate if neither applies |
+| `needs_human` | pass still incomplete after 4 resume attempts (already exhausted inside the runner — see "Recovering a stalled or hung generation" above) | **FULL STOP** at the gate directly — no further recovery step exists |
 | `error` | runner agent died | inspect the journal; the pass may have published — check the PR before re-invoking |
 
 The workflow never pushes: `fixed-await-push` commits stay local until the coordinator
@@ -236,3 +259,89 @@ invocations are guaranteed — `session-cap-exhausted` (or a plain CLI `invalid_
 rejection, if driving `chatgpt-review` directly) is an expected possible outcome of
 *any* pass, not only a literal 4th call. `attemptsUsed` in every return tells you how
 many real slots that pass actually spent, for the ship-log record.
+
+## Post-cap architecture consultation — mandatory, automatic
+
+Whenever a code-review session's FINAL pass under its 3-pass cap completes WITHOUT
+producing a certified head — `fixed-await-push` (after its own normal push/CI-wait
+handling above completes) or `no-accepted-findings` — the coordinator asks ChatGPT one
+consultation question in the SAME conversation before proceeding to `SKILL.md` step
+2.7. This applies every time any session for this unit exhausts its cap this way — a
+unit's first code-review session, or a later one opened after a redirect/restructuring
+— not only the first time.
+
+Applies to `fixed-await-push`/`no-accepted-findings` at the final pass (a real review
+happened without certifying), and to a `session-cap-exhausted` return at what was meant
+to be the final pass (the session's slots ran out before a fresh review could happen,
+but the branch may still hold real, already-fixed findings from an earlier pass in this
+same session worth a holistic check). Does NOT apply to `needs_human` (the pass never
+delivered a real review to reconsider — nothing coherent to ask about) or to
+`fix-failed`/`error` (immediate FULL STOP, per the table above).
+
+1. Verify and push any locally-committed fixes from the exhausted pass first (the
+   normal `fixed-await-push` handling), and confirm CI is green at that head — this
+   consultation needs an accurate, current SHA to ask about.
+2. Write a question file. The discussion stays open-ended, but this consultation carries
+   a real, mechanically-actionable verdict — unlike the general ad hoc consultation
+   above, which never does:
+
+   > Architecture consultation — this session's final formal review pass completed
+   > without certifying. Every accepted finding across all formal passes has been
+   > fixed, verified, and pushed; the local gate and CI are green at the current head
+   > `<SHA>`.
+   >
+   > Before this goes further, I'd like your candid, holistic opinion, stepping back
+   > from the individual findings:
+   >
+   > 1. **Architecture/approach soundness**: looking across everything you've reviewed
+   >    in this conversation, does the pattern of findings suggest the underlying
+   >    approach is fundamentally sound (just needed incremental hardening), or does it
+   >    suggest a deeper structural problem that should be reconsidered?
+   > 2. **Plan**: does the approved implementation plan itself need to change, or was
+   >    this entirely expected edge-case hardening within the plan's existing design?
+   > 3. **Verdict reconsideration**: taking the whole conversation into account now that
+   >    every finding has been fixed, and confirming you are still evaluating head
+   >    `<SHA>` — do you have any remaining concern, however small?
+   >
+   > End your response with exactly one line: `VERDICT: SHIP` if you have no remaining
+   > concerns at all, or `VERDICT: REVISE` if you do (state the concern above the
+   > verdict line either way). A missing or malformed verdict is treated as REVISE.
+
+3. Invoke, from the coordinator directly (not a Workflow call — same pattern as the
+   general ad hoc consultation above):
+
+   ```sh
+   node skills/chatgpt-review/scripts/chatgpt-review.mjs issue <canonical issue URL> \
+     --question-file <path> \
+     --seed-from-session <the exhausted session's own handle>
+   ```
+
+   No `--publish` — this stays private, even though its `SHIP` outcome (below) is a
+   real certification path, not merely advisory prose. If the call returns incomplete,
+   retry the identical command with `--session <handle>` from the returned JSON (never
+   re-seed) a few times before treating it as unresolved — per "Recovering a stalled or
+   hung generation" above, this is script-only, never manual tab-driving.
+4. **Parse the verdict line mechanically, fail-closed** — same discipline as every other
+   verdict in this skill:
+   - **`VERDICT: SHIP`** → this round IS sufficient certification. Independently
+     re-confirm the current PR head SHA still matches what this round evaluated
+     (cross-check the CLI's own `reported_reviewed_sha` field against the actual
+     current PR head — same discipline `certified-pending-proofs` already requires),
+     then proceed straight to the merge gate (`SKILL.md` 2.7: CI green, branch
+     protection permits) and merge automatically — no human step, no PR comment for
+     this round. Still run the standing `git diff`/`git log`/`gh pr list` verification
+     before merging, same as always. Record in the ship log that this unit certified
+     via the post-cap architecture consultation, not a formal `pr`-mode pass, citing the
+     conversation URL.
+   - **`VERDICT: REVISE`** (or unparseable) → proceed to `SKILL.md` 2.7's FULL STOP —
+     carry the full response forward into the human-facing summary and the ship-log
+     entry.
+5. Either way, this round's SUBSTANTIVE claims (the architecture/plan discussion, not
+   the verdict line) are never independently fact-checked and never trigger another fix
+   pass — only the verdict line is acted on mechanically, and never treated as a bypass
+   of any gate check besides the certification requirement itself. If a `REVISE` answer
+   points at one root cause across multiple findings, that is exactly the signal
+   `per-issue-cycle.md`'s root-cause circuit breaker describes — worth flagging to the
+   human as a candidate for that response (restructure before another review session)
+   rather than continuing to patch findings one at a time, but that decision is still
+   the human's to make at the gate.

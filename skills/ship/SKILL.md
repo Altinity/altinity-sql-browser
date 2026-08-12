@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope into dependency-ordered units (a phase or a whole issue), then for each unit in turn author and approve its plan with the selected ChatGPT (default) or Fable planner workflow (max 5 review passes), implement code and tests, open that unit's own PR, iterate a ChatGPT code review loop to certification (max 3 passes), and merge automatically when every proof condition holds — auto-chaining to the next unit off the just-merged origin/main with no re-prompting. Stops the whole run only when a unit's plan or merge proof exhausts its review passes; stops only a gated unit's own spine — every other independent unit or spine still ships in the same run — when the issue explicitly gates further phases on a new decision. Invoke as `/ship ISSUE [--planner chatgpt|fable]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
+description: Ship altinity-sql-browser roadmap issues or phases end-to-end, autonomously — resolve scope into dependency-ordered units (a phase or a whole issue), then for each unit in turn author and approve its plan with the selected ChatGPT (default) or Fable planner workflow (max 5 review passes), implement code and tests, open that unit's own PR, iterate a ChatGPT code review loop to certification (max 3 passes, with a mandatory post-cap architecture consultation as the last word before stopping), and merge automatically when every proof condition holds — auto-chaining to the next unit off the just-merged origin/main with no re-prompting. Stops the whole run only when a unit's plan or merge proof exhausts its review passes; stops only a gated unit's own spine — every other independent unit or spine still ships in the same run — when the issue explicitly gates further phases on a new decision. Invoke as `/ship ISSUE [--planner chatgpt|fable]`, `/ship ISSUE.PHASE`, or `/ship ISSUE1,ISSUE2`.
 ---
 
 # /ship — deliver altinity-sql-browser issues autonomously
@@ -36,7 +36,8 @@ There are exactly three stop reasons:
 
 1. a unit's plan is not approved after **5** review passes (step 2.2);
 2. a unit's merge proof condition fails at its own gate — including no certified head
-   after **3** code review passes (step 2.7);
+   after **3** code review passes AND the mandatory post-cap architecture consultation
+   itself returns `VERDICT: REVISE` rather than `SHIP` (step 2.6/2.7);
 3. an explicit phase/issue **gate** is reached before starting the next unit on a spine
    (gate detection: step 1, re-checked at step 2.8 for every subsequent unit).
 
@@ -140,7 +141,13 @@ this default beyond which Workflow script gets invoked — both are described th
 - Beyond the two formal loops, the coordinator may consult ChatGPT ad hoc for a
   genuinely hard judgment call — never pass-counted (it isn't a `chatgpt-review`
   invocation, so it doesn't conflict with the single-permitted-invocation rule above),
-  never a substitute for internal review; see `references/review-loops.md`.
+  never a substitute for internal review; see `references/review-loops.md`. One specific
+  case of this is mandatory, not optional: whenever a code-review session's final pass
+  under its 3-pass cap ends without certifying, the coordinator automatically runs the
+  post-cap architecture consultation (`references/review-loops.md`) before reaching
+  step 2.7 — unlike the general ad hoc case, this one carries a real, schema-free but
+  mechanically fail-closed `VERDICT: SHIP`/`VERDICT: REVISE` line that can itself
+  certify the head (step 2.6/2.7).
 
 ### Output capture
 
@@ -522,27 +529,38 @@ loops the full local gate to green, and commits **locally only**. Act on the ret
 per the table in `references/review-loops.md`:
 
 - `fixed-await-push` → diff the commits yourself, push, wait for green CI keyed on the
-  head SHA, re-invoke with `pass+1` and the returned `session` handle so ChatGPT
-  reassesses every earlier finding in the same conversation. Each fix pass gets its own
-  pushed commit and separately labelled public review comment.
-- `no-accepted-findings` → append the rebuttals to the question file and re-invoke
-  (spends a pass).
-- `session-cap-exhausted` → do NOT re-invoke this workflow with this session; switch
-  immediately to the manual continuation in `references/review-loops.md` (driving the
-  existing tab directly) — this is expected tooling behavior, not a failed proof
-  condition.
-- `needs_human` → first rule out the two recoverable causes in
-  `references/review-loops.md`'s "Recovering a stalled or hung generation" (a stuck
-  live generation; a complete response the runner failed to recognize) — only then
-  treat it as a failed proof condition at the gate (2.7).
+  head SHA. If `pass < 3`, re-invoke with `pass+1` and the returned `session` handle so
+  ChatGPT reassesses every earlier finding in the same conversation — each fix pass
+  gets its own pushed commit and separately labelled public review comment. **If this
+  was pass 3** (the cap, no certification reached), do not re-invoke — run the mandatory
+  post-cap architecture consultation in `references/review-loops.md` instead, before
+  proceeding per its outcome (below).
+- `no-accepted-findings` → append the rebuttals to the question file; if `pass < 3`,
+  re-invoke (spends a pass). **If this was pass 3**, run the post-cap architecture
+  consultation instead of re-invoking.
+- `session-cap-exhausted` → do NOT re-invoke this workflow with this session; run the
+  post-cap architecture consultation in `references/review-loops.md` instead — this is
+  expected tooling behavior, not itself a failed proof condition.
+- `needs_human` → this loop's own runner already exhausted its automatic retry attempts
+  (see `references/review-loops.md`'s "Recovering a stalled or hung generation") before
+  returning this — treat it as a failed proof condition at the gate (2.7) directly, no
+  further recovery step to try.
 - `fix-failed`, `error` → treat as a failed proof condition at the gate (2.7).
 
-A **certified head** is a `certified-pending-proofs` return (completed pass, verdict
-`SHIP`, no accepted findings) whose reviewed SHA equals this unit's current PR head.
+A **certified head** is either:
+- a `certified-pending-proofs` return (completed pass, verdict `SHIP`, no accepted
+  findings) whose reviewed SHA equals this unit's current PR head; or
+- a `VERDICT: SHIP` from the post-cap architecture consultation (triggered when pass 3
+  ends without certifying — `references/review-loops.md`), whose independently-confirmed
+  reviewed SHA equals this unit's current PR head. This path skips the human gate
+  entirely: proceed straight through 2.7's remaining checks (CI green, branch
+  protection) and merge automatically. A `VERDICT: REVISE` (or unparseable) from that
+  same consultation is NOT a certified head — proceed to 2.7's FULL STOP instead.
 
-- First clean pass at the current head → certified; stop reviewing. Never re-review an
-  already-certified head — three is a failure ceiling, not a ritual (and the
-  `chatgpt-review` script enforces the cap for `pr` mode).
+- First clean pass (or consultation `SHIP`) at the current head → certified; stop
+  reviewing. Never re-review an already-certified head — three formal passes is a
+  failure ceiling, not a ritual (and the `chatgpt-review` script enforces the cap for
+  `pr` mode) — the consultation exists precisely for what happens after that ceiling.
 - **After certification, push nothing.** Any push voids the certification and burns
   another pass — which is why all reconcile commits landed in 2.5. Ship-log comment
   edits are fine; comments are not commits.
@@ -574,16 +592,24 @@ mutate main directly" remote rule above — the remote is untouched either way).
 after that, verify the merge landed on `origin/main` and flip this unit's own ship-log
 row to `shipped`.
 
-**Any condition fails** — no certified head after 3 passes, ChatGPT unreachable or a
-pass incomplete, SHA drift, CI red or pending, branch protection refusal — → **FULL
+**Any condition fails** — no certified head after 3 passes AND the post-cap
+architecture consultation returned `VERDICT: REVISE`/unparseable, ChatGPT unreachable or
+a pass incomplete, SHA drift, CI red or pending, branch protection refusal — → **FULL
 STOP, right now, for the whole run.** Do not merge, and do not attempt any further unit
-or spine. Summarize the PR URL, head SHA, CI state, certification state, and every
-accepted, rejected, and **unresolved** finding with its comment URL, then ask the human
-to rule: merge anyway, leave the PR open, or direct further work. Their decision
-governs. **Even after the human rules and a real fix lands, do not open a fresh
-ChatGPT session to re-certify it** — continue the SAME session this unit has used since
-its plan was authored (see `references/review-loops.md`'s "one unit, one ChatGPT
-session" rule); a fresh session throws away everything already reviewed.
+or spine. Summarize the PR URL, head SHA, CI state, certification state, every
+accepted, rejected, and **unresolved** finding with its comment URL, and the post-cap
+architecture consultation's full answer if one was triggered (a `SHIP` verdict there
+short-circuits to the certified-head merge above and never reaches this paragraph — only
+a `REVISE`/unparseable one does), then ask the human to rule: merge anyway, leave the PR
+open, or direct further work. Their decision governs. **Even after the human rules and a
+real fix lands, do not open a fresh ChatGPT session to re-certify it** — continue the
+SAME session this unit has used since its plan was authored (see
+`references/review-loops.md`'s "one unit, one ChatGPT session" rule); a fresh session
+throws away everything already reviewed. If the human directs further formal review on
+the same conversation, that means a brand-new `pr`-mode session (`seedFromSession`
+naming the exhausted one) for a fresh 3-pass budget, per
+`references/review-loops.md`'s pass-cap continuation guidance — never a route-around of
+the exhausted session's own cap.
 
 ### 2.8 Before the next unit: re-check the gate, then auto-chain or stop
 
@@ -610,7 +636,9 @@ Report per unit — a run can now produce several PRs and several merges:
 - **Shipped units**: PR URL, merge URL, merged head SHA, CI state, plan-loop pass count
   + conversation URL, code-review pass count + every ChatGPT conversation/comment link,
   findings accepted/rejected/unresolved, and confirmation the ship-log row now reads
-  `shipped`.
+  `shipped`. If certification came from the post-cap architecture consultation's
+  `VERDICT: SHIP` rather than a formal `pr`-mode pass, say so explicitly and cite that
+  conversation URL in place of a code-review pass count.
 - **Gated units**: the exact trigger text (blockquote or matched prose, quoted
   verbatim) and its source, which unit(s) it covers, and — when it follows a unit that
   just landed — that unit's own recorded outcome as context. State plainly this is a
