@@ -10,6 +10,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#592: lock in the #586/#587 shell primitive guardrails mechanically.**
+  `check:arch` now rejects three regrowth shapes the six-copy-pasted-overlays
+  problem #586 fixed: (1) a new `Document.body.append`/`.appendChild` call
+  outside an exact, reviewed baseline snapshot of sanctioned lifecycle/
+  primitive scopes (`shell-body-mount`); (2) a new `position: fixed` CSS
+  declaration in `src/styles.css` outside the current selector/at-rule
+  snapshot (`shell-fixed-position`, a focused CSS lexical scanner — no CSS
+  parser dependency); (3) a new global capture-phase Escape `keydown`
+  lifecycle outside `SurfaceLifecycle` and its exact documented exceptions/
+  non-panel gesture exclusions (`shell-capture-escape`). The two source-level
+  rules share one real-TypeScript-parser batch
+  (`findShellGuardrailSourceContractViolations`,
+  `build/lib/check-legacy-owners.mjs`), reusing this repo's established
+  `withParsedSources`/`walkTree`/`SyntaxKind` idiom — no new parser
+  dependency. Root-cause circuit breaker (post-merge): three code-review
+  passes each found a variant of one root cause — a hand-rolled, Map-based
+  scope/alias-resolution layer re-deriving JS/TS name-binding semantics by
+  hand. Restructured to resolve every identifier-binding question (a
+  Document/Window alias, an `addEventListener` handler/capture-options
+  alias) through the REAL TypeScript checker `withParsedSources` already
+  had available (`checker.getSymbolAtLocation` against the identifier's
+  resolved declaration) instead — same-function block shadowing, for-loop-
+  header shadowing, and correct reversion after a shadow's scope ends are
+  now real binder behavior, not custom scope-tracking code; the retired
+  helpers (`scopeOwnerOf`/`scopeChain`/`buildGlobalAliasMap`/
+  `buildFunctionDeclMap`/`buildCaptureAliasMap`) are gone. Candidate
+  discovery (the AST shapes for `.appendChild`/`.append`/`addEventListener`/
+  Escape comparisons) and the CSS `shell-fixed-position` scanner are
+  unchanged; the three rules' policy and diagnostic shapes are unchanged.
+  Also closes the inherited #586/#593-phase-1 finding: an
+  independent `tests/unit/resize-handle-thickness-contract.test.js` proves
+  `src/ui/app-shell.ts`'s `HANDLE_PX` and `src/styles.css`'s
+  `.col-resize`/`.inspector-resize` width cannot drift unnoticed. Enforcement-
+  only — no runtime UI/DOM/CSS behavior changes.
 - **#630 Phase 8 (final phase — closes #630): make `@altinity/clickhouse-http`
   independently buildable/packable/typecheckable in isolation, and retire the
   `@clickhouse/client-web` vendor-comparison spike.** Claims A17/A18.

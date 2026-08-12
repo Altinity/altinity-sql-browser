@@ -100,6 +100,9 @@ import {
   retiredClientSpikeScriptNames,
   findDynamicImportUsages,
   mightContainDynamicImport,
+  findShellGuardrailSourceContractViolations,
+  findShellFixedPositionViolations,
+  findShellFixedPositionMissingBaselineViolations,
 } from './lib/check-legacy-owners.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -883,6 +886,63 @@ for (const file of collectFiles(path.join(repoRoot, 'src'))) {
   if (!mightReferenceRetiredTopLevelApi(source, PHASE7_RETIRED_TOP_LEVEL_NAMES)) continue;
   for (const name of findRetiredTopLevelApiViolations(source, relFile, PHASE7_RETIRED_TOP_LEVEL_NAMES)) {
     violations.push(`${relFile} → top-level ${name} (issue #630 Phase 7: the generic runQuery/exportQuery/ordinary-killQuery APIs are deleted and must not be resurrected)`);
+  }
+}
+
+// Issue #592 — shell primitive guardrails: lock in what #586 ("one overlay-
+// lifecycle implementation") and #587 ("a registry-driven panel model")
+// established, so the six-copy-pasted-overlays problem #586 fixed cannot
+// silently regrow. Two rules share ONE real-TypeScript-parser batch over the
+// whole scanned `src/**` tree (`findShellGuardrailSourceContractViolations`,
+// `build/lib/check-legacy-owners.mjs` — Architecture decision 4: never one
+// parser process per rule or per file — including its own complete-tree
+// reverse-baseline half, folded in below via `completeTree: true` rather
+// than a second call opening a second batch, #592 review pass 2, ChatGPT PR
+// #672 pass 2 P2); a third is a focused CSS lexical scanner over
+// `src/styles.css` alone (`findShellFixedPositionViolations` — Architecture
+// decision 2: no CSS parser dependency). `lineOfOffset` converts
+// each analyzer's raw AST/lexer byte offset into the 1-based line number this
+// gate's own diagnostics use everywhere else.
+function lineOfOffset(source, pos) {
+  return source.slice(0, pos).split('\n').length;
+}
+{
+  const shellGuardedFiles = collectFiles(path.join(repoRoot, 'src'));
+  const shellSources = shellGuardedFiles.map((file) => {
+    const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+    checkedFiles += 1;
+    return { filename: relFile, source: guardedFileSources.get(file) ?? fs.readFileSync(file, 'utf8') };
+  });
+  const bySource = new Map(shellSources.map((s) => [s.filename, s.source]));
+  // `completeTree: true` folds the complete-tree reverse-baseline half (PR
+  // #672 review pass 1 follow-up, ChatGPT) into this SAME shared parser
+  // batch — meaningful only against the real, complete `src/**` tree, which
+  // `shellSources` (built from `collectFiles`'s live disk walk) always is
+  // here. #592 review pass 2 (ChatGPT PR #672 pass 2 P2): this used to be a
+  // separate call to `findShellGuardrailMissingBaselineViolations` over the
+  // identical `shellSources`, which opened its OWN second parser batch —
+  // see `findShellGuardrailSourceContractViolations`'s own doc comment for
+  // why that violated this file's "ONE shared parser batch" contract.
+  for (const v of findShellGuardrailSourceContractViolations(shellSources, { completeTree: true })) {
+    const line = lineOfOffset(bySource.get(v.filename) ?? '', v.pos);
+    violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
+  }
+
+  const stylesPath = path.join(repoRoot, 'src/styles.css');
+  if (fs.existsSync(stylesPath)) {
+    checkedFiles += 1;
+    const cssSource = fs.readFileSync(stylesPath, 'utf8');
+    for (const v of findShellFixedPositionViolations(cssSource, 'src/styles.css')) {
+      const line = lineOfOffset(cssSource, v.pos);
+      violations.push(`${v.filename}:${line} → ${v.rule}: ${v.detail}`);
+    }
+    // The reverse half of the #672 P1 fix — an approved fixed-position
+    // fingerprint that disappeared from the CSS entirely. Meaningful only
+    // against the real, complete stylesheet (see the function's own doc
+    // comment), which this gate always reads from disk.
+    for (const v of findShellFixedPositionMissingBaselineViolations(cssSource, 'src/styles.css')) {
+      violations.push(`${v.filename}:${lineOfOffset(cssSource, v.pos)} → ${v.rule}: ${v.detail}`);
+    }
   }
 }
 
