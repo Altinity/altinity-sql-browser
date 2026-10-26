@@ -35,7 +35,7 @@ ASSET-DISTRIBUTION). Answer these in order.
 
 | Topology | Procedure | Flags |
 |---|---|---|
-| Single node | Single-node install. Writes with `file()`; needs `FILE` only (tested user holds the stage set). | no `--cluster` |
+| Single node | Single-node install. Writes with `file()`. Tested with the stage grant set (section 2). It runs `INSERT INTO FUNCTION file(...)`, `SELECT ... FROM file(...)` and `DROP TABLE IF EXISTS default._asb_t_*`, so `FILE` + `DROP TABLE ON default.*` is the likely floor **[not verified]**. | no `--cluster` |
 | One shard, several replicas | Cluster install; every replica gets its own copy. Behind a load balancer **always** pass `--cluster`, or one random replica is updated. | `--cluster <name>` |
 | Several shards | Same; the installer fans out to every shard and replica and fails closed if any node is missing. | `--cluster <name>` |
 | No node egress | stage mode (default). | |
@@ -50,9 +50,15 @@ marked.
 
 ### 1.3 Preflight SQL
 
-Run as the deploy user, on the node or endpoint you will pass as `--ch-host`. Over HTTP(S) send the same text
-with `curl -sS --data-binary 'SQL' -H 'X-ClickHouse-User: U' -H 'X-ClickHouse-Key: K' https://H:8443/`.
-Keep the password out of shell history (a 0600 header file, as the installer does).
+Run as the deploy user, on the node or endpoint you will pass as `--ch-host`. Send **one statement per
+request** over HTTP(S); keep the credentials out of argv and shell history in a 0600 header file, as the
+installer does:
+
+```bash
+( umask 077; printf 'X-ClickHouse-User: %s\nX-ClickHouse-Key: %s\n' "$U" "$CLICKHOUSE_PASSWORD" > pwheader.txt )
+# put one statement in probe.sql, then:
+curl -sS --data-binary @probe.sql -H @pwheader.txt 'https://H:8443/?wait_end_of_query=1'
+```
 
 **(a) Grants** **[probed]**
 
@@ -74,7 +80,8 @@ Pass one of these names to `--cluster`. The name must match `[A-Za-z0-9_.-]+`: a
 node can define different clusters.
 
 **(c) Probe write, read, truncation of a tiny file** **[probed]** (the installer's single-node write uses the same
-`INSERT INTO FUNCTION file(...)` form and `engine_file_truncate_on_insert`)
+`INSERT INTO FUNCTION file(...)` form and `engine_file_truncate_on_insert`). Four statements; over HTTP(S) send
+each in its own request.
 
 ```sql
 INSERT INTO FUNCTION file('_asb_probe', 'RawBLOB') SETTINGS engine_file_truncate_on_insert = 1 SELECT 'probe';
@@ -120,14 +127,17 @@ SELECT id, host, n, len, sha FROM clusterAllReplicas('<cluster>', view(
 ```
 A node that has no file returns a row with `len = 0`. Compare `len` and `sha` with `wc -c` / `sha256sum` of the
 artifact. `./deploy/install.sh ... --verify-only` does this and the preflight without changing anything, and is
-the safest end-to-end rehearsal of connectivity and grants.
+the safest end-to-end rehearsal of connectivity and grants. **Repeat the exact OAuth flags used at install
+time** (`--client-id`, `--issuer`, `--audience`, `--ch-auth`): the expected `sql-config.json` hash is rendered
+from them, so different flags report a false MISMATCH.
 
 ## 2. Tested grants
 
 Create the user on **every** node (or through your replicated access storage / `ON CLUSTER`
-**[untested]**), then, per mode. Every set below is exactly what the CI user holds
-(`tests/deploy/cfg/users.xml`) on 26.3.18.32 and Antalya 25.8.33. `FILE` and `URL` include the source-level
-`READ`/`WRITE ON FILE|URL` privileges on those versions.
+**[untested]**), then, per mode. The canonical statement of what is tested, what is only partly proven and
+why is [ASSET-DISTRIBUTION.md, Requirements](ASSET-DISTRIBUTION.md#requirements); the block below is only a
+copy-paste form of it (mirrors ASSET-DISTRIBUTION → Requirements; update both). It is what the CI user holds
+(`tests/deploy/cfg/users.xml`) on 26.3.18.32 and Antalya 25.8.33.
 
 ```sql
 -- stage mode (default) install and uninstall
@@ -148,7 +158,8 @@ GRANT SELECT ON system.clusters TO asb_verify;
 ```
 
 Notes: sufficiency is tested, minimality only partly (see ASSET-DISTRIBUTION "Requirements"). A single-node
-install needs `FILE` in practice, but only the full stage set is tested. The `default` database in `ON
+install was tested only with the full stage set; it also runs `DROP TABLE IF EXISTS default._asb_t_*`, so it
+needs at least `DROP TABLE ON default.*` besides `FILE` (likely floor, **not verified**). The `default` database in `ON
 default.*` must exist on every node; if your policy forbids `default`, the temp-table names are fixed to
 `default._asb_t_*` **[untested elsewhere]**. Revoke or drop the user when you are done; none of this is
 needed to *serve* the app.
@@ -174,9 +185,12 @@ installer prompt). `--client-id`, `--issuer`, `--audience`, `--ch-auth` are the 
   --client-id <oauth-client-id> --issuer https://idp.example.com \
   --cluster prod --artifact sql.html          # stage mode: no node egress needed
 # verify only, any time:
-./deploy/install.sh --ch-host ch1.example.com --ch-user asb_verify --client-id x --cluster prod \
+./deploy/install.sh --ch-host ch1.example.com --ch-user asb_verify <same-oauth-flags> --cluster prod \
   --artifact sql.html --verify-only
 ```
+`<same-oauth-flags>` means exactly the `--client-id`, `--issuer`, `--audience`, `--ch-auth` values used at
+install time: `sql-config.json`'s expected hash is rendered from them, so any difference is reported as a
+mismatch.
 Then add the rendered `dist/http_handlers.xml` to `config.d/` on every node and reload (section 5).
 
 ### (b) HTTPS only (`--transport http --secure`) **[tested over HTTP; TLS not run against a live server]**
@@ -205,21 +219,25 @@ installer or the manual SQL in the ASSET-DISTRIBUTION appendix.
 Assumptions: ACM lets you set a cluster setting named `config.d/sql-browser.xml`, and the cluster has an
 interserver `<secret>` (confirm with probe 1.3(d)); the cluster endpoint is HTTPS only.
 
-1. Handlers: `./deploy/install.sh --dry-run --client-id <id> --issuer <issuer>` renders
-   `dist/http_handlers.xml`. In ACM add it as the cluster setting `config.d/sql-browser.xml` (about 3.7 KB, well
-   under ACM's ~8 KB setting-push limit) and push. This is the channel the demo clusters use; a direct edit of
-   the ConfigMap is reconciled away.
+1. Handlers: `./deploy/install.sh --dry-run --client-id <id> --issuer <issuer> --artifact sql.html` renders
+   `dist/http_handlers.xml` (from a checkout with a build, `--artifact` may be omitted). In ACM add it as the
+   cluster setting `config.d/sql-browser.xml` and push. Whether ACM limits the size of a pushed setting, and
+   that a direct ConfigMap edit is reconciled away, are **[unverified]**: check on your plan.
 2. Find the cluster name: `SELECT DISTINCT cluster FROM system.clusters;` on the endpoint you connect to. Use
    that literal name for `--cluster`; do **not** pass the `{cluster}` macro (rejected).
 3. Bytes, through the cluster endpoint (the load balancer picks one node; fan-out then happens server-side, so
-   no per-pod access is needed):
+   no per-pod access is needed). Behind a load balancer or Service the installer's statements may land on
+   different pods, so a ~2 MB `_asb_stage_*` copy can remain on a pod that was not the last one used; it is
+   never served, and can be emptied as described in ASSET-DISTRIBUTION
+   [Failure and retry](ASSET-DISTRIBUTION.md#failure-and-retry):
    ```bash
    ./deploy/install.sh --ch-host <cluster>.<env>.altinity.cloud --ch-user asb_deploy \
      --client-id <id> --issuer <issuer> --cluster <name> --artifact sql.html \
      --transport http --secure
    ```
-4. Check every node: the installer prints the per-node table; re-run with `--verify-only` after any scale-out or
-   node replacement. Redirect URI and checks: section 5.
+4. Check every node: the installer prints the per-node table; re-run with `--verify-only` (plus the same
+   OAuth flags as the install, see 1.3(f)) after any scale-out or node replacement. Redirect URI and checks:
+   section 5.
 
 If your plan forbids `config.d` pushes or SQL file writes, this does not apply: use the container image or Helm
 chart.
@@ -243,8 +261,14 @@ spec:
         layout: { shardsCount: 2, replicasCount: 2 }
     files:
       config.d/sql-browser.xml: |
-        <clickhouse> … paste dist/http_handlers.xml contents (without the <?xml?> line) … </clickhouse>
+        <clickhouse>
+          <http_handlers>
+            … the <rule> elements from dist/http_handlers.xml …
+          </http_handlers>
+        </clickhouse>
 ```
+That is, paste the **whole rendered file** minus its `<?xml?>` line, indented under the key, with **no extra
+wrapper**: the file already has the single `<clickhouse>` root shown above.
 Do **not** put `sql.html` here: the ConfigMap cap is 1 MiB and the artifact is about 2 MB.
 
 `secret.auto` (or a plaintext / secret-ref `secret`) is what lets `clusterAllReplicas` authenticate between
@@ -256,7 +280,9 @@ pods; the deploy user must exist on every pod (CHI `users` / `users.d` entry or 
   --cluster prod --artifact sql.html
 ```
 Stage mode fans out server-side over the interserver connection, so pods need not be individually reachable
-and need no egress. Whether a `files` change needs a pod restart depends on the operator and the setting: check with section 5.
+and need no egress. Behind a Service or load balancer the installer's statements may land on different pods,
+so a ~2 MB `_asb_stage_*` copy can remain on a pod; it is never served (how to empty it: ASSET-DISTRIBUTION
+[Failure and retry](ASSET-DISTRIBUTION.md#failure-and-retry)). Whether a `files` change needs a pod restart depends on the operator and the setting: check with section 5.
 
 ## 4. Topology procedures
 
@@ -265,7 +291,7 @@ and need no egress. Whether a `files` change needs a pod restart depends on the 
 - **Upgrade the SPA:** run it again with the new `--artifact`. Each node ends on the old or the new version, never
   an empty or partial file **[tested, including a node killed mid-run]**.
 - **Scale-out or node replacement:** a new replica's `user_files/` is empty. Re-run the install (it repairs
-  any node); to find out first, run `--verify-only` or probe 1.3(f): the empty node shows `len = 0`. Also make sure
+  any node); to find out first, run `--verify-only` (with the same OAuth flags as the install) or probe 1.3(f): the empty node shows `len = 0`. Also make sure
   the new node got the `http_handlers` fragment (your config channel should do it), the `<secret>`
   and the deploy user **[wipe + repair tested; a truly new pod is the same state]**.
 - **A node was down during a run:** the installer fails after `--ddl-timeout` and the queued DDL replays when
@@ -281,7 +307,8 @@ and need no egress. Whether a `files` change needs a pod restart depends on the 
 ## 5. Enable and verify the handlers
 
 1. Render: `./deploy/install.sh ...` writes `dist/http_handlers.xml` with the CSP `connect-src` filled in from
-   your issuer's OIDC discovery (`--dry-run` renders without contacting ClickHouse). Deploy **that** file, not
+   your issuer's OIDC discovery (`--dry-run --artifact sql.html` renders without contacting ClickHouse; from a checkout with a build,
+   `--artifact` may be omitted). Deploy **that** file, not
    the committed Google default, unless you use Google.
 2. Install it through your channel (section 1.1 question 1), on **every** node, and reload. Each rule has a
    unique `name=` attribute; keep it.
@@ -290,11 +317,12 @@ and need no egress. Whether a `files` change needs a pod restart depends on the 
    balancer or ingress fronts ClickHouse.
 4. Check, expecting `200`, the right `content-type` and (for `/sql`) the CSP:
    ```bash
-   curl -sI https://<host>:8443/sql | grep -iE '^(HTTP|content-type|content-security-policy|cache-control)'
-   curl -sI https://<host>:8443/sql/config.json | grep -iE '^(HTTP|content-type)'
+   curl -s -D - -o /dev/null https://<host>:8443/sql | grep -iE '^(HTTP|content-type|content-security-policy|cache-control)'
+   curl -s -D - -o /dev/null https://<host>:8443/sql/config.json | grep -iE '^(HTTP|content-type)'
    curl -s  https://<host>:8443/sql/config.json     # issuer + client_id only
    ```
-   `/sql` is `text/html; charset=UTF-8`; `config.json` is `application/json; charset=UTF-8`. A `500` means the
+   Use a GET-based header dump as shown, not `curl -I`: the rules are `<methods>GET</methods>`, and a `HEAD`
+   request to `/sql` returned `404` on 26.3.18.32 **[probed]**, which looks like a missing fragment. `/sql` is `text/html; charset=UTF-8`; `config.json` is `application/json; charset=UTF-8`. A `500` means the
    handler exists but the file is missing on that node; a `404` or the ClickHouse default page means the
    fragment did not load. Behind a load balancer, repeat until you have hit every node, or rely on the
    per-node table from the installer (a single `/sql` smoke test proves one node at most).

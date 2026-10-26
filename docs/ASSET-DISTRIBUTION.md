@@ -86,7 +86,7 @@ serve it with the same `file://` static handler.
   build), which is too large for several channels: clickhouse-operator
   `spec.configuration.files` lands in a Kubernetes ConfigMap, which is capped at
   1 MiB, and control planes that push settings inline (for example, ACM's
-  setting-push has an ~8 KB URI limit) cannot carry it either. In practice it
+  setting-push is reported to have a small, ~8 KB URI limit; **unverified**) cannot carry it either. In practice it
   has to be a file delivered by some other mechanism (image layer, volume,
   init container), not an inline config value.
 
