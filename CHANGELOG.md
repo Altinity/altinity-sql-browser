@@ -23,6 +23,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (replication scope, ConfigMap 1 MiB cap), corrected the auth wording
   (Bearer id_token by default, access_token with an audience, JWT as Basic
   password with `ch_auth: "basic"`), and updated the wiki from nginx to Caddy.
+  Docs also no longer claim `install.sh --cluster` fans out to every replica:
+  testing (ClickHouse 25.8 OSS, 26.3 OSS, Antalya 25.8.33) showed it fails on any
+  multi-replica cluster (`INSERT INTO FUNCTION clusterAllReplicas` ->
+  `STORAGE_REQUIRES_PARAMETER`) and leaves a temp `_asb_*` table behind. Added a
+  tested interim manual `ON CLUSTER ... ENGINE = File ... AS SELECT FROM url()`
+  procedure to `docs/ASSET-DISTRIBUTION.md`; the installer fix is tracked in #692.
 
 ### Added
 - **#592: lock in the #586/#587 shell primitive guardrails mechanically.**

@@ -34,9 +34,13 @@ also ships a prebuilt `sql.html` if you would rather upload it yourself. At the
 end the installer prints the URL to open and the redirect URI to register; it
 uses the default HTTP(S) ports 8123/8443, so adjust if yours differ.
 
-For a multi-replica cluster pass `--cluster <name>`; the installer fans the
-bytes to every replica via `clusterAllReplicas`. The password is read from the
-env var or prompted — never placed on the command line.
+`--cluster <name>` is **currently broken** on any cluster with more than one
+replica (its `clusterAllReplicas` write is rejected by ClickHouse; tracked in
+#692), so use `install.sh` without `--cluster` for a single node. For
+multi-node clusters see the interim manual procedure in
+[ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
+The password is read from the env var or prompted — never placed on the command
+line.
 
 > **`user_files/` is node-local — re-run `install.sh` after a scale-out.**
 > ClickHouse does not replicate `user_files/`, so a replica added or replaced

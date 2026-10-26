@@ -42,22 +42,25 @@ trade-offs. The key tension is **anonymous serving vs. native replication**: the
 served without credentials, which favours a static handler; native replication
 of the bytes favours a table, whose read path needs a user.
 
-### A. Push to each node's `user_files` (what ships today)
+### A. Push to each node's `user_files` (single node today)
 
-`install.sh` creates a `File`-engine table and, for a cluster, uses
-`INSERT INTO FUNCTION clusterAllReplicas(...)` to write the bytes into **every
-replica's local `user_files/`**. The handler serves them with a `type=static`
-`file://` rule.
+`install.sh` (without `--cluster`) creates a `File`-engine table that writes the
+bytes into the node's local `user_files/`. The handler serves them with a
+`type=static` `file://` rule. **`install.sh --cluster` is currently broken** on
+any cluster with more than one replica (see below); the multi-node variant of
+this option is the manual procedure in
+[Multi-node clusters](#multi-node-clusters-interim-manual).
 
 - **Pro:** the page is served statically, with no authentication — exactly what
   an unauthenticated bootstrap page needs. Simple; pure `clickhouse-client`.
 - **Con:** `user_files/` is node-local, so a replica **added or replaced later
-  starts empty** — you re-run `install.sh` after a scale-out. The install also
-  assumes every replica is up at the time it runs. **Multi-shard:**
-  `clusterAllReplicas` can't write to a target with more than one shard, so
-  `install.sh --cluster` only works on a single shard; on a multi-shard cluster
-  run the installer **per node** (omit `--cluster`, point `--ch-host` at each
-  node) or use option B. `install.sh` detects this and stops with guidance.
+  starts empty** — you re-run the install after a scale-out. The install also
+  assumes every replica is up at the time it runs. **`--cluster` is broken:**
+  `INSERT INTO FUNCTION clusterAllReplicas(...)` fails on any cluster with more
+  than one replica (`Code 55 STORAGE_REQUIRES_PARAMETER`: Distributed write with
+  more than one shard and no sharding key, regardless of `internal_replication`),
+  and the failed run leaves the temporary `_asb_*` table behind. Tracked in
+  #692; use the manual procedure below, or option B.
 
 ### B. Store the asset in a Replicated table + `predefined_query_handler`
 
@@ -93,12 +96,14 @@ serve it with the same `file://` static handler.
 
 ## What this project ships
 
-`deploy/install.sh` implements **option A**. It is the simplest mechanism, needs
-only a shell toolchain (see below), and serves the bootstrap page anonymously. The
-trade-off to be aware of:
+`deploy/install.sh` implements **option A for a single node** (no `--cluster`).
+It is the simplest mechanism, needs only a shell toolchain (see below), and
+serves the bootstrap page anonymously. Multi-node clusters are not supported by
+the installer yet (#692); see the interim procedure below. The trade-off to be
+aware of:
 
-> After scaling a cluster out (or replacing a node), re-run `install.sh` so the
-> new replica's `user_files/` gets the assets.
+> After scaling a cluster out (or replacing a node), re-install so the new
+> replica's `user_files/` gets the assets.
 
 For deployments where that re-push is undesirable — autoscaling fleets, frequent
 node replacement — option B (replicated table) or option C (config-distributed
@@ -116,7 +121,49 @@ want to build, download it and upload it (plus a `sql-config.json`) to
 `user_files/` yourself, then install `http_handlers.xml` as above. The installer
 has no flag for this path.
 
+## Multi-node clusters (interim, manual)
+
+Until the installer is fixed (#692), pull the file onto every node with
+`ON CLUSTER` DDL. Each node fetches the URL itself and writes its own
+`user_files/sql.html`:
+
+```sql
+CREATE TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', 'sql.html')
+  AS SELECT * FROM url('<url-serving-sql.html>', 'RawBLOB')
+  SETTINGS engine_file_truncate_on_insert = 1;
+
+DROP TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
+```
+
+The file survives the `DROP`. **Keep `engine_file_truncate_on_insert = 1`:**
+without it a re-run appends and doubles the file.
+
+- **Grants** (minimal): `CLUSTER ON *.*`, `CREATE TABLE, DROP TABLE ON default.*`,
+  `FILE ON *.*`, `URL ON *.*`.
+- **Egress:** every node must reach the URL (e.g. the release asset
+  `https://github.com/Altinity/altinity-sql-browser/releases/download/<tag>/sql.html`,
+  or an internal mirror), and the host must be allowed by
+  `remote_url_allow_hosts` if configured. GitHub release downloads redirect, so
+  `url()` must follow redirects, or use a mirror that serves the bytes directly.
+- **Verify** (also needs READ ON FILE and REMOTE grants); expect one row per node
+  with identical length and hash — a missing file on any node fails the query
+  with `FILE_DOESNT_EXIST`:
+
+  ```sql
+  SELECT hostName(), length(c), hex(SHA256(c))
+  FROM clusterAllReplicas('<cluster>', file('sql.html', 'RawBLOB', 'c String'))
+  ```
+
+**Tested** on ClickHouse 25.8 OSS, 26.3 OSS and Antalya 25.8.33, on all four
+nodes of a 2-shard x 2-replica cluster: byte-exact, idempotent with the
+truncate setting. **Not tested:** pulling from the real GitHub release URL
+(a local HTTP server was used, so redirect handling is unverified), and
+`sql-config.json` (the same statement with `AS SELECT '<json>' AS c` should
+work but has not been tried). This procedure is the planned basis of the fixed
+installer.
+
 ## Single-node installs
 
-None of this applies to a single node: `install.sh` without `--cluster` writes
+None of the above applies to a single node: `install.sh` without `--cluster` writes
 the assets to the one node's `user_files/` and you are done.

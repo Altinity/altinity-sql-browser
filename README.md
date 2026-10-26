@@ -653,8 +653,12 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   [--issuer https://accounts.google.com] \
   [--audience <api-audience>] \   # audience-gated CH → also sends the access_token
   [--ch-auth basic] \             # OSS CH + ch-jwt-verify → JWT as Basic password
-  [--cluster <cluster-name>]      # single-shard multi-replica only (else per-node)
+  [--cluster <cluster-name>]      # BROKEN on multi-replica clusters (#692); omit
 ```
+
+`--cluster` currently fails on multi-replica clusters (tracked in #692); for a
+single node run the installer without it, and for multi-node clusters follow
+[the interim manual procedure](docs/ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
 
 With **no** `--audience`, the IdP returns an **id_token** (its `aud` is the
 client_id) and the browser sends that as the bearer — so ClickHouse's
