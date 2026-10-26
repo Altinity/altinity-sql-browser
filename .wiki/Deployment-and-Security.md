@@ -9,6 +9,15 @@ The build produces `dist/sql.html`. Deployment copies it to ClickHouse
 Cluster distribution options and tradeoffs are documented in
 [`docs/ASSET-DISTRIBUTION.md`](../docs/ASSET-DISTRIBUTION.md).
 
+`deploy/install.sh --cluster` (#692) fans the files out SQL-only in two phases
+(`_asb_next_*` staged and verified per node, then promoted locally and verified;
+a failed `CREATE ... AS SELECT` truncates its target, so the live file is never
+the target of a remote-source statement). Needs a cluster `<secret>` and the
+documented minimal grants. `npm run test:deploy` (`tests/deploy/`, CI job
+`deploy-integration`) runs it against Keeper + 2x2 ClickHouse on 26.3 and
+Antalya 25.8.33 and asserts byte-exact files on every node. The release
+bundle ships `deploy/` (install.sh, uninstall.sh, lib/) for use with `--artifact`.
+
 ## Authentication modes
 
 - Native/Bearer OAuth for ClickHouse variants with token processors and ephemeral

@@ -73,8 +73,8 @@ ddl "drop ${T_RM_HTML}" "DROP TABLE IF EXISTS ${T_RM_HTML}${ON_CLUSTER} SYNC"
 ddl "drop ${T_RM_CFG}" "DROP TABLE IF EXISTS ${T_RM_CFG}${ON_CLUSTER} SYNC"
 
 info "==> Emptying sql.html and sql-config.json"
-ddl "empty sql.html" "CREATE TABLE ${T_RM_HTML}${ON_CLUSTER} ENGINE=File('RawBLOB','sql.html') AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1"
-ddl "empty sql-config.json" "CREATE TABLE ${T_RM_CFG}${ON_CLUSTER} ENGINE=File('RawBLOB','sql-config.json') AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1"
+ddl "empty sql.html" "$(write_file_stmt "$T_RM_HTML" sql.html "SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1")"
+ddl "empty sql-config.json" "$(write_file_stmt "$T_RM_CFG" sql-config.json "SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1")"
 ddl "drop ${T_RM_HTML}" "DROP TABLE IF EXISTS ${T_RM_HTML}${ON_CLUSTER} SYNC"
 ddl "drop ${T_RM_CFG}" "DROP TABLE IF EXISTS ${T_RM_CFG}${ON_CLUSTER} SYNC"
 

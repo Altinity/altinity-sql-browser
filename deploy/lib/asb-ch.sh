@@ -108,6 +108,21 @@ ddl() {
   ch_query "$2" >/dev/null || fail "$1 failed"
 }
 
+# write_file_stmt <table> <user_files-name> <select-body>
+# One statement that (over)writes a user_files file from a SELECT.
+#   cluster:     CREATE TABLE ... ON CLUSTER ... ENGINE=File('RawBLOB', name) AS SELECT ...
+#                (the only SQL fan-out that works: cluster-function INSERTs fail with Code 55)
+#   single node: INSERT INTO FUNCTION file(...) SELECT ... - needs only the FILE grant; a
+#                CTAS would additionally demand INSERT on the temp table (found in #692 tests).
+# <select-body> must carry engine_file_truncate_on_insert=1 (a failed CTAS empties its target).
+write_file_stmt() {
+  if [[ -n "$CLUSTER" ]]; then
+    printf "CREATE TABLE %s%s ENGINE=File('RawBLOB','%s') AS %s" "$1" "$ON_CLUSTER" "$2" "$3"
+  else
+    printf "INSERT INTO FUNCTION file('%s','RawBLOB') SETTINGS engine_file_truncate_on_insert=1 %s" "$2" "$3"
+  fi
+}
+
 # ---------------------------------------------------------------- verify
 # ON_CLUSTER is " ON CLUSTER `c`" in cluster mode, empty otherwise.
 # shellcheck disable=SC2034  # ON_CLUSTER is consumed by the sourcing script

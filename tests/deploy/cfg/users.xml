@@ -1,0 +1,30 @@
+<clickhouse><users>
+  <default><password>defpw</password><networks><ip>::/0</ip></networks></default>
+  <!-- Tested minimal grants, stage mode (the default). -->
+  <deploy><password>deploypw</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota>
+    <grants>
+      <query>GRANT CLUSTER ON *.*</query>
+      <query>GRANT FILE ON *.*</query>
+      <query>GRANT REMOTE ON *.*</query>
+      <query>GRANT CREATE TABLE, DROP TABLE ON default.*</query>
+      <query>GRANT SELECT ON system.clusters</query>
+    </grants></deploy>
+  <!-- url mode via pull-url additionally needs URL. -->
+  <deploy_url><password>deploypw</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota>
+    <grants>
+      <query>GRANT CLUSTER ON *.*</query>
+      <query>GRANT FILE ON *.*</query>
+      <query>GRANT URL ON *.*</query>
+      <query>GRANT REMOTE ON *.*</query>
+      <query>GRANT CREATE TABLE, DROP TABLE ON default.*</query>
+      <query>GRANT SELECT ON system.clusters</query>
+    </grants></deploy_url>
+  <!-- negative case: everything except REMOTE -->
+  <deploy_noremote><password>deploypw</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota>
+    <grants>
+      <query>GRANT CLUSTER ON *.*</query>
+      <query>GRANT FILE ON *.*</query>
+      <query>GRANT CREATE TABLE, DROP TABLE ON default.*</query>
+      <query>GRANT SELECT ON system.clusters</query>
+    </grants></deploy_noremote>
+</users></clickhouse>

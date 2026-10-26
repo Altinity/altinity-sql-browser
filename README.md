@@ -653,12 +653,17 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   [--issuer https://accounts.google.com] \
   [--audience <api-audience>] \   # audience-gated CH → also sends the access_token
   [--ch-auth basic] \             # OSS CH + ch-jwt-verify → JWT as Basic password
-  [--cluster <cluster-name>]      # BROKEN on multi-replica clusters (#692); omit
+  [--cluster <cluster-name>] \    # fan out to every node (server-side, verified per node)
+  [--artifact sql.html] \         # prebuilt SPA (release asset): no npm/node needed
+  [--pull-url <url>] [--transport native|http] [--ddl-timeout 180] [--verify-only]
 ```
 
-`--cluster` currently fails on multi-replica clusters (tracked in #692); for a
-single node run the installer without it, and for multi-node clusters follow
-[the interim manual procedure](docs/ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
+With `--cluster` the installer writes `sql.html` and `sql-config.json` to every node's
+`user_files/` using SQL only, in two phases (stage and verify, then promote and
+verify), and checks each node's length and SHA-256; re-run it after a scale-out.
+`deploy/uninstall.sh` empties the files. The cluster needs a `<secret>`, and the
+deploy user needs a few grants — see
+[docs/ASSET-DISTRIBUTION.md](docs/ASSET-DISTRIBUTION.md#installing-with-deployinstallsh).
 
 With **no** `--audience`, the IdP returns an **id_token** (its `aud` is the
 client_id) and the browser sends that as the bearer — so ClickHouse's

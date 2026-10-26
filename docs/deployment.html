@@ -75,9 +75,12 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   --client-id &lt;oauth-client-id&gt; \
   [--issuer https://accounts.google.com] \
   [--audience &lt;api-audience&gt;] \
-  [--cluster &lt;cluster-name&gt;] [--secure]</pre>
-    <p><code class="k">--cluster</code> is currently broken on multi-node clusters (#692); omit it for a single node, or see the
-      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual">manual multi-node procedure</a>.</p>
+  [--cluster &lt;cluster-name&gt;] [--artifact sql.html] [--pull-url &lt;url&gt;] \
+  [--transport native|http] [--verify-only] [--secure]</pre>
+    <p><code class="k">--cluster</code> distributes the files to every node with server-side SQL in two phases
+      (stage and verify, then promote and verify) and checks each node's SHA-256. The cluster needs a
+      <code class="k">&lt;secret&gt;</code> and the deploy user a few grants; see
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md#installing-with-deployinstallsh">ASSET-DISTRIBUTION.md</a>.</p>
 
     <div class="callout"><strong>Public file, by design.</strong> <code class="k">config.json</code> is served to
       browsers, so prefer a PKCE public client. If your IdP requires a <code class="k">client_secret</code>,

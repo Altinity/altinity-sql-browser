@@ -16,15 +16,16 @@ const EMPTY = { len: 0, sha: sha256('') };
 const installed = { 'sql.html': { len: 100, sha: 'aa' }, 'sql-config.json': { len: 10, sha: 'bb' } };
 
 describe('uninstall.sh single node', () => {
-  it('truncates both live files with CTAS AS SELECT \'\' and verifies 0 bytes', () => {
+  it('truncates both live files with INSERT INTO FUNCTION file ... SELECT \'\' (no table, no INSERT grant) and verifies 0 bytes', () => {
     const { r, sqls, files } = h.uninstall([], { files: installed });
     expect(r.status, r.stderr).toBe(0);
     expect(files['sql.html']).toEqual(EMPTY);
     expect(files['sql-config.json']).toEqual(EMPTY);
-    const c = sqls.filter((s) => /^CREATE TABLE/.test(s));
+    expect(sqls.some((s) => /^CREATE TABLE/.test(s))).toBe(false);
+    const c = sqls.filter((s) => /^INSERT INTO FUNCTION file\('sql(-config\.json|\.html)'/.test(s));
     expect(c).toHaveLength(2);
     for (const s of c) {
-      expect(s).toContain("AS SELECT '' AS c");
+      expect(s).toContain("SELECT '' AS c");
       expect(s).toContain('engine_file_truncate_on_insert=1');
       expect(s).not.toContain('ON CLUSTER');
     }
@@ -90,7 +91,7 @@ describe('uninstall.sh http transport', () => {
     }
   });
   it('detects an exception reported only in the body', () => {
-    const { r } = h.uninstall(['--transport', 'http'], { files: installed, cfg: { rules: [{ match: '^CREATE TABLE default\\._asb_t_rm_html', stderr: 'boom', http: 'body' }] } });
+    const { r } = h.uninstall(['--transport', 'http'], { files: installed, cfg: { rules: [{ match: "^INSERT INTO FUNCTION file\\('sql\\.html'", stderr: 'boom', http: 'body' }] } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('boom');
   });

@@ -52,15 +52,17 @@ function handle(sql, stdin, state) {
   if ((m = /^INSERT INTO FUNCTION file\('([^']+)'.*FORMAT RawBLOB/.exec(sql))) { files[m[1]] = { len: stdin.length, sha: sha(stdin) }; return ok(''); }
   if ((m = /^INSERT INTO FUNCTION file\('([^']+)'.*SELECT ''$/.exec(sql))) { files[m[1]] = EMPTY; return ok(''); }
   if (/^DROP TABLE/.test(sql)) return ok('');
-  if ((m = /^CREATE TABLE \S+( ON CLUSTER `[^`]+`)? ENGINE=File\('RawBLOB','([^']+)'\) AS (.*)$/.exec(sql))) {
-    const target = m[2], body = m[3];
+  // CTAS fan-out (cluster) and INSERT INTO FUNCTION file ... SELECT (single node) share one body grammar.
+  const write = (target, body) => {
     let src;
-    if ((src = /^SELECT '((?:[^'\\]|\\.)*)' AS c/.exec(body))) files[target] = (() => { const b = Buffer.from(unescapeLit(src[1])); return { len: b.length, sha: sha(b) }; })();
+    if ((src = /^SELECT '((?:[^'\\]|\\.)*)'( AS c)?/.exec(body))) { const b = Buffer.from(unescapeLit(src[1])); files[target] = { len: b.length, sha: sha(b) }; }
     else if ((src = /file\('([^']+)'/.exec(body))) files[target] = files[src[1]] || EMPTY;
     else if (/FROM url\(/.test(body)) files[target] = state.cfg.urlContent || EMPTY;
-    else return { stdout: '', stderr: 'sim: unhandled CTAS ' + sql, code: 99 };
+    else return { stdout: '', stderr: 'sim: unhandled body ' + sql, code: 99 };
     return ok(cluster ? 'node-1\t0\t\t0\t0' : '');
-  }
+  };
+  if ((m = /^CREATE TABLE \S+( ON CLUSTER `[^`]+`)? ENGINE=File\('RawBLOB','([^']+)'\) AS (.*)$/.exec(sql))) return write(m[2], m[3]);
+  if ((m = /^INSERT INTO FUNCTION file\('([^']+)','RawBLOB'\) SETTINGS engine_file_truncate_on_insert=1 (SELECT .*)$/.exec(sql))) return write(m[1], m[2]);
   return { stdout: '', stderr: 'sim: unhandled query ' + sql, code: 99 };
 }
 const ok = (stdout) => ({ stdout, stderr: '', code: 0 });

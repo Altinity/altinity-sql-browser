@@ -23,26 +23,31 @@ The app is three things on the target ClickHouse:
 CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   --ch-host clickhouse.example.com --ch-user admin \
   --client-id <oauth-client-id> [--issuer …] [--audience …] [--ch-auth basic] \
-  [--cluster …] [--secure]   # --cluster: broken on multi-node clusters (#692), see below
+  [--cluster …] [--artifact sql.html] [--pull-url URL] [--transport native|http] \
+  [--ddl-timeout 180] [--verify-only] [--secure]
 ```
 
-Prerequisites: `npm` + `node` 22+ (the installer builds the SPA), `clickhouse-client`,
-and `curl` (OIDC discovery only). `--audience` makes the SPA send the access
+Prerequisites: `clickhouse-client` (or `curl` with `--transport http`), `curl` for OIDC
+discovery, and `npm` + `node` 22+ unless you pass `--artifact`. `--audience` makes the SPA send the access
 token instead of the id_token; `--ch-auth basic` sends the JWT as the HTTP Basic
 password (OSS ClickHouse behind a verifier, see section 4). A GitHub release
 also ships a prebuilt `sql.html` if you would rather upload it yourself. At the
 end the installer prints the URL to open and the redirect URI to register; it
 uses the default HTTP(S) ports 8123/8443, so adjust if yours differ.
 
-`--cluster <name>` is **currently broken** on any cluster with more than one
-replica (its `clusterAllReplicas` write is rejected by ClickHouse; tracked in
-#692), and the installer now refuses it before building, so use `install.sh` without `--cluster` for a single node. For
-multi-node clusters see the interim manual procedure in
-[ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
-The password is read from the env var or prompted — never placed on the command
+`--cluster <name>` fans the files out to **every node** of that cluster with
+server-side `ON CLUSTER` SQL, in two phases (stage to `_asb_next_*`, verify, then
+promote locally and verify again), so a failure never half-writes the live files;
+every node's length and SHA-256 are checked. Use `--artifact` with the release's
+prebuilt `sql.html` to skip the build, `--pull-url` to have the nodes download it,
+`--verify-only` to audit, and `uninstall.sh` to empty the files. The cluster needs
+a `<secret>` (or per-replica credentials) and the deploy user needs the grants
+listed in [ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md#installing-with-deployinstallsh).
+A personal `~/.clickhouse-client/config.xml` can override the host/user/password
+you pass. The password is read from the env var or prompted — never placed on the command
 line.
 
-> **`user_files/` is node-local — re-run the install (or the manual multi-node procedure) after a scale-out.**
+> **`user_files/` is node-local — re-run the install after a scale-out.**
 > ClickHouse does not replicate `user_files/`, so a replica added or replaced
 > later starts without the assets. This is a deliberate trade-off (the bootstrap
 > page is then served statically, with no auth). See

@@ -4,7 +4,7 @@
 // deploy-sim.cjs) to log every statement, scripted failures, and per-node
 // verification rows. Nothing builds and nothing leaves the box.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { ARTIFACT_BYTES, makeHarness, sha256 } from '../helpers/deploy-harness.js';
 
 // each case spawns real bash + shim processes; allow for a loaded CI box
@@ -43,6 +43,15 @@ describe('next-steps output (--dry-run, no ClickHouse contact)', () => {
   it('uses a placeholder host when --ch-host is omitted', () => {
     expect(dry()).toContain('http://<ch-host>:8123/sql');
   });
+  it('creates dist/ itself when running from the release bundle layout (no dist/)', () => {
+    copyFileSync(`${h.work}/dist/sql.html`, `${h.work}/sql.html`);
+    rmSync(`${h.work}/dist`, { recursive: true, force: true });
+    const out = dry('--artifact', `${h.work}/sql.html`);
+    expect(out).toContain('connect-src');
+    expect(existsSync(`${h.work}/dist/http_handlers.xml`)).toBe(true);
+    copyFileSync(`${h.work}/sql.html`, `${h.work}/dist/sql.html`); // restore for later cases
+    mkdirSync(`${h.work}/dist`, { recursive: true });
+  });
   it('renders the config and http_handlers without a build under --artifact', () => {
     const out = dry('--artifact', `${h.work}/dist/sql.html`);
     expect(out).toContain(CFG);
@@ -57,7 +66,9 @@ describe('single-node install (no --cluster)', () => {
     expect(sqls.some((s) => /ON CLUSTER|clusterAllReplicas/.test(s))).toBe(false);
     const up = idx(sqls, /^INSERT INTO FUNCTION file\('_asb_next_sql\.html','RawBLOB'\).*FORMAT RawBLOB/);
     const v1 = idx(sqls, /SHA256.*_asb_next_sql\.html/);
-    const promote = idx(sqls, /ENGINE=File\('RawBLOB','sql\.html'\)/);
+    const promote = idx(sqls, /^INSERT INTO FUNCTION file\('sql\.html','RawBLOB'\) .*SELECT c FROM file\('_asb_next_sql\.html'/);
+    // no table is created in single-node mode: a CTAS would also need INSERT on it (found by tests/deploy)
+    expect(sqls.some((s) => /^CREATE TABLE/.test(s))).toBe(false);
     expect(up).toBeGreaterThan(-1);
     expect(v1).toBeGreaterThan(up);
     expect(promote).toBeGreaterThan(v1);
@@ -198,6 +209,10 @@ describe('cluster install: url source', () => {
     const c = sqls.find((s) => /FROM url\(/.test(s));
     expect(c).toContain('max_http_get_redirects=10');
     expect(c).toContain('engine_file_truncate_on_insert=1');
+    // a hung url() is bounded: per-query deadline + HTTP connect/receive timeouts, derived from --ddl-timeout (default 180)
+    expect(c).toContain('max_execution_time=180');
+    expect(c).toContain('http_receive_timeout=180');
+    expect(c).toContain('http_connection_timeout=10');
     expect(c).toContain("it\\'s"); // the URL is SQL-escaped
     expect(sqls.some((s) => /_asb_stage_|FORMAT RawBLOB/.test(s) && !/^DROP/.test(s))).toBe(false);
   });
@@ -208,13 +223,26 @@ describe('cluster install: url source', () => {
   });
 });
 
+describe('url source timeouts', () => {
+  const pull = (extra) => h.install(['--cluster', 'c1', '--pull-url', 'http://x/sql.html', ...extra], { env: TOKEN, cfg: { nodes: 2, urlContent: { len: ARTIFACT_BYTES.length, sha: ART_SHA } } });
+  it('derives max_execution_time and the receive timeout from --ddl-timeout', () => {
+    const c = pull(['--ddl-timeout', '45']).sqls.find((s) => /FROM url\(/.test(s));
+    expect(c).toContain('max_execution_time=45');
+    expect(c).toContain('http_receive_timeout=45');
+  });
+  it('falls back to 180s for --ddl-timeout 0 (0 would mean unbounded)', () => {
+    const c = pull(['--ddl-timeout', '0']).sqls.find((s) => /FROM url\(/.test(s));
+    expect(c).toContain('max_execution_time=180');
+  });
+});
+
 describe('inputs', () => {
   it('escapes the config JSON in SQL (\\ and \')', () => {
     const { r, sqls, files } = h.install(['--client-id', "it's\\x"], { env: TOKEN });
     const cfg = '{"issuer":"https://accounts.google.com","client_id":"it\'s\\x"}';
     expect(r.status, r.stderr).toBe(0); // verification compares the locally computed sha to what the server wrote
     expect(files['sql-config.json'].sha).toBe(sha256(cfg));
-    expect(sqls.find((s) => /_asb_t_next_cfg/.test(s) && /^CREATE/.test(s))).toContain("it\\'s\\\\x");
+    expect(sqls.find((s) => /^INSERT INTO FUNCTION file\('_asb_next_sql-config\.json'/.test(s))).toContain("it\\'s\\\\x");
   });
   it.each(["c'; DROP TABLE x; --", 'a b', 'a`b', ''])('rejects the cluster name %j without touching ClickHouse', (name) => {
     const { r, log } = h.install(['--cluster', name || 'x y']);
@@ -354,7 +382,7 @@ describe('--transport http', () => {
     ['an X-ClickHouse-Exception-Code header', 'header'],
     ['__exception__ in a 200 body', 'body'],
   ])('treats %s as failure and keeps the live file untouched', (_n, http) => {
-    const { r, sqls, files } = run([], { cfg: { rules: [{ match: '^CREATE TABLE default\\._asb_t_next_cfg', stderr: 'Code: 60. DB::Exception: boom', http }] } });
+    const { r, sqls, files } = run([], { cfg: { rules: [{ match: "^INSERT INTO FUNCTION file\\('_asb_next_sql-config\\.json'", stderr: 'Code: 60. DB::Exception: boom', http }] } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('boom');
     expect(sqls.some((s) => live.test(s))).toBe(false);

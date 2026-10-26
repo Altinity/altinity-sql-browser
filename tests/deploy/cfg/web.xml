@@ -1,0 +1,5 @@
+<clickhouse><listen_host>0.0.0.0</listen_host><http_handlers>
+  <rule name="a"><url>regex:^/real/sql.html$</url><methods>GET</methods><handler><type>static</type><response_content>file://sql.html</response_content></handler></rule>
+  <rule name="r1"><url>regex:^/rel/sql.html$</url><methods>GET</methods><handler><type>redirect</type><location>http://@PFX@-web:8123/real/sql.html</location></handler></rule>
+  <rule name="r2"><url>regex:^/rel2/sql.html$</url><methods>GET</methods><handler><type>redirect</type><location>http://@PFX@-web:8123/rel/sql.html</location></handler></rule>
+  <defaults/></http_handlers></clickhouse>

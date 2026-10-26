@@ -9,6 +9,7 @@
 #     sql-browser.xml     — sample public-demo connections (merged with the
 #                           user's ~/.clickhouse-client/config.xml by the runner)
 #     run.sh              — self-resolving launcher (python3 local.py)
+#     deploy/             — cluster installer: install.sh, uninstall.sh, lib/, http_handlers.xml
 #     VERSION
 #     README.txt
 #
@@ -35,6 +36,11 @@ mkdir -p "$STAGE"
 cp "$OUT/sql.html"                  "$STAGE/sql.html"
 cp "$ROOT/build/local.py"           "$STAGE/local.py"
 cp "$ROOT/deploy/sql-browser.xml"   "$STAGE/sql-browser.xml"
+# The cluster installer (deploy/install.sh sources deploy/lib/asb-ch.sh; with
+# --artifact sql.html it needs no node/npm). Keep the same relative layout.
+mkdir -p "$STAGE/deploy/lib"
+cp "$ROOT/deploy/install.sh" "$ROOT/deploy/uninstall.sh" "$ROOT/deploy/http_handlers.xml" "$STAGE/deploy/"
+cp "$ROOT/deploy/lib/asb-ch.sh" "$STAGE/deploy/lib/"
 printf '%s\n' "$VERSION" > "$STAGE/VERSION"
 
 cat > "$STAGE/run.sh" <<'EOF'

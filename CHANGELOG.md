@@ -9,6 +9,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **#692 (part 2): `deploy/install.sh --cluster` now works on multi-replica clusters.**
+  SQL-only, two-phase install with server-side fan-out: preflight, pre-clean,
+  phase 1 to `_asb_next_*` (upload once and copy, or `--pull-url`), per-node length
+  and SHA-256 verification, phase 2 local promote, verify live, always-cleanup. Live
+  files are only written from a node-local verified copy (a failed
+  `CREATE ... AS SELECT` truncates its target). New flags `--artifact`, `--pull-url`,
+  `--transport native|http`, `--http-port`, `--ddl-timeout`, `--verify-only`;
+  `deploy/uninstall.sh` empties the files on every node. A hung `--pull-url`
+  download is bounded (`max_execution_time` and HTTP timeouts from `--ddl-timeout`).
+  Single-node mode writes with `INSERT INTO FUNCTION file` so it needs only `FILE`
+  (a CTAS also demanded `INSERT` on the temp table). New integration suite
+  `tests/deploy/` (`npm run test:deploy`, CI job `deploy-integration`, matrix
+  ClickHouse 26.3 and Antalya 25.8.33) and the release bundle now ships `deploy/`.
+  `docs/ASSET-DISTRIBUTION.md` documents the procedure, grants and limits.
+
 ### Fixed
 - **#692 (part 1): deployment docs and installer output corrections.**
   `deploy/install.sh` printed `https://` even without `--secure` and omitted the

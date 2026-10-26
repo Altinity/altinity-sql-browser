@@ -192,6 +192,7 @@ fi
 # Rewrite only the connect-src host list in the committed template; everything else
 # (the rest of the CSP, the other headers) is copied verbatim.
 HANDLERS_OUT="$ROOT/dist/http_handlers.xml"
+mkdir -p "$ROOT/dist"
 sed -E "s#(connect-src 'self')[^;]*#\1 ${CONNECT_HOSTS}#" \
   "$ROOT/deploy/http_handlers.xml" > "$HANDLERS_OUT"
 
@@ -252,10 +253,14 @@ pre_clean() {
   for t in "${ALL_TABLES[@]}"; do ddl "drop ${t}" "DROP TABLE IF EXISTS ${t}${ON_CLUSTER} SYNC"; done
 }
 
-# next-file source for the SPA, as the SELECT of a CTAS (cluster fan-out).
+# next-file source for the SPA, as the SELECT of the fan-out statement.
+# A hung or slow url() is bounded: per-query max_execution_time plus HTTP
+# connect/receive timeouts, all derived from --ddl-timeout (0 => 180).
+PULL_TIMEOUT=$(( DDL_TIMEOUT > 0 ? DDL_TIMEOUT : 180 ))
 phase1_html_source() {
   if [[ -n "$PULL_URL" ]]; then
-    printf "SELECT c FROM url('%s','RawBLOB','c String') SETTINGS max_http_get_redirects=10, engine_file_truncate_on_insert=1" "$(sql_str "$PULL_URL")"
+    printf "SELECT c FROM url('%s','RawBLOB','c String') SETTINGS max_http_get_redirects=10, engine_file_truncate_on_insert=1, max_execution_time=%s, http_connection_timeout=10, http_receive_timeout=%s" \
+      "$(sql_str "$PULL_URL")" "$PULL_TIMEOUT" "$PULL_TIMEOUT"
   else
     printf "SELECT c FROM clusterAllReplicas('%s', file('%s','RawBLOB','c String')) SETTINGS engine_file_empty_if_not_exists=1, engine_file_truncate_on_insert=1" "$CLUSTER" "$STAGE_FILE"
   fi
@@ -277,17 +282,17 @@ phase1() {
     fi
   fi
   if [[ -n "$CLUSTER" || -n "$PULL_URL" ]]; then
-    ddl "fan out sql.html to every node" "CREATE TABLE ${T_NEXT_HTML}${ON_CLUSTER} ENGINE=File('RawBLOB','${NEXT_HTML}') AS $(phase1_html_source)"
+    ddl "fan out sql.html to every node" "$(write_file_stmt "$T_NEXT_HTML" "$NEXT_HTML" "$(phase1_html_source)")"
   fi
-  ddl "write sql-config.json to every node" "CREATE TABLE ${T_NEXT_CFG}${ON_CLUSTER} ENGINE=File('RawBLOB','${NEXT_CFG}') AS SELECT '$(sql_str "$(cat "$CONFIG_FILE")")' AS c SETTINGS engine_file_truncate_on_insert=1"
+  ddl "write sql-config.json to every node" "$(write_file_stmt "$T_NEXT_CFG" "$NEXT_CFG" "SELECT '$(sql_str "$(cat "$CONFIG_FILE")")' AS c SETTINGS engine_file_truncate_on_insert=1")"
   ddl "drop ${T_NEXT_HTML}" "DROP TABLE IF EXISTS ${T_NEXT_HTML}${ON_CLUSTER} SYNC"
   ddl "drop ${T_NEXT_CFG}" "DROP TABLE IF EXISTS ${T_NEXT_CFG}${ON_CLUSTER} SYNC"
 }
 
 phase2() {
   info "==> Phase 2: promote ${NEXT_HTML} / ${NEXT_CFG} over the live files (local copy on each node)"
-  ddl "promote sql.html" "CREATE TABLE ${T_LIVE_HTML}${ON_CLUSTER} ENGINE=File('RawBLOB','sql.html') AS SELECT c FROM file('${NEXT_HTML}','RawBLOB','c String') SETTINGS engine_file_truncate_on_insert=1"
-  ddl "promote sql-config.json" "CREATE TABLE ${T_LIVE_CFG}${ON_CLUSTER} ENGINE=File('RawBLOB','sql-config.json') AS SELECT c FROM file('${NEXT_CFG}','RawBLOB','c String') SETTINGS engine_file_truncate_on_insert=1"
+  ddl "promote sql.html" "$(write_file_stmt "$T_LIVE_HTML" sql.html "SELECT c FROM file('${NEXT_HTML}','RawBLOB','c String') SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "promote sql-config.json" "$(write_file_stmt "$T_LIVE_CFG" sql-config.json "SELECT c FROM file('${NEXT_CFG}','RawBLOB','c String') SETTINGS engine_file_truncate_on_insert=1")"
   ddl "drop ${T_LIVE_HTML}" "DROP TABLE IF EXISTS ${T_LIVE_HTML}${ON_CLUSTER} SYNC"
   ddl "drop ${T_LIVE_CFG}" "DROP TABLE IF EXISTS ${T_LIVE_CFG}${ON_CLUSTER} SYNC"
 }
