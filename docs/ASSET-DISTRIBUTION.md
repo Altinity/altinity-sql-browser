@@ -59,8 +59,11 @@ this option is the manual procedure in
   `INSERT INTO FUNCTION clusterAllReplicas(...)` fails on any cluster with more
   than one replica (`Code 55 STORAGE_REQUIRES_PARAMETER`: Distributed write with
   more than one shard and no sharding key, regardless of `internal_replication`),
-  and the failed run leaves the temporary `_asb_*` table behind. Tracked in
-  #692; use the manual procedure below, or option B.
+  and because the script runs under `set -e`, it exits after the failed `INSERT`
+  and never reaches its `DROP TABLE`, so the temporary `_asb_*` table may be left
+  behind (see the cleanup below). `install.sh --cluster` now refuses to run
+  against a multi-replica cluster. Tracked in #692; use the manual procedure
+  below, or option B.
 
 ### B. Store the asset in a Replicated table + `predefined_query_handler`
 
@@ -102,8 +105,8 @@ serves the bootstrap page anonymously. Multi-node clusters are not supported by
 the installer yet (#692); see the interim procedure below. The trade-off to be
 aware of:
 
-> After scaling a cluster out (or replacing a node), re-install so the new
-> replica's `user_files/` gets the assets.
+> After scaling a cluster out (or replacing a node), re-install (or re-run the
+> manual multi-node procedure) so the new replica's `user_files/` gets the assets.
 
 For deployments where that re-push is undesirable — autoscaling fleets, frequent
 node replacement — option B (replicated table) or option C (config-distributed
@@ -136,6 +139,22 @@ CREATE TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>'
 DROP TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
 ```
 
+Repeat for the config, with the JSON as a SQL string literal (this is what
+`install.sh` renders into `sql-config.json`; adapt issuer/client id/audience):
+
+```sql
+CREATE TABLE default._asb_pull_sql_config_json ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', 'sql-config.json')
+  AS SELECT '{"issuer":"https://accounts.google.com","client_id":"<client-id>"}' AS c
+  SETTINGS engine_file_truncate_on_insert = 1;
+
+DROP TABLE default._asb_pull_sql_config_json ON CLUSTER '<cluster>' SYNC;
+```
+
+The JSON must be escaped for a SQL string literal: `'` becomes `\'` and `\`
+becomes `\\`. A normal config contains neither, so it can be pasted as is. The
+file is written without a trailing newline (harmless to the JSON parser).
+
 The file survives the `DROP`. **Keep `engine_file_truncate_on_insert = 1`:**
 without it a re-run appends and doubles the file.
 
@@ -157,11 +176,26 @@ without it a re-run appends and doubles the file.
 
 **Tested** on ClickHouse 25.8 OSS, 26.3 OSS and Antalya 25.8.33, on all four
 nodes of a 2-shard x 2-replica cluster: byte-exact, idempotent with the
-truncate setting. **Not tested:** pulling from the real GitHub release URL
-(a local HTTP server was used, so redirect handling is unverified), and
-`sql-config.json` (the same statement with `AS SELECT '<json>' AS c` should
-work but has not been tried). This procedure is the planned basis of the fixed
-installer.
+truncate setting. The `sql-config.json` literal statement was tested on a **single node of
+ClickHouse 26.3 only** (byte-exact against the intended JSON, including a URL
+with `?`/`&` and `\'`/`\\` escaping; idempotent on a re-run); its `ON CLUSTER`
+behaviour is the same mechanism proven for `sql.html`, but was not separately
+run on a multi-node cluster. **Not tested:** pulling from the real GitHub release
+URL (a local HTTP server was used, so redirect handling is unverified). This
+procedure is the planned basis of the fixed installer.
+
+### Cleaning up after a failed `install.sh --cluster`
+
+If you already ran the broken `--cluster` path, it may have left its temporary
+tables behind on the node you connected to (and on other nodes where the
+`ON CLUSTER` `CREATE` ran). Remove them:
+
+```sql
+DROP TABLE IF EXISTS default._asb_sql_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_sql_config_json ON CLUSTER '<cluster>' SYNC;
+```
+
+Dropping a `File`-engine table does not delete the file in `user_files/`.
 
 ## Single-node installs
 

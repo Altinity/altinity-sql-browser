@@ -5,6 +5,8 @@
 #
 # Usage:
 #   CLICKHOUSE_PASSWORD=... ./deploy/uninstall.sh --ch-host H [--ch-user U] [--cluster C] [--secure]
+# NOTE: with --cluster this only truncates the files on the connected node: the
+# CREATE/DROP run ON CLUSTER but the INSERT that empties the file is local.
 set -euo pipefail
 
 CH_HOST="" CH_USER="default" CLUSTER="" SECURE=0

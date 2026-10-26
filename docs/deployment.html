@@ -76,6 +76,8 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   [--issuer https://accounts.google.com] \
   [--audience &lt;api-audience&gt;] \
   [--cluster &lt;cluster-name&gt;] [--secure]</pre>
+    <p><code class="k">--cluster</code> is currently broken on multi-node clusters (#692); omit it for a single node, or see the
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual">manual multi-node procedure</a>.</p>
 
     <div class="callout"><strong>Public file, by design.</strong> <code class="k">config.json</code> is served to
       browsers, so prefer a PKCE public client. If your IdP requires a <code class="k">client_secret</code>,

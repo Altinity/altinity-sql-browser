@@ -20,16 +20,18 @@ beforeAll(() => {
   copyFileSync(join(repo, 'deploy/http_handlers.xml'), join(work, 'deploy/http_handlers.xml'));
   writeFileSync(join(work, 'build/build.mjs'), '');
   writeFileSync(join(work, 'dist/sql.html'), '<html></html>'); // the shimmed build produces nothing
-  // clickhouse-client shim: log argv and stdin size, succeed.
+  // clickhouse-client shim: log argv and stdin size, succeed. A system.clusters
+  // count query answers with $ASB_NODE_COUNT (default 1).
   const ch = join(work, 'bin', 'clickhouse-client');
   writeFileSync(ch, `#!/bin/sh
 { printf 'ARGS:'; for a in "$@"; do printf ' [%s]' "$(printf %s "$a" | tr '\\n' ' ')"; done; printf ' STDIN:%s\\n' "$(wc -c | tr -d ' ')"; } >> "${work}/ch.log"
+case "$*" in *system.clusters*) echo "\${ASB_NODE_COUNT:-1}";; esac
 exit 0
 `);
   chmodSync(ch, 0o755);
   for (const [name, code] of [['npm', 0], ['node', 0], ['curl', 22]]) {
     const p = join(work, 'bin', name);
-    writeFileSync(p, `#!/bin/sh\nexit ${code}\n`);
+    writeFileSync(p, `#!/bin/sh\necho ${name} >> "${work}/build.log"\nexit ${code}\n`);
     chmodSync(p, 0o755);
   }
 });
@@ -91,5 +93,34 @@ describe('install.sh real upload path', () => {
     expect(calls.every((c) => c.includes('[--secure]'))).toBe(true);
     expect(out).toContain('https://ch.example.com:8443/sql');
     expect(out).not.toContain('http://ch.example.com');
+  });
+});
+
+describe('install.sh --cluster guard (#692)', () => {
+  function clusterInstall(count) {
+    rmSync(join(work, 'ch.log'), { force: true });
+    rmSync(join(work, 'build.log'), { force: true });
+    const r = spawnSync('bash', [join(work, 'deploy/install.sh'), '--client-id', 'cid', '--ch-host', 'ch.example.com', '--cluster', 'c1'], {
+      env: { ...process.env, ASB_NODE_COUNT: String(count), CLICKHOUSE_PASSWORD: 'pw', PATH: `${join(work, 'bin')}:${process.env.PATH ?? ''}` },
+      encoding: 'utf8',
+    });
+    let built = '';
+    try { built = readFileSync(join(work, 'build.log'), 'utf8'); } catch { /* no build ran */ }
+    return { r, built };
+  }
+
+  it('fails fast with exit 2 before building when the cluster has more than one replica', () => {
+    const { r, built } = clusterInstall(2);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('#692');
+    expect(r.stderr).toContain('docs/ASSET-DISTRIBUTION.md');
+    expect(built).toBe('');
+  });
+
+  it('proceeds for a one-node cluster', () => {
+    const { r, built } = clusterInstall(1);
+    expect(r.status, r.stderr).toBe(0);
+    expect(built).toContain('npm');
+    expect(r.stdout).toContain('==> Assets uploaded');
   });
 });

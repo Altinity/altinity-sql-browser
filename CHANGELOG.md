@@ -26,9 +26,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Docs also no longer claim `install.sh --cluster` fans out to every replica:
   testing (ClickHouse 25.8 OSS, 26.3 OSS, Antalya 25.8.33) showed it fails on any
   multi-replica cluster (`INSERT INTO FUNCTION clusterAllReplicas` ->
-  `STORAGE_REQUIRES_PARAMETER`) and leaves a temp `_asb_*` table behind. Added a
+  `STORAGE_REQUIRES_PARAMETER`) and, since the script exits (`set -e`) before its
+  `DROP`, may leave a temp `_asb_*` table behind (cleanup `DROP ... ON CLUSTER`
+  statements are documented). `install.sh --cluster` now fails fast (exit 2,
+  before building) when `system.clusters` lists more than one replica for the
+  cluster, pointing at the manual procedure; a one-node cluster still proceeds. Added a
   tested interim manual `ON CLUSTER ... ENGINE = File ... AS SELECT FROM url()`
-  procedure to `docs/ASSET-DISTRIBUTION.md`; the installer fix is tracked in #692.
+  procedure (including the `sql-config.json` literal, tested on single-node 26.3
+  only) to `docs/ASSET-DISTRIBUTION.md`; the installer fix is tracked in #692.
 
 ### Added
 - **#592: lock in the #586/#587 shell primitive guardrails mechanically.**

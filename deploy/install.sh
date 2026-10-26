@@ -62,14 +62,15 @@ CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER")
 
 # user_files is node-local. NOTE: --cluster is currently broken (#692): the
 # clusterAllReplicas INSERT below fails on any cluster with more than one
-# replica (STORAGE_REQUIRES_PARAMETER). This multi-shard guard is only a partial
-# early stop; see docs/ASSET-DISTRIBUTION.md for the manual procedure.
+# replica (STORAGE_REQUIRES_PARAMETER). Fail fast, before building, when the
+# cluster has more than one replica in total; a 1-node cluster may proceed.
 if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
-  SHARDS=$("${CH[@]}" --query "SELECT max(shard_num) FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>/dev/null || true)
-  if [[ "$SHARDS" =~ ^[0-9]+$ ]] && (( SHARDS > 1 )); then
-    echo "ERROR: cluster '${CLUSTER}' has ${SHARDS} shards. --cluster is currently" >&2
-    echo "broken on multi-replica clusters (#692); user_files is node-local. See" >&2
-    echo "'Multi-node clusters (interim, manual)' in docs/ASSET-DISTRIBUTION.md." >&2
+  NODES=$("${CH[@]}" --query "SELECT count() FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>/dev/null || true)
+  if [[ "$NODES" =~ ^[0-9]+$ ]] && (( NODES > 1 )); then
+    echo "ERROR: cluster '${CLUSTER}' has ${NODES} replicas. --cluster is currently" >&2
+    echo "broken on multi-node clusters (#692); user_files is node-local. Use the" >&2
+    echo "manual procedure: 'Multi-node clusters (interim, manual)' in" >&2
+    echo "docs/ASSET-DISTRIBUTION.md." >&2
     exit 2
   fi
 fi

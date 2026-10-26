@@ -23,7 +23,7 @@ The app is three things on the target ClickHouse:
 CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   --ch-host clickhouse.example.com --ch-user admin \
   --client-id <oauth-client-id> [--issuer …] [--audience …] [--ch-auth basic] \
-  [--cluster …] [--secure]
+  [--cluster …] [--secure]   # --cluster: broken on multi-node clusters (#692), see below
 ```
 
 Prerequisites: `npm` + `node` 22+ (the installer builds the SPA), `clickhouse-client`,
@@ -36,13 +36,13 @@ uses the default HTTP(S) ports 8123/8443, so adjust if yours differ.
 
 `--cluster <name>` is **currently broken** on any cluster with more than one
 replica (its `clusterAllReplicas` write is rejected by ClickHouse; tracked in
-#692), so use `install.sh` without `--cluster` for a single node. For
+#692), and the installer now refuses it before building, so use `install.sh` without `--cluster` for a single node. For
 multi-node clusters see the interim manual procedure in
 [ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
 The password is read from the env var or prompted — never placed on the command
 line.
 
-> **`user_files/` is node-local — re-run `install.sh` after a scale-out.**
+> **`user_files/` is node-local — re-run the install (or the manual multi-node procedure) after a scale-out.**
 > ClickHouse does not replicate `user_files/`, so a replica added or replaced
 > later starts without the assets. This is a deliberate trade-off (the bootstrap
 > page is then served statically, with no auth). See
