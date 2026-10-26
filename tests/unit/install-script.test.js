@@ -112,7 +112,7 @@ describe('cluster install: two-phase ordering', () => {
   it('preflights, pre-cleans, stages, fans out, verifies, THEN promotes, verifies, cleans up', () => {
     const { r, sqls, files } = run();
     expect(r.status, r.stderr).toBe(0);
-    const pre = idx(sqls, /view\(SELECT concat\(hostName\(\)/);
+    const pre = idx(sqls, /view\(SELECT toString\(serverUUID\(\)\) AS id/);
     const clean = idx(sqls, /^DROP TABLE IF EXISTS default\._asb_t_next_html ON CLUSTER `c1` SYNC/);
     const stage = idx(sqls, /^INSERT INTO FUNCTION file\('_asb_stage_tok123\.html','RawBLOB'\).*FORMAT RawBLOB/);
     const stageVerify = idx(sqls, /SHA256.*_asb_stage_tok123\.html/);
@@ -134,7 +134,7 @@ describe('cluster install: two-phase ordering', () => {
     expect(tail.slice(1).every((s) => /^DROP TABLE IF EXISTS default\._asb_t_\w+ ON CLUSTER `c1` SYNC$/.test(s))).toBe(true);
     expect(files['_asb_stage_tok123.html'].len).toBe(0);
     expect(r.stdout).toContain('verified on 3 node(s)');
-    expect(r.stdout).toMatch(/node-3:9000\s+\d+\s+[0-9a-f]{64} ok/);
+    expect(r.stdout).toMatch(/uuid-3\s+node-3\s+\d+\s+[0-9a-f]{64} ok/);
   });
 
   it('every CTAS truncates on insert; the stage CTAS tolerates a missing file', () => {
@@ -155,7 +155,7 @@ describe('cluster install: two-phase ordering', () => {
     const { r, sqls, files } = run([], { cfg: { nodes: 3, badNodes: { '_asb_next_sql.html': { 2: { len: 1, sha: 'dead' } } } } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('phase 1 verification failed; live files were NOT touched');
-    expect(r.stdout).toMatch(/node-2:9000\s+1\s+dead\s+MISMATCH/);
+    expect(r.stdout).toMatch(/uuid-2\s+node-2\s+1\s+dead\s+MISMATCH/);
     expect(sqls.some((s) => live.test(s))).toBe(false);
     expect(files['sql.html']).toBeUndefined();
     expect(sqls.slice(-5)[0]).toContain("SELECT ''"); // cleanup still ran
@@ -168,15 +168,15 @@ describe('cluster install: two-phase ordering', () => {
     expect(writes(sqls)).toEqual([]);
   });
 
-  it('refuses when the preflight sees the same instance (hostName:tcpPort) twice', () => {
+  it('refuses when the preflight sees the same instance (serverUUID) twice', () => {
     const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, preflightDuplicate: true } });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('2 distinct node identities (hostName:tcpPort) for 3 nodes');
+    expect(r.stderr).toContain('2 distinct node identities (serverUUID) for 3 nodes');
     expect(writes(sqls)).toEqual([]);
   });
 
   describe.each([
-    ['preflight reachability', /view\(SELECT concat\(hostName\(\)/, false],
+    ['preflight reachability', /view\(SELECT toString\(serverUUID\(\)\) AS id/, false],
     ['pre-clean', /^DROP TABLE IF EXISTS default\._asb_t_next_html/, true],
     ['stage upload', /FORMAT RawBLOB/, true],
     ['stage verification', /SHA256.*_asb_stage_/, true],
@@ -329,7 +329,7 @@ describe('fail-closed cluster checks', () => {
     expect(h.built()).toBe('');
   });
   it('explains AUTHENTICATION_FAILED on the cross-node preflight (<secret>)', () => {
-    const { r } = run({ nodes: 2, rules: [{ match: 'view\\(SELECT concat\\(hostName\\(\\)', stderr: 'Code: 516. DB::Exception: AUTHENTICATION_FAILED' }] });
+    const { r } = run({ nodes: 2, rules: [{ match: 'view\\(SELECT toString\\(serverUUID\\(\\)\\) AS id', stderr: 'Code: 516. DB::Exception: AUTHENTICATION_FAILED' }] });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('AUTHENTICATION_FAILED');
     expect(r.stderr).toContain('<secret>');
@@ -448,31 +448,31 @@ describe('verification rows are strict (one row, one host, n == 1, per node)', (
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('rows returned: 4');
   });
-  it('the same host answering twice fails: the row count equals the node count but distinct nodes do not', () => {
-    const { r } = verify({ hostAs: { 3: 1 } });
+  it('the same instance (serverUUID) answering twice fails: the row count equals the node count but distinct nodes do not', () => {
+    const { r } = verify({ hostAs: { 3: 1 }, uuidAs: { 3: 1 } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('rows returned: 3, distinct nodes: 2');
   });
-  it('two instances on one host (same hostName, different tcpPort) are distinct nodes and pass', () => {
-    const { r } = verify({ hostAs: { 3: 1 }, portAs: { 3: 9001 } });
+  it('two instances on one host (same hostName, distinct serverUUID) are distinct nodes and pass', () => {
+    const { r } = verify({ hostAs: { 3: 1 } });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/node-1:9001\s+\d+\s+[0-9a-f]{64} ok/);
+    expect(r.stdout).toMatch(/uuid-3\s+node-1\s+\d+\s+[0-9a-f]{64} ok/);
   });
-  it('the same host AND port twice still fails', () => {
-    const { r } = verify({ hostAs: { 3: 1 }, portAs: { 3: 9000 } });
+  it('a duplicate serverUUID fails even when the hosts differ', () => {
+    const { r } = verify({ uuidAs: { 3: 1 } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('rows returned: 3, distinct nodes: 2');
   });
   it('a row with n=0 fails for an install even when len and sha match', () => {
     const { r } = verify({ n: { 2: 0 } });
     expect(r.status).toBe(1);
-    expect(r.stdout).toMatch(/node-2:9000\s+\d+\s+[0-9a-f]{64} MISMATCH/);
+    expect(r.stdout).toMatch(/uuid-2\s+node-2\s+\d+\s+[0-9a-f]{64} MISMATCH/);
   });
   it('a row with n=2 fails too', () => {
     expect(verify({ n: { 1: 2 } }).r.status).toBe(1);
   });
   it('phase 1 stops on a bad row with the live files untouched', () => {
-    const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, verify: { hostAs: { 3: 1 } } } });
+    const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, verify: { uuidAs: { 3: 1 } } } });
     expect(r.status).toBe(1);
     expect(sqls.some((s) => live.test(s))).toBe(false);
   });

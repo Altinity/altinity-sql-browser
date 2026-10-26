@@ -46,14 +46,14 @@ describe('uninstall.sh cluster', () => {
     expect(r.status, r.stderr).toBe(0);
     for (const s of sqls.filter((x) => /^(CREATE|DROP)/.test(x))) expect(s).toContain('ON CLUSTER `c1`');
     expect(files['sql.html']).toEqual(EMPTY);
-    expect(r.stdout).toMatch(/node-3:9000\s+0\s+e3b0c442[0-9a-f]{56} ok/);
+    expect(r.stdout).toMatch(/uuid-3\s+node-3\s+0\s+e3b0c442[0-9a-f]{56} ok/);
     expect(r.stdout).toContain('emptied on 3 node(s)');
   });
   it('fails when any node still serves bytes', () => {
     const { r } = run([], { cfg: { nodes: 3, badNodes: { 'sql-config.json': { 2: { len: 4, sha: 'cc' } } } } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('some files were not emptied on every node');
-    expect(r.stdout).toMatch(/node-2:9000\s+4\s+cc\s+MISMATCH/);
+    expect(r.stdout).toMatch(/uuid-2\s+node-2\s+4\s+cc\s+MISMATCH/);
   });
   it('a failing CTAS stops the run and still drops the temp tables', () => {
     const { r, sqls } = run([], { cfg: { nodes: 3, rules: [{ match: '^CREATE TABLE default\\._asb_t_rm_cfg', stderr: 'Code: 1. injected' }] } });
@@ -67,7 +67,7 @@ describe('uninstall.sh cluster', () => {
     expect(files['_asb_next_sql.html']).toEqual(EMPTY);
     expect(files['_asb_next_sql-config.json']).toEqual(EMPTY);
     expect(sqls.some((s) => /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\) AS SELECT '' AS c/.test(s))).toBe(true);
-    expect(r.stdout).toMatch(/node-3:9000\s+0\s+e3b0c442[0-9a-f]{56} ok/);
+    expect(r.stdout).toMatch(/uuid-3\s+node-3\s+0\s+e3b0c442[0-9a-f]{56} ok/);
   });
   it('fails when a stale non-empty _asb_next_* copy survives on a node', () => {
     const { r } = run([], { cfg: { nodes: 3, badNodes: { '_asb_next_sql.html': { 3: { len: 7, sha: 'dd' } } } } });
@@ -76,7 +76,7 @@ describe('uninstall.sh cluster', () => {
   it('accepts n=0 rows for the 0-byte check (the only caller allowed to) but not extra/dropped/duplicate rows', () => {
     expect(run([], { cfg: { nodes: 3, verify: { n: { 2: 0 } } } }).r.status).toBe(0);
     expect(run([], { cfg: { nodes: 3, verify: { dropNodes: [3] } } }).r.status).toBe(1);
-    expect(run([], { cfg: { nodes: 3, verify: { hostAs: { 3: 1 } } } }).r.status).toBe(1);
+    expect(run([], { cfg: { nodes: 3, verify: { uuidAs: { 3: 1 } } } }).r.status).toBe(1);
   });
   it('fails fast and writes nothing when preflight fails', () => {
     const { r, sqls } = run([], { cfg: { nodes: 3, countOut: 0 } });

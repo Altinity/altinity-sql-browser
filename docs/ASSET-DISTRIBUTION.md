@@ -162,7 +162,7 @@ is never the target of anything that can fail on a remote source:
    `url()`-download it (following redirects). Result: `_asb_next_sql.html` and
    `_asb_next_sql-config.json` on every node. A failure here leaves the live files untouched.
 4. **Verify phase 1:** every node's next files match the expected length and SHA-256. The
-   check is strict: exactly one row per node (`count() = 1`), as many distinct node identities (`hostName():tcpPort()`, so several instances
+   check is strict: exactly one row per node (`count() = 1`), as many distinct node identities (`serverUUID()`, unique per server instance and independent of ports, so several instances
    on one host stay distinct) as `system.clusters` lists, each with the expected length and hash - a dropped, extra or
    duplicated-host row fails it. (`uninstall.sh`'s 0-byte check alone also accepts `count() = 0`.)
 5. **Phase 2 — promote.** Each node copies *its own* verified `_asb_next_*` over the live
@@ -220,10 +220,10 @@ Expected length and hash come from the artifact (`wc -c`, `sha256sum`); the quer
 row per node even when the file is missing:
 
 ```sql
-SELECT h, n, len, sha FROM clusterAllReplicas('<cluster>', view(
-  SELECT concat(hostName(), ':', toString(tcpPort())) h, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha
+SELECT id, host, n, len, sha FROM clusterAllReplicas('<cluster>', view(
+  SELECT toString(serverUUID()) id, hostName() host, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha
   FROM file('sql.html', 'RawBLOB', 'c String')))
-ORDER BY h SETTINGS engine_file_empty_if_not_exists = 1;
+ORDER BY host, id SETTINGS engine_file_empty_if_not_exists = 1;
 SELECT count() FROM system.clusters WHERE cluster = '<cluster>';
 ```
 

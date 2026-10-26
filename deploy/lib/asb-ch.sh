@@ -161,32 +161,32 @@ set_cluster_clause() {
   [[ -z "$CLUSTER" ]] || ON_CLUSTER=" ON CLUSTER \`${CLUSTER}\`"
 }
 
-# Per-node row (h, n, len, sha) for a user_files file; a missing file yields a row, not an error.
+# Per-node row (id, host, n, len, sha; id = serverUUID(), the node identity - unique per server instance, independent of ports) for a user_files file; a missing file yields a row, not an error.
 verify_sql() {  # verify_sql <user_files-name>
-  local inner="SELECT concat(hostName(), ':', toString(tcpPort())) h, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha FROM file('$1','RawBLOB','c String')"
+  local inner="SELECT toString(serverUUID()) id, hostName() host, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha FROM file('$1','RawBLOB','c String')"
   if [[ -n "$CLUSTER" ]]; then
-    printf "SELECT h, n, len, sha FROM clusterAllReplicas('%s', view(%s)) ORDER BY h SETTINGS engine_file_empty_if_not_exists=1" "$CLUSTER" "$inner"
+    printf "SELECT id, host, n, len, sha FROM clusterAllReplicas('%s', view(%s)) ORDER BY host, id SETTINGS engine_file_empty_if_not_exists=1" "$CLUSTER" "$inner"
   else
     printf '%s SETTINGS engine_file_empty_if_not_exists=1' "$inner"
   fi
 }
 
 # check_rows <name> <expected-len> <expected-sha> <show 0|1> [one|any]
-# Sets ROWS (rows returned), HOSTS (distinct node identities, hostName():tcpPort(), so several instances on one host stay distinct) and MATCH (rows matching
+# Sets ROWS (rows returned), HOSTS (distinct node identities = serverUUID(), so several instances on one host stay distinct) and MATCH (rows matching
 # len+sha, and - in mode "one", the default - exactly one row n==1 in the file). Mode "any"
 # also accepts n==0 (uninstall's empty-file check: a 0-byte RawBLOB may yield 0 rows).
 # Prints a table when show=1. Returns 0 iff ROWS == HOSTS == EXPECTED_NODES and every row
 # matches (a dropped, extra or duplicated-host row all fail); 2 if the query failed.
 check_rows() {
-  local name="$1" elen="$2" esha="$3" show="$4" mode="${5:-one}" out h n len sha mark seen=""
+  local name="$1" elen="$2" esha="$3" show="$4" mode="${5:-one}" out id h n len sha mark seen=""
   ROWS=0; MATCH=0; HOSTS=0
   out="$(ch_query "$(verify_sql "$name")")" || return 2
-  [[ "$show" != 1 ]] || printf '    %-32s %-10s %-64s %s\n' "NODE" "BYTES" "SHA256" "$name"
-  while IFS=$'\t' read -r h n len sha; do
-    [[ -n "$h" ]] || continue
-    ROWS=$((ROWS + 1)); seen+="${h}"$'\n'; mark="MISMATCH"
+  [[ "$show" != 1 ]] || printf '    %-36s %-16s %-10s %-64s %s\n' "NODE (serverUUID)" "HOST" "BYTES" "SHA256" "$name"
+  while IFS=$'\t' read -r id h n len sha; do
+    [[ -n "$id" ]] || continue
+    ROWS=$((ROWS + 1)); seen+="${id}"$'\n'; mark="MISMATCH"
     if [[ "$len" == "$elen" && "$sha" == "$esha" && ( "$n" == 1 || ( "$mode" == any && "$n" == 0 ) ) ]]; then MATCH=$((MATCH + 1)); mark="ok"; fi
-    [[ "$show" != 1 ]] || printf '    %-32s %-10s %-64s %s\n' "$h" "$len" "$sha" "$mark"
+    [[ "$show" != 1 ]] || printf '    %-36s %-16s %-10s %-64s %s\n' "$id" "$h" "$len" "$sha" "$mark"
   done <<< "$out"
   HOSTS="$(printf '%s' "$seen" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
   [[ "$ROWS" == "$EXPECTED_NODES" && "$HOSTS" == "$EXPECTED_NODES" && "$MATCH" == "$ROWS" ]]
@@ -221,11 +221,11 @@ preflight_cluster() {
   local out rows ids
   cluster_node_count
   info "==> Preflight: cluster '${CLUSTER}' has ${EXPECTED_NODES} node(s)"
-  out="$(ch_query "SELECT id FROM clusterAllReplicas('${CLUSTER}', view(SELECT concat(hostName(), ':', toString(tcpPort())) AS id)) ORDER BY 1")" \
+  out="$(ch_query "SELECT id FROM clusterAllReplicas('${CLUSTER}', view(SELECT toString(serverUUID()) AS id)) ORDER BY 1")" \
     || fail "preflight failed: cannot reach every node of '${CLUSTER}' (needs <secret> or per-replica credentials for cross-node reads)"
   rows="$(printf '%s\n' "$out" | sed '/^$/d' | wc -l | tr -d ' ')"
   [[ "$rows" == "$EXPECTED_NODES" ]] || fail "preflight: only ${rows} of ${EXPECTED_NODES} nodes answered; refusing to continue"
   ids="$(printf '%s\n' "$out" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
-  [[ "$ids" == "$EXPECTED_NODES" ]] || fail "preflight: ${ids} distinct node identities (hostName:tcpPort) for ${EXPECTED_NODES} nodes; the cluster definition repeats an instance. Refusing to continue"
+  [[ "$ids" == "$EXPECTED_NODES" ]] || fail "preflight: ${ids} distinct node identities (serverUUID) for ${EXPECTED_NODES} nodes; the cluster definition repeats an instance. Refusing to continue"
   return 0
 }

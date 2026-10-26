@@ -5,7 +5,7 @@
 //   verify (verification-row knobs, all optional):
 //     dropNodes: [i]   -- omit node i's row           hostAs: { i: j } -- node i's row reports host node-j
 //     extra: true      -- append a (nodes+1)th row    n: { i: k }      -- node i's row reports count() = k
-//     portAs: { i: p } -- node i's row reports tcpPort() = p (default 9000); a row id is "node-<host>:<port>"
+//     uuidAs: { i: j } -- node i's row reports serverUUID() of node j (default: its own, "uuid-<i>"); a row is id, host, n, len, sha
 //   rule: { match: <regex source tested against the SQL>, stderr?, code?, times?,
 //           http?: 'status'|'header'|'body' }    -- first live rule wins; `times` counts down
 //   rule with delayMs: not a failure; the matching statement first sleeps delayMs (writing
@@ -33,10 +33,10 @@ function rows(state, name, cluster) {
     if ((k.dropNodes || []).includes(i)) continue;
     const host = (k.hostAs || {})[i] || i;
     const cnt = (k.n || {})[i] !== undefined ? k.n[i] : 1;
-    const port = (k.portAs || {})[i] || 9000;
-    out.push(`node-${host}:${port}\t${cnt}\t${f.len}\t${f.sha}`);
+    const id = `uuid-${(k.uuidAs || {})[i] || i}`;
+    out.push(`${id}\tnode-${host}\t${cnt}\t${f.len}\t${f.sha}`);
   }
-  if (cluster && (state.cfg.verify || {}).extra) out.push(`node-${n + 1}:9000\t1\t${(state.files[name] || EMPTY).len}\t${(state.files[name] || EMPTY).sha}`);
+  if (cluster && (state.cfg.verify || {}).extra) out.push(`uuid-${n + 1}\tnode-${n + 1}\t1\t${(state.files[name] || EMPTY).len}\t${(state.files[name] || EMPTY).sha}`);
   return out.join('\n');
 }
 
@@ -58,10 +58,10 @@ function handle(sql, stdin, state) {
   const cluster = /ON CLUSTER|clusterAllReplicas/.test(sql);
   let m;
   if (/FROM system\.clusters/.test(sql)) return ok(state.cfg.countOut !== undefined ? String(state.cfg.countOut) : String(state.cfg.nodes));
-  if (/view\(SELECT concat\(hostName\(\)/.test(sql) && !/SHA256/.test(sql)) {
+  if (/view\(SELECT toString\(serverUUID\(\)\) AS id/.test(sql) && !/SHA256/.test(sql)) {
     const r = state.cfg.preflightRows !== undefined ? state.cfg.preflightRows : state.cfg.nodes;
     const dup = state.cfg.preflightDuplicate; // a cluster definition repeating one instance
-    return ok(Array.from({ length: r }, (_, i) => `node-${dup && i === r - 1 ? 1 : i + 1}:9000`).join('\n'));
+    return ok(Array.from({ length: r }, (_, i) => `uuid-${dup && i === r - 1 ? 1 : i + 1}`).join('\n'));
   }
   if (/SHA256\(any\(c\)\)/.test(sql)) {
     m = /FROM file\('([^']+)'/.exec(sql);

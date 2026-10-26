@@ -27,7 +27,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Review hardening: `--ddl-timeout` must be a decimal integer 1..999999 (0 means asynchronous DDL; no octal or overflow) and
   `distributed_ddl_output_mode=throw` is pinned on both transports; pre-clean and
   `uninstall.sh` empty the `_asb_next_*` files on every node; verification demands
-  one row per node, as many distinct nodes (`hostName():tcpPort()`, so several
+  one row per node, as many distinct nodes (`serverUUID()`, port-independent, so several
   instances per host work) as the cluster has, and `count() = 1`
   per row (uninstall's 0-byte check alone accepts `n = 0`); a zero-byte artifact is
   refused before any write; cleanup ignores INT/TERM, is bounded (DDL timeout capped at 30 s plus client-side
