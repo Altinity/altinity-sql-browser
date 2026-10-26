@@ -16,7 +16,10 @@ the target of a remote-source statement). Needs a cluster `<secret>` and the
 documented minimal grants. `npm run test:deploy` (`tests/deploy/`, CI job
 `deploy-integration`) runs it against Keeper + 2x2 ClickHouse on exact tags
 (26.3.18.32, Antalya 25.8.33) and asserts byte-exact files on every node,
-including a node killed mid-run. The release bundle ships `deploy/` (install.sh,
+including a node killed mid-run. The job runs only on PRs that touch the
+installer files (`deploy/install.sh`, `uninstall.sh`, `lib/`,
+`http_handlers.xml`), `tests/deploy/`, or `ci.yml`, plus release tags and
+manual dispatch — never for SPA-only changes or on every push to `main`. The release bundle ships `deploy/` (install.sh,
 uninstall.sh, lib/) for use with `--artifact`. One installer at a time (no lock);
 `--ddl-timeout` must be >= 1; the password reaches only `clickhouse-client`.
 

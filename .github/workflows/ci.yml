@@ -100,14 +100,17 @@ jobs:
               - '.github/workflows/**'
               - 'packages/**'
             # #692: the installer integration test (real Keeper + 2x2 ClickHouse
-            # cluster in Docker). The installer, its tests, and the workflow.
+            # cluster in Docker, ~5 min per image). Deliberately narrow: only the
+            # shipped installer files, the harness, and this workflow. SPA
+            # source, deps (package.json), Caddy/Helm/k8s, and the unit-level
+            # installer tests (covered by the `test` job) do not trigger it.
             deploy:
-              - 'deploy/**'
+              - 'deploy/install.sh'
+              - 'deploy/uninstall.sh'
+              - 'deploy/lib/**'
+              - 'deploy/http_handlers.xml'
               - 'tests/deploy/**'
-              - 'tests/helpers/deploy-*'
-              - 'tests/unit/*-script.test.js'
-              - 'package.json'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
             docker:
               - 'Dockerfile'
               - 'deploy/caddy/**'
@@ -427,11 +430,14 @@ jobs:
   # /sql and /sql/config.json serve after install, upgrade, repair, partial
   # failure, and uninstall. Matrix over the supported server flavours; pin exact
   # tags so a moving image cannot turn this red unrelated to the diff.
+  # Runs only on PRs touching the installer (see the `deploy` filter), release
+  # tags, and manual dispatch — not on every push to main, and not nightly:
+  # the images are pinned, so an unchanged installer cannot drift.
   deploy-integration:
     needs: changes
     if: >-
-      github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
       (github.event_name == 'pull_request' && needs.changes.outputs.deploy == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
