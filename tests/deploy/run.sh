@@ -290,32 +290,41 @@ rc_nonzero && show_log f 8
 end_scenario
 LIVE_HTML="$SHA_B"
 
-# A node that dies AFTER the preflight, while the installer is running: poll until the stage file
-# exists on the connected node (the upload is done, so the run is demonstrably mid-flight, with ~15
-# more round trips still to go), then kill n4 immediately.
-scenario "(m) node killed mid-run (after the stage upload): installer fails; survivors serve B or C, never anything else; re-install converges on C"
-rm -f "$WORK/m.rc"
-(
-  docker exec -e CLICKHOUSE_PASSWORD=deploypw "$CLI" bash /work/deploy/install.sh \
-    --ch-host "$PFX-n1" --client-id "$CLIENT_ID" --issuer "$ISSUER" "${CLUSTER_ARGS[@]}" /work/C.html --ddl-timeout 20 > "$LOGS/m.log" 2>&1
-  echo $? > "$WORK/m.rc"
-) &
-BG=$!
-STAGE_SEEN=0
-for _ in $(seq 400); do
-  if [[ -n "$(node_exec 1 "find $UF -name '_asb_stage_*' -size +0" 2>/dev/null)" ]]; then STAGE_SEEN=1; break; fi
-  [[ -f "$WORK/m.rc" ]] && break
-  sleep 0.05
-done
-docker stop -t 0 "$PFX-n4" >/dev/null
-wait "$BG"; INSTALL_RC="$(cat "$WORK/m.rc")"
-t "the stage file was observed mid-run (the kill really landed mid-flight)" test "$STAGE_SEEN" = 1
-t "installer exit non-zero (n4 is dead at the latest in the final verification)" rc_nonzero
-# Where the kill lands decides whether a survivor was already promoted (C) or not (B); either is valid.
-t "each surviving node serves byte-exactly B (previous) or C (new), never empty/partial/other" serves_b_or_c 1 2 3
+# A node that dies AFTER the preflight, while the installer is running. Deterministic via the installer's
+# internal test barrier (ASB_TEST_BARRIER, see install.sh): the installer parks at a defined point and
+# creates <barrier>.reached; we kill n4 only then, and release it by creating <barrier>.go. The scenario
+# FAILS (not vacuously passes) if the installer exits before reaching the barrier.
+# barrier_run <log> <point> <artifact> : sets INSTALL_RC and BARRIER_SEEN (1 = barrier observed while the installer was alive)
+barrier_run() {
+  local log="$1" point="$2" art="$3" b="/work/$1.barrier" i
+  docker exec "$CLI" rm -f "$b.reached" "$b.go"
+  rm -f "$WORK/$log.rc"
+  (
+    docker exec -e CLICKHOUSE_PASSWORD=deploypw -e ASB_TEST_BARRIER="$b" -e ASB_TEST_BARRIER_POINT="$point" "$CLI" bash /work/deploy/install.sh \
+      --ch-host "$PFX-n1" --client-id "$CLIENT_ID" --issuer "$ISSUER" "${CLUSTER_ARGS[@]}" "$art" --ddl-timeout 20 > "$LOGS/$log.log" 2>&1
+    echo $? > "$WORK/$log.rc"
+  ) &
+  local bg=$!
+  BARRIER_SEEN=0
+  for i in $(seq 1200); do
+    if docker exec "$CLI" test -f "$b.reached" 2>/dev/null; then BARRIER_SEEN=1; break; fi
+    [[ -f "$WORK/$log.rc" ]] && break   # the installer already exited: it never reached the barrier
+    sleep 0.1
+  done
+  if (( BARRIER_SEEN )); then docker stop -t 0 "$PFX-n4" >/dev/null; fi
+  docker exec "$CLI" touch "$b.go"
+  wait "$bg"; INSTALL_RC="$(cat "$WORK/$log.rc")"
+}
+barrier_seen() { [[ "$BARRIER_SEEN" == 1 ]]; }
+
+scenario "(m) node killed at the barrier BEFORE the phase-1 fan-out: installer fails; survivors still serve B exactly; re-install converges on C"
+barrier_run m pre_fanout /work/C.html
+t "the barrier was reached while the installer was alive (the kill really landed mid-run)" barrier_seen
+t "installer exit non-zero" rc_nonzero
+t "no live file was touched: every survivor serves exactly B" all_serve "$SHA_B" "$SHA_CFG" 1 2 3
 docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
 t "queued DDL replay settles" wait_ddl_queue_settled
-t "after the replay the restarted node serves B or C, never a half-staged file" serves_b_or_c 4
+t "after the replay the restarted node serves B (nothing ever promoted)" all_serve "$SHA_B" "$SHA_CFG" 4
 run_install m2 "${CLUSTER_ARGS[@]}" /work/C.html
 t "re-install exit 0" rc_zero
 t "every node serves C" all_serve "$SHA_C" "$SHA_CFG"
@@ -323,6 +332,26 @@ t "temp tables gone on all 4 nodes" temp_tables_gone
 t "no non-empty stage file anywhere" stage_files_empty 2
 rc_zero || show_log m2
 rc_nonzero && show_log m 12
+end_scenario
+LIVE_HTML="$SHA_C"
+
+# Kill between phase-1 verify and the promote: phase 1 had passed everywhere, so survivors may or may not
+# have been promoted by the time the promote DDL gives up on n4 (B or C), but never empty/partial/other.
+scenario "(m3) node killed at the barrier AFTER phase-1 verify, BEFORE the promote: installer fails; survivors serve C (previous) or B (new), never anything else; re-install converges"
+barrier_run m3 pre_promote /work/B.html
+t "the barrier was reached while the installer was alive" barrier_seen
+t "installer exit non-zero" rc_nonzero
+t "each surviving node serves byte-exactly C (previous) or B (new)" serves_b_or_c 1 2 3
+docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
+t "queued DDL replay settles" wait_ddl_queue_settled
+t "after the replay the restarted node serves C or B, never a half-staged file" serves_b_or_c 4
+run_install m4 "${CLUSTER_ARGS[@]}" /work/C.html
+t "re-install exit 0" rc_zero
+t "every node serves C" all_serve "$SHA_C" "$SHA_CFG"
+t "temp tables gone on all 4 nodes" temp_tables_gone
+t "no non-empty stage file anywhere" stage_files_empty 2
+rc_zero || show_log m4
+rc_nonzero && show_log m3 12
 end_scenario
 LIVE_HTML="$SHA_C"
 

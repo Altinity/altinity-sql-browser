@@ -272,6 +272,60 @@ describe('inputs', () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('invalid stage token');
   });
+  describe('test barrier hook (ASB_TEST_BARRIER)', () => {
+    const bdir = mkdtempSync(join(tmpdir(), 'asb-barrier-'));
+    const cl = ['--cluster', 'c1'];
+    const fanout = /^CREATE TABLE default\._asb_t_next_html (?!.*AS SELECT '' AS c)/;   // pre-clean also CTASes the next tables, from an empty SELECT
+    const cfg2 = { cfg: { nodes: 2 } };
+    it('unset: creates no files and behaves as before', () => {
+      const { r } = h.install(cl, { env: TOKEN, ...cfg2 });
+      expect(r.status, r.stderr).toBe(0);
+      expect(readdirSync(bdir)).toEqual([]);
+    });
+    it.each(['relative/b', '/tmp/a b', '/tmp/../x', "/tmp/x'y"])('rejects the invalid path %j', (p) => {
+      const { r, log } = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: p }, ...cfg2 });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('invalid ASB_TEST_BARRIER');
+      expect(log).toEqual([]);
+    });
+    it('rejects an unknown point and a bad timeout', () => {
+      const b = join(bdir, 'bad');
+      let x = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_POINT: 'nope' }, ...cfg2 });
+      expect(x.r.status).toBe(1); expect(x.r.stderr).toContain('invalid ASB_TEST_BARRIER_POINT');
+      x = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_TIMEOUT: 'x' }, ...cfg2 });
+      expect(x.r.status).toBe(1); expect(x.r.stderr).toContain('invalid ASB_TEST_BARRIER_TIMEOUT');
+    });
+    it.each(['pre_fanout', 'pre_promote'])('%s: marks .reached and proceeds once .go exists', (point) => {
+      const b = join(bdir, point);
+      writeFileSync(`${b}.go`, '');   // pre-released: proves it proceeds on .go and still marks .reached
+      const { r, sqls } = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_POINT: point }, ...cfg2 });
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(`${b}.reached`)).toBe(true);
+      expect(sqls.some((s) => /^CREATE TABLE default\._asb_t_live_/.test(s))).toBe(true);
+    });
+    it('waits for .go (released late), and the pre_fanout pause precedes every fan-out write', async () => {
+      const b = join(bdir, 'late');
+      const p = h.runAsync('install.sh', ['--client-id', 'cid', '--ch-host', 'ch.example.com', ...cl], {
+        cfg: { nodes: 2 }, env: { ...TOKEN, ASB_TEST_BARRIER: b }, onSleeping: () => {},
+      });
+      for (let i = 0; i < 200 && !existsSync(`${b}.reached`); i++) await new Promise((res) => setTimeout(res, 50));
+      expect(existsSync(`${b}.reached`)).toBe(true);
+      await new Promise((res) => setTimeout(res, 400));
+      const mid = h.state().log.map((l) => l.sql);
+      expect(mid.some((s) => fanout.test(s))).toBe(false);
+      writeFileSync(`${b}.go`, '');
+      const x = await p;
+      expect(x.status, x.stderr).toBe(0);
+    });
+    it('fails once the cap passes without .go', () => {
+      const b = join(bdir, 'cap');
+      const { r, sqls } = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_TIMEOUT: '1' }, ...cfg2 });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('not released within 1s');
+      expect(existsSync(`${b}.reached`)).toBe(true);
+      expect(sqls.some((s) => fanout.test(s))).toBe(false);
+    });
+  });
   it('generates a distinct stage token per run', () => {
     const t = () => h.install(['--cluster', 'c1'], { cfg: { nodes: 2 } }).sqls.find((s) => /^INSERT INTO FUNCTION file\('_asb_stage_/.test(s));
     expect(t()).toMatch(/_asb_stage_\d+\.html/);

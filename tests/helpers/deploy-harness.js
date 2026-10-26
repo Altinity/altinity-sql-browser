@@ -79,5 +79,5 @@ export function makeHarness() {
   }
   const install = (args, opts) => run('install.sh', ['--client-id', 'cid', '--ch-host', 'ch.example.com', ...args], opts);
   const uninstall = (args, opts) => run('uninstall.sh', ['--ch-host', 'ch.example.com', ...args], opts);
-  return { work, install, uninstall, run, runAsync, built, builtEnv, cleanup: () => rmSync(work, { recursive: true, force: true }) };
+  return { work, install, uninstall, run, runAsync, state, built, builtEnv, cleanup: () => rmSync(work, { recursive: true, force: true }) };
 }

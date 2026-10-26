@@ -22,6 +22,10 @@
 # share the _asb_t_* temp tables and _asb_next_* files and can corrupt each other.
 # Run one installer (or uninstaller) at a time.
 #
+# Internal test hooks (not a user interface; used only by tests/deploy/run.sh and the unit suite):
+# ASB_STAGE_TOKEN fixes the stage-file token; ASB_TEST_BARRIER[_POINT|_TIMEOUT] parks the run at a
+# defined point (see "TEST HOOK" below). Both are validated; unset => no behavior change.
+#
 # Prerequisites: bash, node 22+ and npm (unless --artifact), curl (OIDC
 # discovery; and the HTTP transport), clickhouse-client (native transport; not
 # needed for --dry-run). The prebuilt sql.html from a GitHub release works as
@@ -117,6 +121,28 @@ unset CLICKHOUSE_PASSWORD
 STAGE_TOKEN="${ASB_STAGE_TOKEN:-$(date +%s)${RANDOM}${RANDOM}}"
 validate_token "$STAGE_TOKEN"
 STAGE_FILE="_asb_stage_${STAGE_TOKEN}.html"
+
+# TEST HOOK (internal; used only by tests/deploy/run.sh, like ASB_STAGE_TOKEN): with ASB_TEST_BARRIER=<abs path>
+# the run pauses at ASB_TEST_BARRIER_POINT (pre_fanout = after stage upload+verify, before the phase-1 fan-out;
+# pre_promote = after phase-1 verify, before phase 2), creates "<path>.reached" and waits for "<path>.go"
+# (hard cap ASB_TEST_BARRIER_TIMEOUT seconds, default 120, then fails). Unset => no behavior change at all.
+BARRIER="${ASB_TEST_BARRIER:-}" BARRIER_POINT="${ASB_TEST_BARRIER_POINT:-pre_fanout}"
+BARRIER_TIMEOUT="${ASB_TEST_BARRIER_TIMEOUT:-120}"
+if [[ -n "$BARRIER" ]]; then
+  [[ "$BARRIER" =~ ^/[A-Za-z0-9_./-]+$ && "$BARRIER" != *..* ]] || fail "invalid ASB_TEST_BARRIER '$BARRIER' (absolute path; allowed: A-Z a-z 0-9 _ . / -)"
+  [[ "$BARRIER_POINT" == pre_fanout || "$BARRIER_POINT" == pre_promote ]] || fail "invalid ASB_TEST_BARRIER_POINT '$BARRIER_POINT' (pre_fanout|pre_promote)"
+  [[ "$BARRIER_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || fail "invalid ASB_TEST_BARRIER_TIMEOUT '$BARRIER_TIMEOUT'"
+fi
+barrier() {
+  [[ -n "$BARRIER" && "$BARRIER_POINT" == "$1" ]] || return 0
+  : > "${BARRIER}.reached"
+  local i
+  for (( i = 0; i < BARRIER_TIMEOUT * 5; i++ )); do
+    [[ -e "${BARRIER}.go" ]] && return 0
+    sleep 0.2
+  done
+  fail "test barrier ${BARRIER}.go not released within ${BARRIER_TIMEOUT}s"
+}
 NEXT_HTML="_asb_next_sql.html" NEXT_CFG="_asb_next_sql-config.json"
 # Table names are independent of the file names they point at.
 T_NEXT_HTML="default._asb_t_next_html" T_NEXT_CFG="default._asb_t_next_cfg"
@@ -313,6 +339,7 @@ phase1() {
       [[ "$MATCH" == 1 ]] || fail "staged upload not found with the expected length/sha256 on exactly one node (matches: ${MATCH}, rows: ${ROWS})"
     fi
   fi
+  barrier pre_fanout
   if [[ -n "$CLUSTER" || -n "$PULL_URL" ]]; then
     ddl "fan out sql.html to every node" "$(write_file_stmt "$T_NEXT_HTML" "$NEXT_HTML" "$(phase1_html_source)")"
   fi
@@ -333,6 +360,7 @@ pre_clean
 phase1
 verify_files "phase 1 (next files)" one "$NEXT_HTML" "$ART_LEN" "$ART_SHA" "$NEXT_CFG" "$CFG_LEN" "$CFG_SHA" \
   || fail "phase 1 verification failed; live files were NOT touched"
+barrier pre_promote
 phase2
 verify_live || fail "phase 2 verification failed: some live files do not match; re-run the installer"
 
