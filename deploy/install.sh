@@ -9,6 +9,12 @@
 # The password is read from the CLICKHOUSE_PASSWORD env var or prompted — never
 # passed on the command line (it would leak via `ps`/shell history).
 #
+# Prerequisites: bash, node 22+ and npm (the installer builds the SPA from source),
+# curl (only for OIDC discovery; it falls back to the Google connect-src without
+# it), and clickhouse-client (not needed for --dry-run). To skip the build, take
+# the prebuilt sql.html from the GitHub release and upload it yourself; see
+# docs/ASSET-DISTRIBUTION.md.
+#
 # Usage:
 #   CLICKHOUSE_PASSWORD=... ./deploy/install.sh \
 #     --ch-host clickhouse.example.com \
@@ -17,7 +23,7 @@
 #     [--issuer https://accounts.google.com] \
 #     [--audience <aud>] \         # audience-gated CH → also sends access_token
 #     [--ch-auth basic] \          # OSS CH + ch-jwt-verify → JWT as Basic password
-#     [--cluster my_cluster] \     # single-shard multi-replica only
+#     [--cluster my_cluster] \     # BROKEN on multi-replica clusters (#692); omit
 #     [--secure] \
 #     [--dry-run]                  # build + render config.json + http_handlers.xml, print, no CH contact
 set -euo pipefail
@@ -54,15 +60,34 @@ export CLICKHOUSE_PASSWORD
 CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER")
 [[ "$SECURE" == 1 ]] && CH+=(--secure)
 
-# user_files is node-local, and clusterAllReplicas cannot write to a multi-shard
-# Distributed target, so a --cluster install only works on a single shard.
+# user_files is node-local. NOTE: --cluster is currently broken (#692): the
+# clusterAllReplicas INSERT below fails on any cluster with more than one
+# replica (STORAGE_REQUIRES_PARAMETER). The guard fails CLOSED, before building:
+# proceed only when the count query succeeds and prints exactly 1.
 if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
-  SHARDS=$("${CH[@]}" --query "SELECT max(shard_num) FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>/dev/null || true)
-  if [[ "$SHARDS" =~ ^[0-9]+$ ]] && (( SHARDS > 1 )); then
-    echo "ERROR: cluster '${CLUSTER}' has ${SHARDS} shards. clusterAllReplicas can't" >&2
-    echo "write across shards, and user_files is node-local. Install per node instead" >&2
-    echo "(omit --cluster; point --ch-host at each node), or serve the assets from a" >&2
-    echo "replicated table — see docs/ASSET-DISTRIBUTION.md." >&2
+  GUARD_ERR_FILE="$(mktemp)"
+  if ! NODES=$("${CH[@]}" --query "SELECT count() FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>"$GUARD_ERR_FILE"); then
+    GUARD_ERR="$(head -n 1 "$GUARD_ERR_FILE")"
+    rm -f "$GUARD_ERR_FILE"
+    echo "ERROR: could not query system.clusters on ${CH_HOST} to check cluster" >&2
+    echo "'${CLUSTER}': ${GUARD_ERR:-no error output}" >&2
+    exit 2
+  fi
+  rm -f "$GUARD_ERR_FILE"
+  NODES="${NODES//[[:space:]]/}"
+  if [[ ! "$NODES" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: unexpected system.clusters output for cluster '${CLUSTER}':" >&2
+    echo "'${NODES}' (expected a node count). Refusing to continue." >&2
+    exit 2
+  elif (( NODES == 0 )); then
+    echo "ERROR: cluster '${CLUSTER}' was not found in system.clusters on ${CH_HOST}" >&2
+    echo "(0 replicas). Check the cluster name and the node you connected to." >&2
+    exit 2
+  elif (( NODES > 1 )); then
+    echo "ERROR: cluster '${CLUSTER}' has ${NODES} replicas. --cluster is currently" >&2
+    echo "broken on multi-node clusters (#692); user_files is node-local. Use the" >&2
+    echo "manual procedure: 'Multi-node clusters (interim, manual)' in" >&2
+    echo "docs/ASSET-DISTRIBUTION.md." >&2
     exit 2
   fi
 fi
@@ -119,6 +144,34 @@ HANDLERS_OUT="$ROOT/dist/http_handlers.xml"
 sed -E "s#(connect-src 'self')[^;]*#\1 ${CONNECT_HOSTS}#" \
   "$ROOT/deploy/http_handlers.xml" > "$HANDLERS_OUT"
 
+# Print the post-install instructions. Called after upload, and also by --dry-run
+# so the URL/scheme logic is testable without a ClickHouse. The native port
+# --ch-host is used with (9000/9440) differs from the HTTP(S) port the browser
+# needs, so print the HTTP defaults (8123 plain / 8443 TLS) explicitly.
+print_next_steps() {
+  local scheme="http" port="8123" host="${CH_HOST:-<ch-host>}"
+  if [[ "$SECURE" == 1 ]]; then scheme="https"; port="8443"; fi
+  cat <<EOT
+
+Final step - enable the HTTP routes. Add the rendered dist/http_handlers.xml
+(its CSP connect-src is filled in for your issuer) to the server config.d/ (or
+push it as an ACM cluster setting named "config.d/sql-browser.xml") and reload
+ClickHouse. Then open:
+
+    ${scheme}://${host}:${port}/sql
+
+(${port} is the default ClickHouse HTTP$([[ "$SECURE" == 1 ]] && echo S) port; use the port your
+HTTP endpoint, load balancer, or ingress actually exposes, and omit it if that
+is the scheme default.)
+
+Also register the OAuth redirect URI  ${scheme}://${host}:${port}/sql  (same
+origin, same port as above) with your IdP, and make sure ClickHouse is
+configured to accept the token the SPA sends: a Bearer JWT (token_processor +
+JWKS), or with --ch-auth basic the JWT as the Basic password via a delegated
+http_authentication verifier. See README.
+EOT
+}
+
 if [[ "$DRY_RUN" == 1 ]]; then
   echo
   echo "==> DRY RUN — no ClickHouse contact. Rendered artifacts:"
@@ -126,6 +179,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
   cat "$CONFIG_FILE"
   echo "--- dist/http_handlers.xml ---"
   cat "$HANDLERS_OUT"
+  print_next_steps
   exit 0
 fi
 
@@ -155,18 +209,6 @@ upload "$ROOT/dist/sql.html" "sql.html"
 echo "==> Uploading sql-config.json"
 upload "$CONFIG_FILE" "sql-config.json"
 
-cat <<EOF
-
-==> Assets uploaded to ClickHouse user_files/.
-
-Final step — enable the HTTP routes. Add the rendered dist/http_handlers.xml
-(its CSP connect-src is filled in for your issuer) to the server config.d/ (or
-push it as an ACM cluster setting named "config.d/sql-browser.xml") and reload
-ClickHouse. Then open:
-
-    http${SECURE:+s}://$CH_HOST/sql
-
-Also register the OAuth redirect URI  http(s)://$CH_HOST/sql  with your IdP,
-and make sure ClickHouse is configured to accept the bearer JWT (token_processor
-+ JWKS, or a delegated http_authentication verifier). See README.
-EOF
+echo
+echo "==> Assets uploaded to ClickHouse user_files/."
+print_next_steps

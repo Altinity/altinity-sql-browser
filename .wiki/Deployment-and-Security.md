@@ -37,17 +37,18 @@ Re-check replica count (`kubectl get pods -n demo -l clickhouse.altinity.com/chi
 before every otel deploy — a ClickHouse Operator `chi` can add replicas
 independent of any SPA-deploy action. See [[Operations-Memory]].
 
-## Standalone nginx image + Helm chart (sql.demo.altinity.cloud)
+## Standalone Caddy image + Helm chart (sql.demo.altinity.cloud)
 
 Distinct from the three ClickHouse-hosted deploys above: the SPA also ships as a
-production **nginx** container image (`ghcr.io/altinity/altinity-sql-browser`,
+production **Caddy** container image (`ghcr.io/altinity/altinity-sql-browser`,
 public, multi-arch) built by `.github/workflows/docker.yml` (`edge`+`sha-<c>` on
 every push to `main`; `X.Y.Z`+`latest` on a `vX.Y.Z` tag push — the release
 image) and a **Helm chart** (`helm/altinity-sql-browser/`, published to
 `oci://ghcr.io/altinity/altinity-sql-browser/helm/altinity-sql-browser` by
 `release.yml` on `v*`).
-The container is a standalone static server (nginx-unprivileged, uid 101, port
-8080); it never proxies — the browser POSTs queries cross-origin to whatever
+The container is a standalone static server (`caddy:2.8.4-alpine`, uid 101, port
+8080, `deploy/caddy/Caddyfile`; serves precompressed br/zstd/gzip sidecars, no
+request-time compression; CSP `connect-src` from the `CONNECT_SRC` env var); it never proxies — the browser POSTs queries cross-origin to whatever
 cluster the login picker selects.
 
 Live at **https://sql.demo.altinity.cloud/sql** (ns `demo`, Helm release

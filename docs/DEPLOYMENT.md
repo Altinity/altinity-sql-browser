@@ -22,14 +22,27 @@ The app is three things on the target ClickHouse:
 ```bash
 CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   --ch-host clickhouse.example.com --ch-user admin \
-  --client-id <oauth-client-id> [--issuer …] [--audience …] [--cluster …] [--secure]
+  --client-id <oauth-client-id> [--issuer …] [--audience …] [--ch-auth basic] \
+  [--cluster …] [--secure]   # --cluster: broken on multi-node clusters (#692), see below
 ```
 
-For a multi-replica cluster pass `--cluster <name>`; the installer fans the
-bytes to every replica via `clusterAllReplicas`. The password is read from the
-env var or prompted — never placed on the command line.
+Prerequisites: `npm` + `node` 22+ (the installer builds the SPA), `clickhouse-client`,
+and `curl` (OIDC discovery only). `--audience` makes the SPA send the access
+token instead of the id_token; `--ch-auth basic` sends the JWT as the HTTP Basic
+password (OSS ClickHouse behind a verifier, see section 4). A GitHub release
+also ships a prebuilt `sql.html` if you would rather upload it yourself. At the
+end the installer prints the URL to open and the redirect URI to register; it
+uses the default HTTP(S) ports 8123/8443, so adjust if yours differ.
 
-> **`user_files/` is node-local — re-run `install.sh` after a scale-out.**
+`--cluster <name>` is **currently broken** on any cluster with more than one
+replica (its `clusterAllReplicas` write is rejected by ClickHouse; tracked in
+#692), and the installer now refuses it before building, so use `install.sh` without `--cluster` for a single node. For
+multi-node clusters see the interim manual procedure in
+[ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
+The password is read from the env var or prompted — never placed on the command
+line.
+
+> **`user_files/` is node-local — re-run the install (or the manual multi-node procedure) after a scale-out.**
 > ClickHouse does not replicate `user_files/`, so a replica added or replaced
 > later starts without the assets. This is a deliberate trade-off (the bootstrap
 > page is then served statically, with no auth). See
@@ -57,12 +70,17 @@ No compression config is needed here: ClickHouse's HTTP server transparently
 gzips any response — including this static handler's — when the client sends
 `Accept-Encoding: gzip` (every browser does), independent of `<http_handlers>`
 config or the `enable_http_compression` query setting. Verified live on all
-three demo clusters: the ~500 KB artifact goes over the wire at ~230 KB.
+three demo clusters. `dist/sql.html` is about 2 MB raw (`ls -l dist/sql.html`);
+the bytes on the wire are much smaller. Measure your own build with
+`curl -s -o /dev/null -w '%{size_download}\n' -H 'Accept-Encoding: gzip' https://<ch-host>/sql`.
 
 ## 4. Make ClickHouse accept the JWT
 
-The SPA sends `Authorization: Bearer <id_token>` on every query. ClickHouse must
-validate it. Two supported shapes:
+The SPA sends the IdP token on every query. By default that is the `id_token`
+as `Authorization: Bearer <jwt>`; with an `audience` configured it sends the
+`access_token` instead; with `"ch_auth": "basic"` the same JWT travels as the
+password of `Authorization: Basic base64(user:jwt)`. ClickHouse must validate
+it. Two supported shapes:
 
 - **Native token processor** (Antalya build with JWT auth): add a
   `<token_processors>` entry pointing at your IdP's JWKS with `username_claim`,
@@ -75,11 +93,13 @@ validate it. Two supported shapes:
   `config.json` so the JWT is sent as the Basic password. Full guide with generic
   examples: [CLICKHOUSE-OSS-OAUTH.md](CLICKHOUSE-OSS-OAUTH.md).
 
-Either way, the app itself is unchanged — it only sends the bearer.
+Either way the SPA only ever sends the IdP-issued JWT; which header carries it
+(Bearer or Basic) and which token (id_token or access_token) is set by
+`config.json`.
 
 ## 5. OAuth IdP
 
-Register the redirect URI `https://<ch-host>/sql` with your IdP and put the
+Register the redirect URI the installer printed (e.g. `https://<ch-host>:8443/sql`; it must match the origin exactly, so include the HTTP(S) port unless it is the scheme default, 443/80, or use the externally exposed port/ingress host) with your IdP and put the
 `issuer` + `client_id` in `config.json` (the installer does this from
 `--issuer`/`--client-id`). Whether `config.json` also needs a `client_secret`
 depends on the IdP and client type — see [LOGIN-SCREEN.md](LOGIN-SCREEN.md)

@@ -9,6 +9,35 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **#692 (part 1): deployment docs and installer output corrections.**
+  `deploy/install.sh` printed `https://` even without `--secure` and omitted the
+  HTTP port; the next-steps text now comes from a `print_next_steps` function
+  (also shown by `--dry-run`, covered by `tests/unit/install-script.test.js`) and
+  prints the right scheme and the default HTTP(S) port (8123/8443). Docs: removed
+  frozen artifact-size figures (`dist/sql.html` is about 2 MB raw; measure your
+  build), stated the real installer prerequisites (npm, node 22+, curl,
+  clickhouse-client; prebuilt release asset noted), clarified that
+  ClickHouse-native hosting needs `http_handlers` access and that the
+  container/Helm runtime is the alternative, corrected the option B/C caveats
+  (replication scope, ConfigMap 1 MiB cap), corrected the auth wording
+  (Bearer id_token by default, access_token with an audience, JWT as Basic
+  password with `ch_auth: "basic"`), and updated the wiki from nginx to Caddy.
+  Docs also no longer claim `install.sh --cluster` fans out to every replica:
+  testing (ClickHouse 25.8 OSS, 26.3 OSS, Antalya 25.8.33) showed it fails on any
+  multi-replica cluster (`INSERT INTO FUNCTION clusterAllReplicas` ->
+  `STORAGE_REQUIRES_PARAMETER`) and, since the script exits (`set -e`) before its
+  `DROP`, may leave a temp `_asb_*` table behind (cleanup `DROP ... ON CLUSTER`
+  statements are documented). `install.sh --cluster` now fails closed (exit 2,
+  before building) unless the `system.clusters` count query succeeds and returns
+  exactly 1: query failure, an unknown cluster (0), malformed output and more
+  than one replica each get a distinct message (the last points at the manual
+  procedure). Added a tested interim manual `ON CLUSTER ... ENGINE = File ... AS
+  SELECT FROM url()` procedure (including the `sql-config.json` literal, tested on single-node 26.3
+  only) to `docs/ASSET-DISTRIBUTION.md`, structured as an idempotent
+  pre-clean/create/drop/verify sequence for retrying after a partial failure
+  (the retry flow itself is untested); the installer fix is tracked in #692.
+
 ### Added
 - **#592: lock in the #586/#587 shell primitive guardrails mechanically.**
   `check:arch` now rejects three regrowth shapes the six-copy-pasted-overlays

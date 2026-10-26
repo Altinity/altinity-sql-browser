@@ -59,7 +59,7 @@ variable across every tile.
 
 ## How it works
 
-![Auth & data flow: the browser fetches the single-file SPA and its config.json from ClickHouse, signs in to your OAuth IdP with OAuth2 Authorization-Code + PKCE (id_token kept in sessionStorage), then POSTs every query to ClickHouse with an Authorization: Bearer id_token that ClickHouse validates against the IdP's JWKS via its token_processor (or a delegated verifier). There is no app-specific backend.](docs/assets/img/how-it-works.svg)
+![Auth & data flow: the browser fetches the single-file SPA and its config.json from ClickHouse, signs in to your OAuth IdP with OAuth2 Authorization-Code + PKCE (id_token kept in sessionStorage), then POSTs every query to ClickHouse with an Authorization: Bearer id_token (or access_token with an audience; the JWT as the Basic password with ch_auth basic) that ClickHouse validates against the IdP's JWKS via its token_processor (or a delegated verifier). There is no app-specific backend.](docs/assets/img/how-it-works.svg)
 
 The browser never holds a static credential — each user authenticates with your
 IdP and ClickHouse sees their JWT. There is **no app-specific backend**: the
@@ -653,8 +653,12 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   [--issuer https://accounts.google.com] \
   [--audience <api-audience>] \   # audience-gated CH → also sends the access_token
   [--ch-auth basic] \             # OSS CH + ch-jwt-verify → JWT as Basic password
-  [--cluster <cluster-name>]      # single-shard multi-replica only (else per-node)
+  [--cluster <cluster-name>]      # BROKEN on multi-replica clusters (#692); omit
 ```
+
+`--cluster` currently fails on multi-replica clusters (tracked in #692); for a
+single node run the installer without it, and for multi-node clusters follow
+[the interim manual procedure](docs/ASSET-DISTRIBUTION.md#multi-node-clusters-interim-manual).
 
 With **no** `--audience`, the IdP returns an **id_token** (its `aud` is the
 client_id) and the browser sends that as the bearer — so ClickHouse's
@@ -670,7 +674,7 @@ see "Security headers" below), and uploads the SPA + config into ClickHouse
    it as an ACM cluster setting `config.d/sql-browser.xml`) and reload ClickHouse.
    The SPA handler serves `/sql`; Workbench and Dashboard bookmarks differ only
    by the `ws`, `surface`, and optional `mode` query parameters.
-2. Register the single redirect URI `https://<ch-host>/sql` with your OAuth IdP.
+2. Register the single redirect URI `https://<ch-host>:8443/sql` with your OAuth IdP (the URI must match the origin exactly: include the HTTP(S) port unless it is the scheme default, 443/80, or use the port/ingress host actually exposed).
 3. Make sure ClickHouse accepts the bearer JWT — either a CH
    `<token_processors>` entry validating your IdP's JWKS, or a delegated
    `<http_authentication_servers>` verifier. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
