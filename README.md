@@ -655,14 +655,15 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   [--ch-auth basic] \             # OSS CH + ch-jwt-verify → JWT as Basic password
   [--cluster <cluster-name>] \    # fan out to every node (server-side, verified per node)
   [--artifact sql.html] \         # prebuilt SPA (release asset): no npm/node needed
-  [--pull-url <url>] [--transport native|http] [--ddl-timeout 180] [--verify-only]
+  [--pull-url <url>] [--transport native|http] [--http-port N] \
+  [--ddl-timeout 180] [--verify-only] [--secure]
 ```
 
 With `--cluster` the installer writes `sql.html` and `sql-config.json` to every node's
 `user_files/` using SQL only, in two phases (stage and verify, then promote and
 verify), and checks each node's length and SHA-256; re-run it after a scale-out.
-`deploy/uninstall.sh` empties the files. The cluster needs a `<secret>`, and the
-deploy user needs a few grants — see
+`deploy/uninstall.sh` empties the files. Cross-node reads need the cluster's `<secret>`
+(or per-replica credentials), run one installer at a time, and the deploy user needs a few grants — see
 [docs/ASSET-DISTRIBUTION.md](docs/ASSET-DISTRIBUTION.md#installing-with-deployinstallsh).
 
 With **no** `--audience`, the IdP returns an **id_token** (its `aud` is the

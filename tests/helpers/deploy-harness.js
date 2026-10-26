@@ -17,18 +17,21 @@ export function makeHarness() {
   for (const d of ['deploy/lib', 'dist', 'build', 'bin']) mkdirSync(join(work, d), { recursive: true });
   for (const f of ['install.sh', 'uninstall.sh', 'http_handlers.xml', 'lib/asb-ch.sh']) copyFileSync(join(repo, 'deploy', f), join(work, 'deploy', f));
   writeFileSync(join(work, 'build/build.mjs'), '');
+  writeFileSync(join(work, 'package.json'), '{}');
   writeFileSync(join(work, 'dist/sql.html'), ARTIFACT_BYTES);
   copyFileSync(join(repo, 'tests/helpers/deploy-sim.cjs'), join(work, 'bin/sim.cjs'));
-  const shim = (name, body) => {
+  // sh shims exec the absolute node binary on the sim (no shebang pointing at a path that may contain spaces)
+  const shim = (name, which) => {
     const p = join(work, 'bin', name);
-    writeFileSync(p, `#!${process.execPath}\n${body}\n`);
+    writeFileSync(p, `#!/bin/sh\nexec "${process.execPath}" "${join(work, 'bin/sim.cjs')}" ${which} "$@"\n`);
     chmodSync(p, 0o755);
   };
-  shim('clickhouse-client', `require(${JSON.stringify(join(work, 'bin/sim.cjs'))}).nativeMain(process.argv.slice(2));`);
-  shim('curl', `require(${JSON.stringify(join(work, 'bin/sim.cjs'))}).curlMain(process.argv.slice(2));`);
+  shim('clickhouse-client', 'ch');
+  shim('curl', 'curl');
   for (const name of ['npm', 'node']) { // build shims; `node` here is only the build step (the sim shims use an absolute node)
     const p = join(work, 'bin', name);
-    writeFileSync(p, `#!/bin/sh\necho ${name} >> "${work}/build.log"\nexit 0\n`);
+    // record whether the password leaked into the build step's environment
+    writeFileSync(p, `#!/bin/sh\necho "${name} pw=\${CLICKHOUSE_PASSWORD-unset}" >> "${work}/build.log"\nexit 0\n`);
     chmodSync(p, 0o755);
   }
   const simFile = join(work, 'sim.json');
@@ -48,7 +51,7 @@ export function makeHarness() {
       encoding: 'utf8', input,
     });
     const s = state();
-    return { r, log: s.log, files: s.files, sqls: s.log.map((l) => l.sql) };
+    return { r, log: s.log, files: s.files, sqls: s.log.map((l) => l.sql), oidc: s.oidc || [] };
   }
   const install = (args, opts) => run('install.sh', ['--client-id', 'cid', '--ch-host', 'ch.example.com', ...args], opts);
   const uninstall = (args, opts) => run('uninstall.sh', ['--ch-host', 'ch.example.com', ...args], opts);

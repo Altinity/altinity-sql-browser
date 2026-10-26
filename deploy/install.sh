@@ -10,8 +10,17 @@
 #   5. print the next step to enable /sql with the rendered http_handlers.xml
 #
 # The password is read from the CLICKHOUSE_PASSWORD env var or prompted - never
-# passed on the command line (it would leak via `ps`/shell history). With
-# --transport http it travels in a 0600 header file handed to curl, not argv.
+# passed on the command line (it would leak via `ps`/shell history). The script
+# takes it out of its environment at once and hands it only to clickhouse-client
+# (as an env prefix on that one call); npm, node and the OIDC curl never see it.
+# With --transport http it travels in a 0600 header file handed to curl, not argv.
+# HTTP(S)_PROXY / NO_PROXY apply to every curl call (curl's own rules, no --noproxy):
+# in plain-HTTP mode a configured proxy would see the credentials; use --secure or
+# unset the proxy variables. ~/.curlrc is ignored (curl -q).
+#
+# Concurrent runs against the same cluster are UNSUPPORTED (no lock): two installs
+# share the _asb_t_* temp tables and _asb_next_* files and can corrupt each other.
+# Run one installer (or uninstaller) at a time.
 #
 # Prerequisites: bash, node 22+ and npm (unless --artifact), curl (OIDC
 # discovery; and the HTTP transport), clickhouse-client (native transport; not
@@ -31,7 +40,7 @@
 #     [--pull-url <url>] \         # cluster mode: nodes fetch the SPA from this URL
 #                                  #   (default: upload once, nodes copy from the stage)
 #     [--transport native|http] [--http-port N] \
-#     [--ddl-timeout 180] \        # distributed_ddl_task_timeout, seconds
+#     [--ddl-timeout 180] \        # distributed_ddl_task_timeout, seconds (>= 1)
 #     [--verify-only] \            # only compare every node's live files to the artifact
 #     [--secure] \
 #     [--dry-run]                  # build + render config.json + http_handlers.xml, print, no CH contact
@@ -40,7 +49,8 @@
 # AS SELECT truncates its target file, so a remote source is never CTAS'd into
 # the live file directly.
 #   preflight  every node reachable, cross-node reads authenticate
-#   pre-clean  DROP TABLE IF EXISTS default._asb_* ON CLUSTER ... SYNC
+#   pre-clean  DROP TABLE IF EXISTS default._asb_* ON CLUSTER ... SYNC, and EMPTY the
+#              _asb_next_* files on every node (a stale one can never pass phase-1 verify)
 #   phase 1    fan out to _asb_next_* on every node (stage upload to the
 #              connected node, or url() pull), then verify length + sha256
 #   phase 2    only if every node verified: each node copies its own _asb_next_*
@@ -85,17 +95,22 @@ done
 [[ -n "$CH_HOST" || "$DRY_RUN" == 1 ]] || { echo "--ch-host is required" >&2; exit 2; }
 case "$TRANSPORT" in native|http) ;; *) echo "--transport must be native or http" >&2; exit 2 ;; esac
 [[ -z "$CLUSTER" ]] || validate_cluster_name "$CLUSTER"
-validate_uint --ddl-timeout "$DDL_TIMEOUT"
+validate_pos --ddl-timeout "$DDL_TIMEOUT"
 [[ -z "$HTTP_PORT" ]] || validate_uint --http-port "$HTTP_PORT"
 if [[ -n "$PULL_URL" && "$VERIFY_ONLY" == 1 ]]; then echo "--pull-url and --verify-only are mutually exclusive" >&2; exit 2; fi
 if [[ -n "$ARTIFACT" && ! -f "$ARTIFACT" ]]; then echo "--artifact: no such file: $ARTIFACT" >&2; exit 2; fi
+if [[ -z "$ARTIFACT" && ! ( -f "$ROOT/package.json" && -d "$ROOT/build" ) ]]; then
+  echo "no build tree next to this script (no package.json or build script); pass --artifact <path to sql.html>" >&2
+  exit 2
+fi
 
 if [[ "$DRY_RUN" != 1 && -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
   read -r -s -p "ClickHouse password for $CH_USER@$CH_HOST: " CLICKHOUSE_PASSWORD
   echo
 fi
-CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
-export CLICKHOUSE_PASSWORD
+# Keep the password out of the environment of everything but clickhouse-client.
+CH_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
+unset CLICKHOUSE_PASSWORD
 
 # Stage token: unique per run so concurrent/aborted runs never share a stage file.
 STAGE_TOKEN="${ASB_STAGE_TOKEN:-$(date +%s)${RANDOM}${RANDOM}}"
@@ -113,8 +128,11 @@ CH=()
 TMP="$(mktemp -d)"
 cleanup() {
   local rc=$?
+  trap '' INT TERM   # a second ^C must not abandon the cleanup half-done
   trap - EXIT
+  set +e             # nothing below may stop us reaching `rm -rf "$TMP"` (it holds the credentials)
   if [[ "$CLEANUP_ARMED" == 1 ]]; then
+    limit_ddl_timeout 30   # a dead node must not stall cleanup for the whole --ddl-timeout
     echo "==> Cleanup (stage file emptied, temp tables dropped; live files are never touched here)"
     if [[ "$STAGE_USED" == 1 ]]; then
       ch_query "INSERT INTO FUNCTION file('${STAGE_FILE}','RawBLOB') SETTINGS engine_file_truncate_on_insert=1 SELECT ''" >/dev/null \
@@ -176,7 +194,7 @@ echo "==> Rendering http_handlers.xml (CSP connect-src from OIDC discovery)"
 ISSUER_ORIGIN="$(printf '%s' "$ISSUER" | grep -oiE '^https?://[^/]+' || true)"
 CONNECT_HOSTS="https://accounts.google.com https://oauth2.googleapis.com"
 DISC_URL="${ISSUER%/}/.well-known/openid-configuration"
-if DISC_JSON="$(curl -fsS --max-time 10 "$DISC_URL" 2>/dev/null)"; then
+if DISC_JSON="$(curl -q -fsS --max-time 10 "$DISC_URL" 2>/dev/null)"; then
   # Pull the origin (scheme://host[:port]) of token/authorization endpoints, add
   # the issuer origin, dedupe. Tolerates whitespace variations in the JSON.
   EP_ORIGINS="$(printf '%s' "$DISC_JSON" \
@@ -232,11 +250,16 @@ if [[ "$DRY_RUN" == 1 ]]; then
   exit 0
 fi
 
+[[ -f "$ARTIFACT" ]] || fail "artifact not found: $ARTIFACT (the build did not produce it)"
 ART_LEN="$(size_of "$ARTIFACT")" ART_SHA="$(sha256_of "$ARTIFACT")"
 CFG_LEN="$(size_of "$CONFIG_FILE")" CFG_SHA="$(sha256_of "$CONFIG_FILE")"
+# A 0-byte file is what a failed write leaves behind and what the static handler serves as an
+# empty 200; installing one (or "verifying" it) would be a silent outage. Refuse before any write.
+(( ART_LEN > 0 )) || fail "artifact ${ARTIFACT} is empty (0 bytes); refusing to install it"
+(( CFG_LEN > 0 )) || fail "rendered config.json is empty; refusing to install"
 info "==> Artifact: ${ART_LEN} bytes, sha256 ${ART_SHA}"
 
-verify_live() { verify_files "live files" sql.html "$ART_LEN" "$ART_SHA" sql-config.json "$CFG_LEN" "$CFG_SHA"; }
+verify_live() { verify_files "live files" one sql.html "$ART_LEN" "$ART_SHA" sql-config.json "$CFG_LEN" "$CFG_SHA"; }
 
 if [[ "$VERIFY_ONLY" == 1 ]]; then
   verify_live || fail "live files differ from the artifact"
@@ -248,15 +271,20 @@ fi
 CLEANUP_ARMED=1
 
 pre_clean() {
-  info "==> Pre-clean (drop leftover temp tables)"
+  info "==> Pre-clean (drop leftover temp tables, empty stale ${NEXT_HTML} / ${NEXT_CFG})"
   local t
   for t in "${ALL_TABLES[@]}"; do ddl "drop ${t}" "DROP TABLE IF EXISTS ${t}${ON_CLUSTER} SYNC"; done
+  # Phase-1 verify must only ever see bytes written by THIS run, never a leftover next file.
+  ddl "empty ${NEXT_HTML} on every node" "$(write_file_stmt "$T_NEXT_HTML" "$NEXT_HTML" "SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "empty ${NEXT_CFG} on every node" "$(write_file_stmt "$T_NEXT_CFG" "$NEXT_CFG" "SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "drop ${T_NEXT_HTML}" "DROP TABLE IF EXISTS ${T_NEXT_HTML}${ON_CLUSTER} SYNC"
+  ddl "drop ${T_NEXT_CFG}" "DROP TABLE IF EXISTS ${T_NEXT_CFG}${ON_CLUSTER} SYNC"
 }
 
 # next-file source for the SPA, as the SELECT of the fan-out statement.
 # A hung or slow url() is bounded: per-query max_execution_time plus HTTP
-# connect/receive timeouts, all derived from --ddl-timeout (0 => 180).
-PULL_TIMEOUT=$(( DDL_TIMEOUT > 0 ? DDL_TIMEOUT : 180 ))
+# connect/receive timeouts, all derived from --ddl-timeout (>= 1).
+PULL_TIMEOUT="$DDL_TIMEOUT"
 phase1_html_source() {
   if [[ -n "$PULL_URL" ]]; then
     printf "SELECT c FROM url('%s','RawBLOB','c String') SETTINGS max_http_get_redirects=10, engine_file_truncate_on_insert=1, max_execution_time=%s, http_connection_timeout=10, http_receive_timeout=%s" \
@@ -278,7 +306,10 @@ phase1() {
     if [[ -n "$CLUSTER" ]]; then
       check_rows "$STAGE_FILE" "$ART_LEN" "$ART_SHA" 0 && rc=0 || rc=$?
       (( rc == 2 )) && fail "could not verify the staged upload"
-      [[ "$MATCH" -ge 1 ]] || fail "staged upload not found with the expected length/sha256 on any node (rows: ${ROWS})"
+      # The stage lives on the connected node only: exactly one node must hold it, and every node must answer.
+      [[ "$ROWS" == "$EXPECTED_NODES" && "$HOSTS" == "$EXPECTED_NODES" ]] \
+        || fail "stage verification returned ${ROWS} rows / ${HOSTS} distinct hosts; expected ${EXPECTED_NODES}"
+      [[ "$MATCH" == 1 ]] || fail "staged upload not found with the expected length/sha256 on exactly one node (matches: ${MATCH}, rows: ${ROWS})"
     fi
   fi
   if [[ -n "$CLUSTER" || -n "$PULL_URL" ]]; then
@@ -299,7 +330,7 @@ phase2() {
 
 pre_clean
 phase1
-verify_files "phase 1 (next files)" "$NEXT_HTML" "$ART_LEN" "$ART_SHA" "$NEXT_CFG" "$CFG_LEN" "$CFG_SHA" \
+verify_files "phase 1 (next files)" one "$NEXT_HTML" "$ART_LEN" "$ART_SHA" "$NEXT_CFG" "$CFG_LEN" "$CFG_SHA" \
   || fail "phase 1 verification failed; live files were NOT touched"
 phase2
 verify_live || fail "phase 2 verification failed: some live files do not match; re-run the installer"

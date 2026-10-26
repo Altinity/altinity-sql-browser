@@ -1,7 +1,10 @@
 // A tiny ClickHouse simulator behind shimmed `clickhouse-client` and `curl`
 // binaries, for deploy/install.sh and deploy/uninstall.sh unit tests (#692).
 // State + config live in the JSON file named by $ASB_SIM:
-//   cfg:  { nodes, countOut?, preflightRows?, rules?: [...], urlContent?, badNodes? }
+//   cfg:  { nodes, countOut?, preflightRows?, rules?: [...], urlContent?, badNodes?, verify? }
+//   verify (verification-row knobs, all optional):
+//     dropNodes: [i]   -- omit node i's row           hostAs: { i: j } -- node i's row reports host node-j
+//     extra: true      -- append a (nodes+1)th row    n: { i: k }      -- node i's row reports count() = k
 //   rule: { match: <regex source tested against the SQL>, stderr?, code?, times?,
 //           http?: 'status'|'header'|'body' }    -- first live rule wins; `times` counts down
 //   files: { <user_files name>: { len, sha } }     -- node-agnostic file state
@@ -23,8 +26,13 @@ function rows(state, name, cluster) {
     if (name.startsWith('_asb_stage_') && i > 1) f = EMPTY; // the stage lives on the connected node only
     const bad = ((state.cfg.badNodes || {})[name] || {})[i];
     if (bad) f = bad;
-    out.push(`node-${i}\t1\t${f.len}\t${f.sha}`);
+    const k = state.cfg.verify || {};
+    if ((k.dropNodes || []).includes(i)) continue;
+    const host = (k.hostAs || {})[i] || i;
+    const cnt = (k.n || {})[i] !== undefined ? k.n[i] : 1;
+    out.push(`node-${host}\t${cnt}\t${f.len}\t${f.sha}`);
   }
+  if (cluster && (state.cfg.verify || {}).extra) out.push(`node-${n + 1}\t1\t${(state.files[name] || EMPTY).len}\t${(state.files[name] || EMPTY).sha}`);
   return out.join('\n');
 }
 
@@ -70,7 +78,7 @@ const ok = (stdout) => ({ stdout, stderr: '', code: 0 });
 function run(tool, sql, stdin, extra) {
   const state = load();
   const res = handle(sql, stdin, state);
-  state.log.push({ tool, sql, stdinBytes: stdin.length, rc: res.code, ...extra });
+  state.log.push({ tool, sql, stdinBytes: stdin.length, rc: res.code, pwEnv: process.env.CLICKHOUSE_PASSWORD, ...extra });
   save(state);
   return res;
 }
@@ -87,7 +95,12 @@ function nativeMain(argv) {
 function curlMain(argv) {
   const arg = (flag) => argv[argv.indexOf(flag) + 1];
   const url = argv[argv.length - 1];
-  if (url.includes('.well-known')) process.exit(22); // OIDC discovery: offline
+  if (url.includes('.well-known')) { // OIDC discovery: offline; recorded apart from the ClickHouse statements
+    const st = load();
+    (st.oidc = st.oidc || []).push({ argv, pwEnv: process.env.CLICKHOUSE_PASSWORD });
+    save(st);
+    process.exit(22);
+  }
   const out = arg('-o'), hdrOut = arg('-D');
   const hFile = arg('-H') && argv.filter((a, i) => argv[i - 1] === '-H' && a.startsWith('@'))[0].slice(1);
   const bodyFile = arg('--data-binary').slice(1);
@@ -112,3 +125,9 @@ function curlMain(argv) {
 }
 
 module.exports = { nativeMain, curlMain, sha };
+
+// Shim entry point: `node deploy-sim.cjs ch|curl ARGS...` (see deploy-harness.js).
+if (require.main === module) {
+  const [which, ...rest] = process.argv.slice(2);
+  (which === 'ch' ? nativeMain : curlMain)(rest);
+}

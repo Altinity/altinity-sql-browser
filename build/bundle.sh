@@ -66,6 +66,13 @@ sql-browser.xml (public demos) and offers each in the login picker — your own
 config wins on a name clash. Run ./install.sh (curl|sh) to also copy
 sql-browser.xml into ~/.clickhouse-client/.
 
+Installing on a ClickHouse server or cluster: deploy/ holds install.sh,
+uninstall.sh and http_handlers.xml. This bundle has no build tree, so pass the
+bundled SPA explicitly (no node/npm needed):
+
+  CLICKHOUSE_PASSWORD=... ./deploy/install.sh --artifact ./sql.html \
+    --ch-host HOST --ch-user USER --client-id OAUTH_CLIENT_ID [--cluster NAME]
+
 Env: PORT (default 8900), LOCAL_CH_CONFIG (override with one explicit file),
 SQL_BROWSER_SPA.
 

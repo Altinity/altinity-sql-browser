@@ -263,6 +263,11 @@ jobs:
           curl -fsS "http://localhost:8901/config.json" \
             | python3 -c "import sys,json; assert json.load(sys.stdin)['hosts'], 'no hosts parsed'"
           kill "$pid"
+          # The shipped installer, from the extracted bundle, with no build tree: --artifact is the
+          # whole contract. --dry-run renders config + http_handlers.xml; the (unreachable) OIDC
+          # discovery must be a soft failure.
+          "$tmp/deploy/install.sh" --dry-run --artifact "$tmp/sql.html" --client-id x --issuer http://idp.invalid
+          test -s "$tmp/dist/http_handlers.xml"
       - name: Lint the installer (shellcheck)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -434,7 +439,7 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - clickhouse/clickhouse-server:26.3
+          - clickhouse/clickhouse-server:26.3.18.32
           - altinity/clickhouse-server:25.8.33.20001.altinityantalya
     steps:
       - uses: actions/checkout@v7

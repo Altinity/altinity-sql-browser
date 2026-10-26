@@ -2,7 +2,10 @@
 # Shared ClickHouse plumbing for deploy/install.sh and deploy/uninstall.sh (#692).
 # Sourced, never executed. Callers set (before using any function):
 #   CH_HOST CH_USER SECURE TRANSPORT(native|http) HTTP_PORT DDL_TIMEOUT CLUSTER TMP
-# and CLICKHOUSE_PASSWORD (env). Nothing here ever puts the password in argv.
+# and CH_PASSWORD (a plain shell variable, NOT exported: the caller moves it out of the
+# environment so npm/node/curl never inherit it). It reaches clickhouse-client only as an
+# env prefix on that one invocation, and curl only inside a 0600 header file; it is never
+# in argv.
 
 # ---------------------------------------------------------------- basics
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -24,6 +27,8 @@ validate_cluster_name() {  # injection guard: the name lands in SQL
 }
 validate_token() { [[ "$1" =~ ^[A-Za-z0-9_]+$ ]] || fail "invalid stage token '$1' (allowed: A-Z a-z 0-9 _)"; }
 validate_uint() { [[ "$2" =~ ^[0-9]+$ ]] || fail "$1 must be a non-negative integer (got '$2')"; }
+# 0 would make ClickHouse run the DDL asynchronously (no wait, no error surfaced): refuse it.
+validate_pos() { [[ "$2" =~ ^[0-9]+$ && "$2" -ge 1 ]] || fail "$1 must be an integer >= 1 (got '$2'; 0 means asynchronous DDL in ClickHouse)"; }
 
 # ---------------------------------------------------------------- transport
 setup_transport() {
@@ -32,15 +37,30 @@ setup_transport() {
     local scheme=http port="${HTTP_PORT:-8123}"
     if [[ "$SECURE" == 1 ]]; then scheme=https; port="${HTTP_PORT:-8443}"; fi
     HTTP_URL="${scheme}://${CH_HOST}:${port}/"
-    case "$CH_USER$CLICKHOUSE_PASSWORD" in *$'\n'*|*$'\r'*) fail "user/password must not contain newlines (--transport http)" ;; esac
+    case "$CH_USER$CH_PASSWORD" in *$'\n'*|*$'\r'*) fail "user/password must not contain newlines (--transport http)" ;; esac
     # Credentials travel in headers read from a 0600 file (curl -H @file): never argv.
-    ( umask 077; printf 'X-ClickHouse-User: %s\nX-ClickHouse-Key: %s\n' "$CH_USER" "$CLICKHOUSE_PASSWORD" > "$TMP/auth" )
+    ( umask 077; printf 'X-ClickHouse-User: %s\nX-ClickHouse-Key: %s\n' "$CH_USER" "$CH_PASSWORD" > "$TMP/auth" )
     chmod 600 "$TMP/auth"
   else
     command -v clickhouse-client >/dev/null 2>&1 || fail "clickhouse-client is required for --transport native"
-    CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER" "--distributed_ddl_task_timeout=${DDL_TIMEOUT}" --format TSV)
-    [[ "$SECURE" == 1 ]] && CH+=(--secure)
+    build_native_args
   fi
+  return 0
+}
+
+# distributed_ddl_output_mode is pinned: a profile/user default of never_throw or
+# *_only_active would turn a dead node's DDL failure into a silent success.
+build_native_args() {
+  CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER" "--distributed_ddl_task_timeout=${DDL_TIMEOUT}" --distributed_ddl_output_mode=throw --format TSV)
+  [[ "$SECURE" == 1 ]] && CH+=(--secure)
+  return 0
+}
+
+# Cleanup must not hang for the full --ddl-timeout on a dead node: cap it.
+limit_ddl_timeout() {  # limit_ddl_timeout <max-seconds>
+  (( DDL_TIMEOUT <= $1 )) && return 0
+  DDL_TIMEOUT="$1"
+  [[ "$TRANSPORT" == http ]] || build_native_args
   return 0
 }
 
@@ -55,7 +75,7 @@ explain_failure() {
       echo "      exist on every node. Otherwise check the user/password." >&2 ;;
     *ACCESS_DENIED*|*NOT_ENOUGH_PRIVILEGES*|*"Code: 497"*)
       echo "HINT: missing grants - see 'Grants' in docs/ASSET-DISTRIBUTION.md (FILE, CLUSTER, REMOTE," >&2
-      echo "      CREATE/DROP TABLE on default._asb_*, SELECT on system.clusters; URL for --pull-url)." >&2 ;;
+      echo "      CREATE/DROP TABLE on default.*, CREATE TEMPORARY TABLE, SELECT on system.clusters; URL for --pull-url)." >&2 ;;
     *TIMEOUT_EXCEEDED*|*"Code: 159"*)
       echo "HINT: a node did not answer the ON CLUSTER DDL within ${DDL_TIMEOUT}s (--ddl-timeout). It may be down;" >&2
       echo "      its queued DDL replays when it returns. Bring it back and re-run." >&2 ;;
@@ -71,7 +91,7 @@ ch_query() {
 
 ch_query_native() {
   local sql="$1" in="${2:-/dev/null}"
-  if ! "${CH[@]}" --query "$sql" < "$in" 2>"$TMP/err"; then
+  if ! CLICKHOUSE_PASSWORD="$CH_PASSWORD" "${CH[@]}" --query "$sql" < "$in" 2>"$TMP/err"; then
     explain_failure "$TMP/err"; return 1
   fi
 }
@@ -80,9 +100,9 @@ ch_query_http() {
   local sql="$1" in="${2:-}" code
   : > "$TMP/body"; : > "$TMP/hdrs"
   if [[ -n "$in" ]]; then { printf '%s\n' "$sql"; cat "$in"; } > "$TMP/req"; else printf '%s' "$sql" > "$TMP/req"; fi
-  if ! code="$(curl -sS --max-time "$((DDL_TIMEOUT + 300))" -o "$TMP/body" -D "$TMP/hdrs" -w '%{http_code}' \
+  if ! code="$(curl -q -sS --max-time "$((DDL_TIMEOUT + 300))" -o "$TMP/body" -D "$TMP/hdrs" -w '%{http_code}' \
       -H "@$TMP/auth" -H 'Content-Type: text/plain' --data-binary "@$TMP/req" \
-      "${HTTP_URL}?wait_end_of_query=1&distributed_ddl_task_timeout=${DDL_TIMEOUT}" 2>"$TMP/err")"; then
+      "${HTTP_URL}?wait_end_of_query=1&distributed_ddl_task_timeout=${DDL_TIMEOUT}&distributed_ddl_output_mode=throw" 2>"$TMP/err")"; then
     explain_failure "$TMP/err"; return 1
   fi
   local line body; body="$(cat "$TMP/body")"
@@ -141,31 +161,35 @@ verify_sql() {  # verify_sql <user_files-name>
   fi
 }
 
-# check_rows <name> <expected-len> <expected-sha> <show 0|1>
-# Sets ROWS (rows returned) and MATCH (rows matching len+sha); prints a table when show=1.
-# Returns 0 iff ROWS == EXPECTED_NODES and every row matches; 2 if the query failed.
+# check_rows <name> <expected-len> <expected-sha> <show 0|1> [one|any]
+# Sets ROWS (rows returned), HOSTS (distinct hostName() values) and MATCH (rows matching
+# len+sha, and - in mode "one", the default - exactly one row n==1 in the file). Mode "any"
+# also accepts n==0 (uninstall's empty-file check: a 0-byte RawBLOB may yield 0 rows).
+# Prints a table when show=1. Returns 0 iff ROWS == HOSTS == EXPECTED_NODES and every row
+# matches (a dropped, extra or duplicated-host row all fail); 2 if the query failed.
 check_rows() {
-  local name="$1" elen="$2" esha="$3" show="$4" out h n len sha mark
-  ROWS=0; MATCH=0
+  local name="$1" elen="$2" esha="$3" show="$4" mode="${5:-one}" out h n len sha mark seen=""
+  ROWS=0; MATCH=0; HOSTS=0
   out="$(ch_query "$(verify_sql "$name")")" || return 2
   [[ "$show" != 1 ]] || printf '    %-32s %-10s %-64s %s\n' "NODE" "BYTES" "SHA256" "$name"
   while IFS=$'\t' read -r h n len sha; do
     [[ -n "$h" ]] || continue
-    ROWS=$((ROWS + 1)); mark="MISMATCH"
-    if [[ "$len" == "$elen" && "$sha" == "$esha" ]]; then MATCH=$((MATCH + 1)); mark="ok"; fi
+    ROWS=$((ROWS + 1)); seen+="${h}"$'\n'; mark="MISMATCH"
+    if [[ "$len" == "$elen" && "$sha" == "$esha" && ( "$n" == 1 || ( "$mode" == any && "$n" == 0 ) ) ]]; then MATCH=$((MATCH + 1)); mark="ok"; fi
     [[ "$show" != 1 ]] || printf '    %-32s %-10s %-64s %s\n' "$h" "$len" "$sha" "$mark"
   done <<< "$out"
-  [[ "$ROWS" == "$EXPECTED_NODES" && "$MATCH" == "$ROWS" ]]
+  HOSTS="$(printf '%s' "$seen" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+  [[ "$ROWS" == "$EXPECTED_NODES" && "$HOSTS" == "$EXPECTED_NODES" && "$MATCH" == "$ROWS" ]]
 }
 
-# verify_files <label> <name> <len> <sha> [<name> <len> <sha> ...]
+# verify_files <label> <mode one|any> <name> <len> <sha> [<name> <len> <sha> ...]
 verify_files() {
-  local label="$1" ok=0 rc; shift
+  local label="$1" mode="$2" ok=0 rc; shift 2
   info "==> Verifying ${label} (${EXPECTED_NODES} node(s))"
   while [[ $# -ge 3 ]]; do
-    check_rows "$1" "$2" "$3" 1 && rc=0 || rc=$?
+    check_rows "$1" "$2" "$3" 1 "$mode" && rc=0 || rc=$?
     if (( rc == 2 )); then echo "ERROR: verification query failed for $1" >&2; ok=1
-    elif (( rc != 0 )); then echo "ERROR: $1: ${MATCH}/${EXPECTED_NODES} nodes match (rows returned: ${ROWS}; expected ${EXPECTED_NODES}) [${label}]" >&2; ok=1; fi
+    elif (( rc != 0 )); then echo "ERROR: $1: ${MATCH}/${EXPECTED_NODES} nodes match (rows returned: ${ROWS}, distinct hosts: ${HOSTS}; expected ${EXPECTED_NODES} each) [${label}]" >&2; ok=1; fi
     shift 3
   done
   return "$ok"

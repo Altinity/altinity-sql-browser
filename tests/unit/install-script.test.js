@@ -4,7 +4,7 @@
 // deploy-sim.cjs) to log every statement, scripted failures, and per-node
 // verification rows. Nothing builds and nothing leaves the box.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { ARTIFACT_BYTES, makeHarness, sha256 } from '../helpers/deploy-harness.js';
 
 // each case spawns real bash + shim processes; allow for a loaded CI box
@@ -114,12 +114,13 @@ describe('cluster install: two-phase ordering', () => {
     const clean = idx(sqls, /^DROP TABLE IF EXISTS default\._asb_t_next_html ON CLUSTER `c1` SYNC/);
     const stage = idx(sqls, /^INSERT INTO FUNCTION file\('_asb_stage_tok123\.html','RawBLOB'\).*FORMAT RawBLOB/);
     const stageVerify = idx(sqls, /SHA256.*_asb_stage_tok123\.html/);
-    const next = idx(sqls, /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\)/);
+    const next = idx(sqls, /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\) AS SELECT c FROM clusterAllReplicas/);
+    const emptied = idx(sqls, /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\) AS SELECT '' AS c/);
     const v1 = idx(sqls, /SHA256.*_asb_next_sql\.html/);
     const promote = idx(sqls, /ENGINE=File\('RawBLOB','sql\.html'\) AS SELECT c FROM file\('_asb_next_sql\.html'/);
     const v2 = idx(sqls, /SHA256.*FROM file\('sql\.html'/);
-    expect([pre, clean, stage, stageVerify, next, v1, promote, v2].every((i) => i >= 0)).toBe(true);
-    expect([pre, clean, stage, stageVerify, next, v1, promote, v2]).toEqual([pre, clean, stage, stageVerify, next, v1, promote, v2].slice().sort((a, b) => a - b));
+    expect([pre, clean, emptied, stage, stageVerify, next, v1, promote, v2].every((i) => i >= 0)).toBe(true);
+    expect([pre, clean, emptied, stage, stageVerify, next, v1, promote, v2]).toEqual([pre, clean, emptied, stage, stageVerify, next, v1, promote, v2].slice().sort((a, b) => a - b));
     // no live-file CTAS anywhere before the first phase-1 verify
     expect(sqls.slice(0, v1).some((s) => live.test(s))).toBe(false);
     // the live CTAS copies the node's OWN next file, never a remote source
@@ -137,7 +138,7 @@ describe('cluster install: two-phase ordering', () => {
   it('every CTAS truncates on insert; the stage CTAS tolerates a missing file', () => {
     const { sqls } = run();
     const all = ctas(sqls);
-    expect(all.length).toBe(4);
+    expect(all.length).toBe(6); // 2 pre-clean empties + 2 fan-outs + 2 promotes
     for (const s of all) expect(s).toContain('engine_file_truncate_on_insert=1');
     const stageCtas = all.find((s) => s.includes('clusterAllReplicas'));
     expect(stageCtas).toContain('engine_file_empty_if_not_exists=1');
@@ -170,8 +171,8 @@ describe('cluster install: two-phase ordering', () => {
     ['pre-clean', /^DROP TABLE IF EXISTS default\._asb_t_next_html/, true],
     ['stage upload', /FORMAT RawBLOB/, true],
     ['stage verification', /SHA256.*_asb_stage_/, true],
-    ['sql.html fan-out', /^CREATE TABLE default\._asb_t_next_html/, true],
-    ['config fan-out', /^CREATE TABLE default\._asb_t_next_cfg/, true],
+    ['sql.html fan-out', /^CREATE TABLE default\._asb_t_next_html .*clusterAllReplicas/, true],
+    ['config fan-out', /^CREATE TABLE default\._asb_t_next_cfg .*SELECT '\{/, true],
     ['phase-1 verification', /SHA256.*_asb_next_sql/, true],
   ])('failure at %s', (name, match, cleanupArmed) => {
     it('exits non-zero, never writes a live file, and cleans up', () => {
@@ -230,9 +231,11 @@ describe('url source timeouts', () => {
     expect(c).toContain('max_execution_time=45');
     expect(c).toContain('http_receive_timeout=45');
   });
-  it('falls back to 180s for --ddl-timeout 0 (0 would mean unbounded)', () => {
-    const c = pull(['--ddl-timeout', '0']).sqls.find((s) => /FROM url\(/.test(s));
-    expect(c).toContain('max_execution_time=180');
+  it('rejects --ddl-timeout 0 (0 means asynchronous DDL in ClickHouse) before contacting ClickHouse', () => {
+    const x = pull(['--ddl-timeout', '0']);
+    expect(x.r.status).toBe(1);
+    expect(x.r.stderr).toContain('--ddl-timeout must be an integer >= 1');
+    expect(x.log).toEqual([]);
   });
 });
 
@@ -242,7 +245,7 @@ describe('inputs', () => {
     const cfg = '{"issuer":"https://accounts.google.com","client_id":"it\'s\\x"}';
     expect(r.status, r.stderr).toBe(0); // verification compares the locally computed sha to what the server wrote
     expect(files['sql-config.json'].sha).toBe(sha256(cfg));
-    expect(sqls.find((s) => /^INSERT INTO FUNCTION file\('_asb_next_sql-config\.json'/.test(s))).toContain("it\\'s\\\\x");
+    expect(sqls.find((s) => /^INSERT INTO FUNCTION file\('_asb_next_sql-config\.json'.*it/.test(s))).toContain("it\\'s\\\\x");
   });
   it.each(["c'; DROP TABLE x; --", 'a b', 'a`b', ''])('rejects the cluster name %j without touching ClickHouse', (name) => {
     const { r, log } = h.install(['--cluster', name || 'x y']);
@@ -269,6 +272,7 @@ describe('inputs', () => {
   it.each([
     [['--transport', 'ftp'], '--transport must be'],
     [['--ddl-timeout', 'x'], '--ddl-timeout must be'],
+    [['--ddl-timeout', '0'], '--ddl-timeout must be an integer >= 1'],
     [['--http-port', '8x'], '--http-port must be'],
     [['--artifact', '/nonexistent/sql.html'], 'no such file'],
     [['--pull-url', 'http://x', '--verify-only'], 'mutually exclusive'],
@@ -364,12 +368,12 @@ describe('--transport http', () => {
       expect(c.argv).toContain(`@${c.authFile}`);
       expect(existsSync(c.authFile)).toBe(false);
       expect(c.url).toContain('wait_end_of_query=1');
-      expect(c.url).toContain('distributed_ddl_task_timeout=180');
+      expect(c.url).toMatch(/distributed_ddl_task_timeout=(180|30)&/); // 30: the bounded cleanup tail
     }
     expect(r.stdout + r.stderr).not.toContain(PW);
   });
   it('honours --http-port, --ddl-timeout and --secure', () => {
-    expect(run(['--http-port', '9999', '--ddl-timeout', '9']).log[0].url).toBe('http://ch.example.com:9999/?wait_end_of_query=1&distributed_ddl_task_timeout=9');
+    expect(run(['--http-port', '9999', '--ddl-timeout', '9']).log[0].url).toBe('http://ch.example.com:9999/?wait_end_of_query=1&distributed_ddl_task_timeout=9&distributed_ddl_output_mode=throw');
     expect(run(['--secure']).log[0].url).toMatch(/^https:\/\/ch\.example\.com:8443\/\?/);
   });
   it('uploads the artifact bytes as the request body after the SQL', () => {
@@ -396,5 +400,220 @@ describe('--transport http', () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('newlines');
     expect(log).toEqual([]);
+  });
+});
+
+describe('verification rows are strict (one row, one host, n == 1, per node)', () => {
+  const good = { 'sql.html': { len: ARTIFACT_BYTES.length, sha: ART_SHA }, 'sql-config.json': { len: CFG.length, sha: CFG_SHA } };
+  const verify = (knob) => h.install(['--cluster', 'c1', '--verify-only'], { cfg: { nodes: 3, verify: knob }, files: good });
+
+  it('control: untouched rows verify', () => {
+    expect(verify({}).r.status).toBe(0);
+  });
+  it('a dropped row fails (fewer rows than nodes, even though every returned row matches)', () => {
+    const { r } = verify({ dropNodes: [3] });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('rows returned: 2');
+  });
+  it('an extra row fails', () => {
+    const { r } = verify({ extra: true });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('rows returned: 4');
+  });
+  it('the same host answering twice fails: the row count equals the node count but distinct hosts do not', () => {
+    const { r } = verify({ hostAs: { 3: 1 } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('rows returned: 3, distinct hosts: 2');
+  });
+  it('a row with n=0 fails for an install even when len and sha match', () => {
+    const { r } = verify({ n: { 2: 0 } });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/node-2\s+\d+\s+[0-9a-f]{64} MISMATCH/);
+  });
+  it('a row with n=2 fails too', () => {
+    expect(verify({ n: { 1: 2 } }).r.status).toBe(1);
+  });
+  it('phase 1 stops on a bad row with the live files untouched', () => {
+    const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, verify: { hostAs: { 3: 1 } } } });
+    expect(r.status).toBe(1);
+    expect(sqls.some((s) => live.test(s))).toBe(false);
+  });
+});
+
+describe('stage MATCH guard', () => {
+  it('an uploaded stage that no node reports with the expected sha aborts before the fan-out', () => {
+    const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, badNodes: { '_asb_stage_tok123.html': { 1: { len: 1, sha: 'dead' } } } } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('staged upload not found with the expected length/sha256 on exactly one node');
+    expect(sqls.some((s) => /clusterAllReplicas\('c1', file\('_asb_stage_/.test(s))).toBe(false);
+    expect(sqls.some((s) => live.test(s))).toBe(false);
+    expect(sqls.slice(-5)[0]).toContain("SELECT ''"); // the stage is still emptied
+  });
+  it('a stage reported on more than one node is not accepted either (exactly one)', () => {
+    const good = { len: ARTIFACT_BYTES.length, sha: ART_SHA };
+    const { r } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, badNodes: { '_asb_stage_tok123.html': { 1: good, 2: good } } } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('exactly one node');
+  });
+  it('a stage verification missing a node row aborts', () => {
+    const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 3, verify: { dropNodes: [3] } } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('stage verification returned 2 rows');
+    expect(sqls.some((s) => /^CREATE TABLE default\._asb_t_next_html .*clusterAllReplicas/.test(s))).toBe(false);
+  });
+});
+
+describe('single node: phase-1 failure never touches the live file', () => {
+  it('writes no INSERT INTO FUNCTION file(\'sql.html\' before (or after) a failed phase-1 verify', () => {
+    const { r, sqls, files } = h.install([], { env: TOKEN, cfg: { badNodes: { '_asb_next_sql.html': { 1: { len: 1, sha: 'dead' } } } } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('phase 1 verification failed; live files were NOT touched');
+    expect(sqls.some((s) => s.startsWith("INSERT INTO FUNCTION file('sql.html'"))).toBe(false);
+    expect(sqls.some((s) => s.startsWith("INSERT INTO FUNCTION file('sql-config.json'"))).toBe(false);
+    expect(files['sql.html']).toBeUndefined();
+  });
+});
+
+describe('artifact sanity', () => {
+  it('rejects a zero-byte artifact before any write', () => {
+    writeFileSync(`${h.work}/empty.html`, '');
+    for (const args of [[], ['--cluster', 'c1']]) {
+      const { r, sqls } = h.install([...args, '--artifact', `${h.work}/empty.html`], { env: TOKEN, cfg: { nodes: 3 } });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('is empty (0 bytes)');
+      expect(writes(sqls)).toEqual([]);
+    }
+  });
+  it('without --artifact and without a build tree: a clear error, no ClickHouse contact', () => {
+    renameSync(`${h.work}/package.json`, `${h.work}/package.json.off`);
+    try {
+      const { r, log } = h.install([], { env: TOKEN });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('pass --artifact');
+      expect(log).toEqual([]);
+      // ...and --artifact still works in the same tree
+      expect(h.install(['--artifact', `${h.work}/dist/sql.html`], { env: TOKEN }).r.status).toBe(0);
+    } finally { renameSync(`${h.work}/package.json.off`, `${h.work}/package.json`); }
+  });
+});
+
+describe('distributed_ddl_output_mode is pinned to throw', () => {
+  it('native: on every clickhouse-client call', () => {
+    const { log } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 2 } });
+    expect(log.length).toBeGreaterThan(10);
+    expect(log.every((l) => l.argv.includes('--distributed_ddl_output_mode=throw'))).toBe(true);
+  });
+  it('http: on every request URL', () => {
+    const { log } = h.install(['--transport', 'http', '--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 2 } });
+    expect(log.length).toBeGreaterThan(10);
+    expect(log.every((l) => l.url.includes('&distributed_ddl_output_mode=throw'))).toBe(true);
+  });
+});
+
+describe('pre-clean empties the _asb_next_* files on every node, before anything is staged', () => {
+  it('cluster', () => {
+    const { r, sqls } = h.install(['--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 2 } });
+    expect(r.status, r.stderr).toBe(0);
+    const emptyHtml = idx(sqls, /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\) AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1$/);
+    const emptyCfg = idx(sqls, /^CREATE TABLE default\._asb_t_next_cfg ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql-config\.json'\) AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1$/);
+    const stage = idx(sqls, /FORMAT RawBLOB/);
+    expect(emptyHtml).toBeGreaterThan(-1);
+    expect(emptyCfg).toBeGreaterThan(-1);
+    expect(Math.max(emptyHtml, emptyCfg)).toBeLessThan(stage);
+  });
+  it('a stale next file cannot satisfy phase 1: it is emptied, then re-verified against the new bytes', () => {
+    const stale = { len: ARTIFACT_BYTES.length, sha: ART_SHA };
+    const { r, sqls, files } = h.install(['--cluster', 'c1'], {
+      env: TOKEN, cfg: { nodes: 2 }, files: { '_asb_next_sql.html': stale },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(files['_asb_next_sql.html']).toEqual(stale); // rewritten with the same bytes by THIS run
+    const firstEmpty = idx(sqls, /_asb_next_sql\.html'\) AS SELECT '' AS c/);
+    const fanOut = idx(sqls, /_asb_next_sql\.html'\) AS SELECT c FROM clusterAllReplicas/);
+    expect(firstEmpty).toBeGreaterThan(-1);
+    expect(fanOut).toBeGreaterThan(firstEmpty);
+  });
+  it('single node', () => {
+    const { sqls } = h.install([], { env: TOKEN });
+    const e = idx(sqls, /^INSERT INTO FUNCTION file\('_asb_next_sql\.html','RawBLOB'\) SETTINGS engine_file_truncate_on_insert=1 SELECT '' AS c/);
+    expect(e).toBeGreaterThan(-1);
+    expect(e).toBeLessThan(idx(sqls, /FORMAT RawBLOB/));
+  });
+});
+
+describe('the password stays out of everything but clickhouse-client', () => {
+  const PW = 'sekret-native-pw';
+  it('native: never in argv; only clickhouse-client has it in its environment; build steps and the OIDC curl do not', () => {
+    const { r, log, oidc } = h.install([], { env: { ...TOKEN, CLICKHOUSE_PASSWORD: PW } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(log.length).toBeGreaterThan(5);
+    for (const l of log) {
+      expect(l.argv.join(' ')).not.toContain(PW);
+      expect(l.pwEnv).toBe(PW); // the env prefix on that one invocation
+    }
+    expect(h.built()).toMatch(/npm pw=unset/);
+    expect(h.built()).toMatch(/node pw=unset/);
+    expect(h.built()).not.toContain(PW);
+    expect(oidc.length).toBe(1);
+    expect(oidc[0].pwEnv).toBeUndefined();
+  });
+  it('http: curl never has it in argv or environment either', () => {
+    const { log, oidc } = h.install(['--transport', 'http'], { env: { ...TOKEN, CLICKHOUSE_PASSWORD: PW } });
+    expect(log.length).toBeGreaterThan(5);
+    for (const l of log) { expect(l.argv.join(' ')).not.toContain(PW); expect(l.pwEnv).toBeUndefined(); }
+    expect(oidc[0].pwEnv).toBeUndefined();
+  });
+});
+
+describe('curl ignores ~/.curlrc', () => {
+  it('passes -q first on the OIDC discovery and on every HTTP-transport call', () => {
+    const { log, oidc } = h.install(['--transport', 'http'], { env: TOKEN });
+    expect(oidc[0].argv[0]).toBe('-q');
+    expect(log.every((l) => l.argv[0] === '-q')).toBe(true);
+  });
+});
+
+describe('cleanup is robust', () => {
+  const stageEmpty = "^INSERT INTO FUNCTION file\\('_asb_stage_tok123\\.html','RawBLOB'\\) SETTINGS engine_file_truncate_on_insert=1 SELECT ''$";
+  const failPhase1 = { match: "^CREATE TABLE default\\._asb_t_next_cfg .*SELECT '\\{", stderr: 'Code: 1. injected' };
+
+  it('removes the credential header file even when every cleanup statement fails', () => {
+    const rules = [failPhase1, { match: stageEmpty, stderr: 'Code: 1. cleanup boom' }];
+    const a = h.install(['--transport', 'http', '--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 2, rules } });
+    expect(a.r.status).toBe(1);
+    expect(a.r.stderr).toContain('could not empty stage file');
+    // every DROP fails too (pre-clean dies first, cleanup then fails on every table)
+    const b = h.install(['--transport', 'http', '--cluster', 'c1'], { env: TOKEN, cfg: { nodes: 2, rules: [{ match: '^DROP TABLE IF EXISTS default\\._asb_t_live_', stderr: 'Code: 1. cleanup boom' }] } });
+    expect(b.r.status).toBe(1);
+    expect(b.r.stderr).toContain('could not drop default._asb_t_live_html');
+    for (const { log } of [a, b]) {
+      const auth = log.filter((l) => l.authFile).map((l) => l.authFile);
+      expect(auth.length).toBeGreaterThan(3);
+      for (const f of new Set(auth)) expect(existsSync(f)).toBe(false);
+      expect(log.some((l) => l.sql.startsWith("INSERT INTO FUNCTION file('sql.html'"))).toBe(false);
+    }
+  });
+  it('bounds cleanup DDL to min(--ddl-timeout, 30) seconds, after a normal-length main run', () => {
+    const run = (t) => h.install(['--cluster', 'c1', '--ddl-timeout', t], { env: TOKEN, cfg: { nodes: 2, rules: [failPhase1] } });
+    const big = run('100').log;
+    const fail = big.findIndex((l) => l.rc !== 0);
+    expect(big.slice(0, fail + 1).every((l) => l.argv.includes('--distributed_ddl_task_timeout=100'))).toBe(true);
+    expect(big.slice(fail + 1).length).toBeGreaterThanOrEqual(5);
+    expect(big.slice(fail + 1).every((l) => l.argv.includes('--distributed_ddl_task_timeout=30'))).toBe(true);
+    const small = run('7').log;
+    expect(small.every((l) => l.argv.includes('--distributed_ddl_task_timeout=7'))).toBe(true);
+  });
+  it('ignores INT/TERM while cleaning up and always removes the temp dir', () => {
+    const src = readFileSync(`${h.work}/deploy/install.sh`, 'utf8');
+    expect(src).toMatch(/cleanup\(\) \{[^}]*trap '' INT TERM[^}]*set \+e/s);
+    expect(src).toMatch(/rm -rf "\$TMP"/);
+  });
+});
+
+describe('shims', () => {
+  it('are /bin/sh scripts that exec the quoted node binary on the sim', () => {
+    const t = readFileSync(`${h.work}/bin/clickhouse-client`, 'utf8');
+    expect(t.startsWith('#!/bin/sh\n')).toBe(true);
+    expect(t).toContain(`exec "${process.execPath}" "${h.work}/bin/sim.cjs" ch "$@"`);
   });
 });

@@ -23,7 +23,7 @@ The app is three things on the target ClickHouse:
 CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   --ch-host clickhouse.example.com --ch-user admin \
   --client-id <oauth-client-id> [--issuer …] [--audience …] [--ch-auth basic] \
-  [--cluster …] [--artifact sql.html] [--pull-url URL] [--transport native|http] \
+  [--cluster …] [--artifact sql.html] [--pull-url URL] [--transport native|http] [--http-port N] \
   [--ddl-timeout 180] [--verify-only] [--secure]
 ```
 
@@ -31,7 +31,8 @@ Prerequisites: `clickhouse-client` (or `curl` with `--transport http`), `curl` f
 discovery, and `npm` + `node` 22+ unless you pass `--artifact`. `--audience` makes the SPA send the access
 token instead of the id_token; `--ch-auth basic` sends the JWT as the HTTP Basic
 password (OSS ClickHouse behind a verifier, see section 4). A GitHub release
-also ships a prebuilt `sql.html` if you would rather upload it yourself. At the
+also ships a prebuilt `sql.html` (and the `deploy/` scripts): pass it with `--artifact sql.html`,
+which is required when there is no build tree. At the
 end the installer prints the URL to open and the redirect URI to register; it
 uses the default HTTP(S) ports 8123/8443, so adjust if yours differ.
 
@@ -39,9 +40,10 @@ uses the default HTTP(S) ports 8123/8443, so adjust if yours differ.
 server-side `ON CLUSTER` SQL, in two phases (stage to `_asb_next_*`, verify, then
 promote locally and verify again), so a failure never half-writes the live files;
 every node's length and SHA-256 are checked. Use `--artifact` with the release's
-prebuilt `sql.html` to skip the build, `--pull-url` to have the nodes download it,
-`--verify-only` to audit, and `uninstall.sh` to empty the files. The cluster needs
-a `<secret>` (or per-replica credentials) and the deploy user needs the grants
+`sql.html` (`--artifact`) to skip the build, `--pull-url` to have the nodes download it,
+`--verify-only` to audit, and `uninstall.sh` to empty the files. Run one installer at a
+time (no lock; concurrent runs are unsupported). Cross-node reads need the cluster's
+`<secret>` (or per-replica credentials; only `<secret>` is tested in CI) and the deploy user needs the grants
 listed in [ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md#installing-with-deployinstallsh).
 A personal `~/.clickhouse-client/config.xml` can override the host/user/password
 you pass. The password is read from the env var or prompted — never placed on the command

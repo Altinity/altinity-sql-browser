@@ -24,6 +24,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `tests/deploy/` (`npm run test:deploy`, CI job `deploy-integration`, matrix
   ClickHouse 26.3 and Antalya 25.8.33) and the release bundle now ships `deploy/`.
   `docs/ASSET-DISTRIBUTION.md` documents the procedure, grants and limits.
+  Review hardening: `--ddl-timeout` must be >= 1 (0 means asynchronous DDL) and
+  `distributed_ddl_output_mode=throw` is pinned on both transports; pre-clean and
+  `uninstall.sh` empty the `_asb_next_*` files on every node; verification demands
+  one row per node, as many distinct hosts as the cluster has, and `count() = 1`
+  per row (uninstall's 0-byte check alone accepts `n = 0`); a zero-byte artifact is
+  refused before any write; cleanup ignores INT/TERM, caps its DDL timeout at 30 s
+  and always removes the credential header file; the password is no longer exported
+  (only `clickhouse-client` sees it; never `npm`/`node`/OIDC `curl`); `curl -q`
+  ignores `~/.curlrc`; no `--artifact` and no build tree is a clear error. Concurrent
+  runs are documented as unsupported. The integration suite gains a node killed
+  mid-run and a minimal `deploy_verify` user (the verification query needs
+  `CREATE TEMPORARY TABLE`), checks all four nodes with positive controls, pins exact
+  image tags, and dumps container logs on any failure; the bundle CI step now runs
+  the shipped installer with `--dry-run --artifact`.
 
 ### Fixed
 - **#692 (part 1): deployment docs and installer output corrections.**

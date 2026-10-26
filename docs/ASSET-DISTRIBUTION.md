@@ -114,10 +114,11 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
 | Flag | Meaning |
 |---|---|
 | `--cluster C` | fan out to every node of cluster `C` (as named in `system.clusters` on the node you connect to). Without it only the connected node is updated (behind a load balancer that is one random node). |
-| `--artifact PATH` | install this prebuilt `sql.html` (e.g. the release asset); skips the build, so no `npm`/`node` is needed. |
-| `--pull-url URL` | cluster mode: every node downloads the SPA from `URL` itself (needs egress + the `URL` grant). Default is **stage** mode: the installer uploads once to the connected node and the nodes copy it over the interserver connection (no egress). |
-| `--transport native\|http` | `native` (default) drives `clickhouse-client`; `http` uses `curl` against the HTTP(S) port (`--http-port`, default 8123 / 8443 with `--secure`). The password never appears in argv: with `http` it is sent from a 0600 header file. |
-| `--ddl-timeout S` | `distributed_ddl_task_timeout` for the `ON CLUSTER` statements (default 180). Also bounds a `--pull-url` download (`max_execution_time`, HTTP receive timeout). |
+| `--artifact PATH` | install this prebuilt `sql.html` (e.g. the release asset); skips the build, so no `npm`/`node` is needed. Required when there is no build tree (the release bundle). A zero-byte file is rejected before any write. |
+| `--pull-url URL` | cluster mode: every node downloads the SPA from `URL` itself (needs egress + the `URL` grant). The bytes at `URL` **must equal the artifact** (`--artifact`, or the build): the installer verifies length and SHA-256 against the local artifact, so anything else fails phase-1 verification and the live files stay untouched. Mutually exclusive with `--verify-only`. Default is **stage** mode: the installer uploads once to the connected node and the nodes copy it over the interserver connection (no egress). |
+| `--transport native\|http` | `native` (default) drives `clickhouse-client`; `http` uses `curl` against the HTTP(S) port (`--http-port`, default 8123 / 8443 with `--secure`). The password never appears in argv: with `http` it is sent from a 0600 header file, with `native` it is handed to `clickhouse-client` alone through its environment (never to `npm`, `node` or the OIDC `curl`). |
+| `--http-port N` | HTTP(S) port for `--transport http` (default 8123, or 8443 with `--secure`). |
+| `--ddl-timeout S` | `distributed_ddl_task_timeout` for the `ON CLUSTER` statements (default 180, **must be >= 1**: 0 makes ClickHouse run DDL asynchronously and the installer would verify too early). Also bounds a `--pull-url` download (`max_execution_time`, HTTP receive timeout). The cleanup at the end uses at most 30 s. `distributed_ddl_output_mode=throw` is pinned on every request, so a profile default of `never_throw` cannot hide a dead node. |
 | `--verify-only` | change nothing; compare every node's live files to the artifact and exit non-zero on any mismatch. |
 
 Credentials come from `CLICKHOUSE_PASSWORD` (or a prompt). **Check that a
@@ -125,8 +126,18 @@ personal `~/.clickhouse-client/config.xml` is not overriding the host, user or
 password** you pass — `clickhouse-client` reads it and it can silently change
 which server or account the installer talks to.
 
+**One run at a time.** Concurrent installs or uninstalls against the same cluster are
+unsupported (there is no lock): they share the `_asb_t_*` temp tables and the
+`_asb_next_*` files and can corrupt each other.
+
+**Proxies.** The scripts call `curl -q` (so `~/.curlrc` is ignored) but curl still honours
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`; the installer adds no `--noproxy`. With
+`--transport http` over plain HTTP a configured proxy would see the credentials, so use
+`--secure` or unset the proxy variables.
+
 `uninstall.sh` takes the same connection flags and **empties** both files on
-every node (0 bytes, verified). SQL cannot delete a file, so `/sql` then answers
+every node (0 bytes, verified) and also the `_asb_next_*` copies (they hold a full copy of
+the SPA). SQL cannot delete a file, so `/sql` then answers
 `200` with an empty body; remove the `http_handlers` fragment from `config.d/`
 and reload to really disable the route.
 
@@ -143,16 +154,23 @@ is never the target of anything that can fail on a remote source:
 1. **Preflight** (no writes): the node count from `system.clusters`, and a
    `clusterAllReplicas` probe proving every node is reachable and cross-node reads authenticate.
 2. **Pre-clean:** `DROP TABLE IF EXISTS default._asb_* ON CLUSTER ... SYNC` (a leftover
-   table on one node would otherwise raise `TABLE_ALREADY_EXISTS` there).
+   table on one node would otherwise raise `TABLE_ALREADY_EXISTS` there), then both
+   `_asb_next_*` files are **emptied on every node**, so a stale next file from an earlier
+   run can never satisfy the phase-1 verification.
 3. **Phase 1 — next files.** Stage mode uploads the artifact to the connected node as
    `_asb_stage_<token>.html` and every node copies it; `--pull-url` has every node
    `url()`-download it (following redirects). Result: `_asb_next_sql.html` and
    `_asb_next_sql-config.json` on every node. A failure here leaves the live files untouched.
-4. **Verify phase 1:** every node's next files match the expected length and SHA-256.
+4. **Verify phase 1:** every node's next files match the expected length and SHA-256. The
+   check is strict: exactly one row per node (`count() = 1`), as many distinct `hostName()`s as
+   `system.clusters` lists, each with the expected length and hash - a dropped, extra or
+   duplicated-host row fails it. (`uninstall.sh`'s 0-byte check alone also accepts `count() = 0`.)
 5. **Phase 2 — promote.** Each node copies *its own* verified `_asb_next_*` over the live
    `sql.html` / `sql-config.json` (a local read, so it cannot fail for network or auth reasons).
 6. **Verify live:** per-node table; success only when every node matches.
-7. **Always (trap):** the stage file is truncated and the temp tables dropped; live files are never touched by cleanup.
+7. **Always (trap):** the stage file is truncated and the temp tables dropped, with a DDL timeout capped at
+   30 s, INT/TERM ignored while it runs, and the credential header file removed even if the cleanup SQL fails;
+   live files are never touched by cleanup.
 
 `_asb_next_*` is **intentionally kept as a full copy** next to the live files
 (about 2 MB per node): it is the node-local, already-verified source for the
@@ -165,21 +183,27 @@ wiped or whose file was tampered with; `--verify-only` detects both.
 
 ### Requirements
 
-- **Interserver authentication.** Cross-node reads and the `ON CLUSTER` queue need the
+- **Interserver authentication.** Cross-node reads (`clusterAllReplicas`) need the
   cluster to have a `<secret>` in `remote_servers` (the operator default) or per-replica
   `<user>/<password>`, and the deploy user must exist on **every** node. Without it the
-  preflight fails with `AUTHENTICATION_FAILED (516)`.
+  preflight fails with `AUTHENTICATION_FAILED (516)`. The `<secret>` path is what CI tests; the
+  per-replica-credentials path was verified in a spike (#692) but is **not** in CI.
 - **Grants** (tested; `READ`/`WRITE ON FILE` are covered by `FILE`):
 
   | Mode | Grants |
   |---|---|
   | stage (default) | `FILE ON *.*`, `CLUSTER ON *.*`, `REMOTE ON *.*`, `CREATE TABLE, DROP TABLE ON default.*`, `SELECT ON system.clusters` |
   | `--pull-url` | the above plus `URL ON *.*` |
-  | `--verify-only` | `FILE`, `REMOTE`, `SELECT ON system.clusters` |
+  | `--verify-only` | `FILE`, `REMOTE`, `CREATE TEMPORARY TABLE ON *.*`, `SELECT ON system.clusters` |
   | single node (no `--cluster`) | tested with the stage grants; `CLUSTER`/`REMOTE` are not exercised |
   | `uninstall.sh` | same as stage |
 
-  Missing `REMOTE` or `URL` is rejected before any live file is touched, with a hint.
+  These sets are **tested sufficient** (every mode runs in CI as a user holding exactly that set; the
+  `--verify-only` set also in a `deploy_verify` user). Minimality is only partly proven: the negative
+  tests drop `REMOTE` and `URL` (both are rejected before any live file is touched, with a hint) and
+  check that a `--verify-only`-only user cannot install; the other grants are not individually
+  removed. `CREATE TEMPORARY TABLE` is what the `clusterAllReplicas(view(...))` verification query
+  needs (found by the suite).
 - **Egress** (`--pull-url` only): every node must reach the URL and `remote_url_allow_hosts`
   must permit it; GitHub release URLs redirect and are followed (up to 10 hops).
 
@@ -213,12 +237,15 @@ against Keeper + a 2-shard x 2-replica cluster with a `<secret>`, a password-pro
 user holding exactly the grants above, and the shipped `http_handlers.xml`; every scenario
 checks the byte-exact SHA-256 of `/sql` and `/sql/config.json` served by every node. Covered:
 fresh install, upgrade, HTTP transport, `--pull-url` through a 2-hop redirect, wiped-node
-repair, `--verify-only` on a tampered node, a stopped node (installer fails, the other nodes
-keep the previous good version; restart + re-install succeeds), an unreachable pull URL, missing `REMOTE` / `URL`
-grants, a single node, and uninstall. Images: `clickhouse/clickhouse-server:26.3` and
-`altinity/clickhouse-server:25.8.33.20001.altinityantalya`. **Not covered:** the real
-GitHub release URL, TLS (`--secure`) against a live server, and a node dying *between* the
-preflight and a DDL statement (unit-tested against a simulator only).
+repair, `--verify-only` on a tampered node and as the minimal `deploy_verify` user, a node stopped
+before the run (the preflight rejects it), a node **killed mid-run** right after the stage upload
+(installer fails, the other nodes keep the previous good version, the queued DDL replay settles,
+re-install succeeds), an unreachable pull URL, missing `REMOTE` / `URL`
+grants, a single node, and uninstall. Images (exact tags): `clickhouse/clickhouse-server:26.3.18.32` and
+`altinity/clickhouse-server:25.8.33.20001.altinityantalya`, with `clickhouse/clickhouse-keeper:25.8.33.6`.
+**Not covered:** the real GitHub release URL, TLS (`--secure`) against a live server, and the
+per-replica-credentials interserver path. The script logic (strict row checks, cleanup, the
+password's reach) is additionally unit-tested against a simulator.
 
 ## Appendix: manual SQL (same statements the installer runs)
 
@@ -227,11 +254,19 @@ files, and verify as above before and after promoting. Pull mode shown (`<url>` 
 `sql.html`); `<json>` is the config JSON as a SQL string literal (`\` becomes `\\`, `'` becomes `\'`).
 
 ```sql
--- 1 pre-clean
+-- 1 pre-clean (drop the temp tables, then EMPTY the next files so a stale one cannot pass verification)
 DROP TABLE IF EXISTS default._asb_t_next_html ON CLUSTER '<cluster>' SYNC;
 DROP TABLE IF EXISTS default._asb_t_next_cfg  ON CLUSTER '<cluster>' SYNC;
 DROP TABLE IF EXISTS default._asb_t_live_html ON CLUSTER '<cluster>' SYNC;
 DROP TABLE IF EXISTS default._asb_t_live_cfg  ON CLUSTER '<cluster>' SYNC;
+CREATE TABLE default._asb_t_next_html ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', '_asb_next_sql.html')
+  AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert = 1;
+CREATE TABLE default._asb_t_next_cfg ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', '_asb_next_sql-config.json')
+  AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert = 1;
+DROP TABLE IF EXISTS default._asb_t_next_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_next_cfg  ON CLUSTER '<cluster>' SYNC;
 
 -- 2 phase 1: next files (a failure here cannot hurt the live files)
 CREATE TABLE default._asb_t_next_html ON CLUSTER '<cluster>'

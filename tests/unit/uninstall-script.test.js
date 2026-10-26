@@ -59,7 +59,24 @@ describe('uninstall.sh cluster', () => {
     const { r, sqls } = run([], { cfg: { nodes: 3, rules: [{ match: '^CREATE TABLE default\\._asb_t_rm_cfg', stderr: 'Code: 1. injected' }] } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('empty sql-config.json failed');
-    expect(sqls.slice(-2).every((s) => /^DROP TABLE IF EXISTS default\._asb_t_rm_/.test(s))).toBe(true);
+    expect(sqls.slice(-4).every((s) => /^DROP TABLE IF EXISTS default\._asb_t_(rm|next)_/.test(s))).toBe(true);
+  });
+  it('also empties the _asb_next_* copies (a full copy of the SPA) on every node', () => {
+    const { r, sqls, files } = run([], { files: { ...installed, '_asb_next_sql.html': { len: 100, sha: 'aa' }, '_asb_next_sql-config.json': { len: 10, sha: 'bb' } } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(files['_asb_next_sql.html']).toEqual(EMPTY);
+    expect(files['_asb_next_sql-config.json']).toEqual(EMPTY);
+    expect(sqls.some((s) => /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\) AS SELECT '' AS c/.test(s))).toBe(true);
+    expect(r.stdout).toMatch(/node-3\s+0\s+e3b0c442[0-9a-f]{56} ok/);
+  });
+  it('fails when a stale non-empty _asb_next_* copy survives on a node', () => {
+    const { r } = run([], { cfg: { nodes: 3, badNodes: { '_asb_next_sql.html': { 3: { len: 7, sha: 'dd' } } } } });
+    expect(r.status).toBe(1);
+  });
+  it('accepts n=0 rows for the 0-byte check (the only caller allowed to) but not extra/dropped/duplicate rows', () => {
+    expect(run([], { cfg: { nodes: 3, verify: { n: { 2: 0 } } } }).r.status).toBe(0);
+    expect(run([], { cfg: { nodes: 3, verify: { dropNodes: [3] } } }).r.status).toBe(1);
+    expect(run([], { cfg: { nodes: 3, verify: { hostAs: { 3: 1 } } } }).r.status).toBe(1);
   });
   it('fails fast and writes nothing when preflight fails', () => {
     const { r, sqls } = run([], { cfg: { nodes: 3, countOut: 0 } });
@@ -97,6 +114,25 @@ describe('uninstall.sh http transport', () => {
   });
 });
 
+describe('uninstall.sh secrets and cleanup', () => {
+  it('keeps the password in clickhouse-client only (never argv), pins output mode, removes the header file when cleanup fails', () => {
+    const { log: l1 } = h.uninstall([], { files: installed, env: { CLICKHOUSE_PASSWORD: 'sekret-native-pw' } });
+    for (const l of l1) { expect(l.argv.join(' ')).not.toContain('sekret-native-pw'); expect(l.pwEnv).toBe('sekret-native-pw'); expect(l.argv).toContain('--distributed_ddl_output_mode=throw'); }
+    const { r, log } = h.uninstall(['--transport', 'http'], {
+      files: installed,
+      cfg: { rules: [{ match: "^INSERT INTO FUNCTION file\\('sql\\.html'", stderr: 'boom' }] },
+      env: { CLICKHOUSE_PASSWORD: 'sekret-pw' },
+    });
+    expect(r.status).toBe(1);
+    for (const c of log) {
+      expect(c.pwEnv).toBeUndefined();
+      expect(c.argv[0]).toBe('-q');
+      expect(c.url).toContain('distributed_ddl_output_mode=throw');
+      expect(existsSync(c.authFile)).toBe(false);
+    }
+  });
+});
+
 describe('uninstall.sh arguments', () => {
   it.each([
     [[], '--ch-host is required'],
@@ -104,6 +140,7 @@ describe('uninstall.sh arguments', () => {
     [['--ch-host'], 'missing value for --ch-host'],
     [['--ch-host', 'x', '--transport', 'ftp'], '--transport must be'],
     [['--ch-host', 'x', '--ddl-timeout', 'z'], '--ddl-timeout must be'],
+    [['--ch-host', 'x', '--ddl-timeout', '0'], '--ddl-timeout must be an integer >= 1'],
     [['--ch-host', 'x', '--http-port', 'z'], '--http-port must be'],
   ])('rejects %j', (args, msg) => {
     const { r, log } = h.run('uninstall.sh', args);

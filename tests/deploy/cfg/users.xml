@@ -27,4 +27,14 @@
       <query>GRANT CREATE TABLE, DROP TABLE ON default.*</query>
       <query>GRANT SELECT ON system.clusters</query>
     </grants></deploy_noremote>
+  <!-- verify-only: the tested sufficient set. CREATE TEMPORARY TABLE is needed by the
+       clusterAllReplicas(view(...)) verification query (found by this suite). Negative-tested
+       only for a full install (refused); minimality of the rest is not proven. -->
+  <deploy_verify><password>deploypw</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota>
+    <grants>
+      <query>GRANT FILE ON *.*</query>
+      <query>GRANT REMOTE ON *.*</query>
+      <query>GRANT CREATE TEMPORARY TABLE ON *.*</query>
+      <query>GRANT SELECT ON system.clusters</query>
+    </grants></deploy_verify>
 </users></clickhouse>

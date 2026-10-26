@@ -10,11 +10,13 @@
 # every scenario asserts the installer exit code and the byte-exact sha256 of
 # /sql and /sql/config.json fetched over HTTP from EVERY node.
 #
-#   CH_IMAGE=clickhouse/clickhouse-server:26.3 tests/deploy/run.sh
+#   CH_IMAGE=clickhouse/clickhouse-server:26.3.18.32 tests/deploy/run.sh
 #   (npm run test:deploy)
 #
 # Env: CH_IMAGE (server+client image), KEEPER_IMAGE, DOCKER_NETWORK (reuse an
-# existing network; else a private one is created and removed), KEEP=1 (leave
+# existing network, which MUST be user-defined: the default `bridge` network has
+# no container-name DNS, so the nodes could not find each other; else a private
+# user-defined one is created and removed), KEEP=1 (leave
 # containers running for debugging), ASB_TEST_ARTIFACT (artifact to install;
 # default dist/sql.html if built, else a synthetic 1 MB binary-hostile file).
 # Needs: docker, bash, base64, sha256sum|shasum. Network (apt) for curl in the client.
@@ -23,8 +25,9 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CH_IMAGE="${CH_IMAGE:-clickhouse/clickhouse-server:26.3}"
-KEEPER_IMAGE="${KEEPER_IMAGE:-clickhouse/clickhouse-keeper:25.8}"
+# Exact patch tags: a moving tag (26.3, 25.8) must not turn this red unrelated to a diff.
+CH_IMAGE="${CH_IMAGE:-clickhouse/clickhouse-server:26.3.18.32}"
+KEEPER_IMAGE="${KEEPER_IMAGE:-clickhouse/clickhouse-keeper:25.8.33.6}"
 PFX="asbd$$"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/asb-deploy-test.XXXXXX")"
 LOGS="$WORK/logs"; mkdir -p "$LOGS"
@@ -37,8 +40,15 @@ ISSUER="http://idp.invalid" CLIENT_ID="asb-test"
 CFG_EXPECT="{\"issuer\":\"${ISSUER}\",\"client_id\":\"${CLIENT_ID}\"}"
 
 cleanup() {
-  local rc=$?
+  local rc=$? c
   trap - EXIT
+  if (( rc != 0 )); then
+    # Also on early failures (before any scenario ran): keep every container's log.
+    for c in $(docker ps -aq --filter "label=asbd=$PFX" 2>/dev/null); do
+      docker logs "$c" > "$LOGS/container-$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | tr -d /).log" 2>&1 || true
+    done
+    mkdir -p "$ROOT/dist/deploy-test-logs" && cp -R "$LOGS/." "$ROOT/dist/deploy-test-logs/" 2>/dev/null && echo "logs (installer + container) copied to dist/deploy-test-logs" >&2
+  fi
   if [[ "${KEEP:-0}" == 1 ]]; then
     echo "KEEP=1: containers labelled asbd=$PFX left running (network $NET, work dir $WORK)"
   else
@@ -99,16 +109,17 @@ for i in "${NODES[@]}"; do
 done
 "${RUN[@]}" --name "$CLI" --entrypoint sleep "$CH_IMAGE" infinity >/dev/null || exit 1
 
-wait_node() {  # wait_node <container> [password]
-  local c="$1" pw="${2:-defpw}"
+wait_node() {  # wait_node <container> [--nopw]   (cluster nodes use the default user's password)
+  local c="$1" auth=(--password defpw)
+  [[ "${2:-}" != --nopw ]] || auth=()
   for _ in $(seq 120); do
-    docker exec "$c" clickhouse-client --password "$pw" -q 'select 1' >/dev/null 2>&1 && return 0
+    docker exec "$c" clickhouse-client "${auth[@]}" -q 'select 1' >/dev/null 2>&1 && return 0
     sleep 1
   done
   echo "node $c did not become ready" >&2; docker logs --tail 30 "$c" >&2; return 1
 }
 for i in "${NODES[@]}"; do wait_node "$PFX-n$i" || exit 1; done
-docker exec "$WEB" clickhouse-client -q 'select 1' >/dev/null 2>&1 || for _ in $(seq 60); do docker exec "$WEB" clickhouse-client -q 'select 1' >/dev/null 2>&1 && break; sleep 1; done
+wait_node "$WEB" --nopw || exit 1
 echo "cluster up: $(docker exec "$PFX-n1" clickhouse-client --password defpw -q "select version(), count() from system.clusters where cluster='c'" | tr '\t' ' ')"
 
 # client: curl for the http transport / file fetches (apt is reachable in CI and locally)
@@ -156,9 +167,38 @@ rc_zero() { [[ "$INSTALL_RC" == 0 ]]; }
 rc_nonzero() { [[ "$INSTALL_RC" != 0 ]]; }
 log_has() { rg -q -- "$2" "$LOGS/$1.log" 2>/dev/null || grep -Eq -- "$2" "$LOGS/$1.log"; }
 node_exec() { docker exec "$PFX-n$1" bash -c "$2"; }
-no_nonempty_stage() {
-  local i
-  for i in "${NODES[@]}"; do [[ -z "$(node_exec "$i" "find $UF -name '_asb_stage_*' -size +0")" ]] || return 1; done
+# Stage files: every one on every node is 0 bytes; and (positive control) at least $1 exist at all,
+# so an empty `find` result cannot be mistaken for "the check looked in the wrong place".
+stage_files_empty() {
+  local want="${1:-1}" i total=0 n
+  for i in "${NODES[@]}"; do
+    [[ -z "$(node_exec "$i" "find $UF -name '_asb_stage_*' -size +0")" ]] || { echo "      n$i has a non-empty stage file"; return 1; }
+    n="$(node_exec "$i" "find $UF -name '_asb_stage_*' -size 0 | wc -l" | tr -d ' ')"; total=$((total + n))
+  done
+  (( total >= want )) || { echo "      found only $total 0-byte stage file(s), expected >= $want (positive control)"; return 1; }
+}
+# No _asb_* table on ANY of the 4 nodes. Positive control first: a table created ON CLUSTER must be
+# seen on all 4, otherwise "0 found" proves nothing.
+CH1=(docker exec "$PFX-n1" clickhouse-client --password defpw -q)
+asb_tables() { "${CH1[@]}" "SELECT countIf(name LIKE '\\_asb\\_%'), uniqExact(hostName()) FROM clusterAllReplicas('c', system.tables)"; }
+temp_tables_gone() {
+  "${CH1[@]}" "CREATE TABLE default._asb_ctl ON CLUSTER c (x UInt8) ENGINE=Memory" >/dev/null || { echo "      control create failed"; return 1; }
+  local seen gone
+  seen="$(asb_tables)"
+  "${CH1[@]}" "DROP TABLE default._asb_ctl ON CLUSTER c SYNC" >/dev/null
+  [[ "$seen" == "$(printf '4\t4')" ]] || { echo "      positive control failed: saw '$seen', expected 4 tables on 4 hosts"; return 1; }
+  gone="$(asb_tables)"
+  [[ "$gone" == "$(printf '0\t4')" ]] || { echo "      leftover _asb_ tables: '$gone' (count, hosts)"; return 1; }
+}
+# stage + next files of the whole cluster are listed in one place for debugging
+wait_ddl_queue_settled() {  # wait until no DDL queue entry for cluster c is unfinished
+  local n
+  for _ in $(seq 90); do
+    n="$("${CH1[@]}" "SELECT count() FROM system.distributed_ddl_queue WHERE cluster = 'c' AND status != 'Finished'" 2>/dev/null || echo x)"
+    [[ "$n" == 0 ]] && return 0
+    sleep 1
+  done
+  echo "      DDL queue not settled after 90s (unfinished entries: $n)"; return 1
 }
 put_web() { docker exec -i "$WEB" bash -c "cat > $UF/sql.html; chown clickhouse:clickhouse $UF/sql.html" < "$1"; }
 
@@ -170,8 +210,8 @@ scenario "(a) native + stage: fresh install"
 run_install a "${CLUSTER_ARGS[@]}" /work/A.html
 t "installer exit 0" rc_zero
 t "every node serves A and the config byte-exact" all_serve "$SHA_A" "$SHA_CFG"
-t "stage file emptied on every node" no_nonempty_stage
-t "no live-file leftovers: temp tables dropped" bash -c "[ -z \"\$(docker exec $PFX-n1 clickhouse-client --password defpw -q \"select name from system.tables where name like '\\_asb\\_%'\")\" ]"
+t "stage file exists (connected node) and is 0 bytes; no non-empty stage anywhere" stage_files_empty 1
+t "temp tables dropped on all 4 nodes (with positive control)" temp_tables_gone
 if rc_zero; then LIVE_HTML="$SHA_A"; else show_log a; fi
 end_scenario
 
@@ -222,10 +262,11 @@ run_install g2 "${CLUSTER_ARGS[@]}" /work/A.html
 t "re-install repairs it" all_serve "$SHA_A" "$SHA_CFG"
 end_scenario
 
-scenario "(f) one node stopped: installer fails, live files on the others unchanged; restart + re-install succeeds"
+scenario "(f) preflight rejects a dead node (node stopped before the run)"
 docker stop "$PFX-n4" >/dev/null
 run_install f "${CLUSTER_ARGS[@]}" /work/B.html --ddl-timeout 20
 t "installer exit non-zero" rc_nonzero
+t "failed in the preflight, before any write" log_has f "(preflight|only 3 of 4|Cannot reach|unreachable|ALL_CONNECTION_TRIES_FAILED)"
 t "live files unchanged on the surviving nodes (still A)" all_serve "$SHA_A" "$SHA_CFG" 1 2 3
 docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
 t "restarted node still serves the previous good version" all_serve "$SHA_A" "$SHA_CFG" 4
@@ -236,10 +277,55 @@ rc_nonzero && show_log f 8
 end_scenario
 LIVE_HTML="$SHA_B"
 
+# A node that dies AFTER the preflight, while the installer is running: poll until the stage file
+# exists on the connected node (the upload is done, so the run is demonstrably mid-flight, with ~15
+# more round trips still to go), then kill n4 immediately.
+scenario "(m) node killed mid-run (after the stage upload): installer fails, live files keep the previous version"
+(
+  docker exec -e CLICKHOUSE_PASSWORD=deploypw "$CLI" bash /work/deploy/install.sh \
+    --ch-host "$PFX-n1" --client-id "$CLIENT_ID" --issuer "$ISSUER" "${CLUSTER_ARGS[@]}" /work/C.html --ddl-timeout 20 > "$LOGS/m.log" 2>&1
+  echo $? > "$WORK/m.rc"
+) &
+BG=$!
+STAGE_SEEN=0
+for _ in $(seq 400); do
+  if [[ -n "$(node_exec 1 "find $UF -name '_asb_stage_*' -size +0" 2>/dev/null)" ]]; then STAGE_SEEN=1; break; fi
+  [[ -f "$WORK/m.rc" ]] && break
+  sleep 0.05
+done
+docker stop -t 0 "$PFX-n4" >/dev/null
+wait "$BG"; INSTALL_RC="$(cat "$WORK/m.rc")"
+t "the stage file was observed mid-run (the kill really landed mid-flight)" test "$STAGE_SEEN" = 1
+t "installer exit non-zero" rc_nonzero
+t "live files unchanged on the surviving nodes (still B)" all_serve "$SHA_B" "$SHA_CFG" 1 2 3
+docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
+t "queued DDL replay settles" wait_ddl_queue_settled
+t "after the replay the restarted node still serves B (a replay never promotes a half-staged file)" all_serve "$SHA_B" "$SHA_CFG" 4
+run_install m2 "${CLUSTER_ARGS[@]}" /work/A.html
+t "re-install exit 0" rc_zero
+t "every node serves A" all_serve "$SHA_A" "$SHA_CFG"
+t "temp tables gone on all 4 nodes" temp_tables_gone
+t "no non-empty stage file anywhere" stage_files_empty 2
+rc_zero || show_log m2
+rc_nonzero && show_log m 12
+end_scenario
+LIVE_HTML="$SHA_A"
+
+scenario "(l) --verify-only as the minimal deploy_verify user (FILE, REMOTE, CREATE TEMPORARY TABLE, SELECT ON system.clusters)"
+run_install l --cluster c --ch-user deploy_verify --artifact /work/A.html --verify-only
+t "verify-only exit 0 on a healthy cluster" rc_zero
+run_install l2 --cluster c --ch-user deploy_verify --artifact /work/B.html --verify-only
+t "verify-only exit non-zero when the artifact differs" rc_nonzero
+run_install l3 --cluster c --ch-user deploy_verify --artifact /work/B.html
+t "a full install as deploy_verify is refused (no CREATE/CLUSTER grants)" rc_nonzero
+t "refusal names the privilege problem" log_has l3 "(ACCESS_DENIED|Not enough privileges|missing grants)"
+t "live untouched" all_serve "$SHA_A" "$SHA_CFG"
+end_scenario
+
 scenario "(j) phase-1 failure (unreachable pull URL): live files untouched"
 run_install j --cluster c --ch-user deploy_url --artifact /work/C.html --pull-url "http://$WEB:8123/rel2/nope.html"
 t "installer exit non-zero" rc_nonzero
-t "every node still serves B" all_serve "$LIVE_HTML" "$SHA_CFG"
+t "every node still serves the previous version" all_serve "$LIVE_HTML" "$SHA_CFG"
 end_scenario
 
 scenario "(i) missing grants: clear failure, live untouched"
@@ -258,7 +344,7 @@ scenario "(k) single node (no --cluster): only the connected node changes"
 run_install k --ch-user deploy --artifact /work/C.html
 t "installer exit 0" rc_zero
 t "connected node serves C" all_serve "$SHA_C" "$SHA_CFG" 1
-t "other nodes still serve B" all_serve "$SHA_B" "$SHA_CFG" 2 3 4
+t "other nodes still serve the previous version (A)" all_serve "$SHA_A" "$SHA_CFG" 2 3 4
 rc_zero || show_log k
 end_scenario
 
@@ -275,5 +361,5 @@ echo
 echo "==================== deploy integration summary (${CH_IMAGE}) ===================="
 FAILED=0
 for r in "${RESULTS[@]}"; do echo "$r"; [[ "$r" == FAIL* ]] && FAILED=1; done
-if (( FAILED )); then echo "RESULT: FAILED (logs: $LOGS; re-run with KEEP=1 to inspect)"; [[ "${KEEP:-0}" == 1 ]] || { mkdir -p "$ROOT/dist/deploy-test-logs" && cp -R "$LOGS/." "$ROOT/dist/deploy-test-logs/"; echo "logs copied to dist/deploy-test-logs"; }; exit 1; fi
+if (( FAILED )); then echo "RESULT: FAILED (logs: $LOGS; re-run with KEEP=1 to inspect)"; exit 1; fi  # the EXIT trap copies the logs out
 echo "RESULT: ALL PASSED"
