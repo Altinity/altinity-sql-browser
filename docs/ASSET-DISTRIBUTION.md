@@ -169,10 +169,12 @@ is never the target of anything that can fail on a remote source:
    `sql.html` / `sql-config.json` (a local read, so it cannot fail for network or auth reasons).
 6. **Verify live:** per-node table; success only when every node matches.
 7. **Always (trap):** the stage file is truncated and the temp tables dropped. Cleanup is **bounded**: its DDL timeout
-   is capped at `min(--ddl-timeout, 30)` s and every client call also carries a client-side timeout
-   (`curl --max-time` / `clickhouse-client --receive_timeout --send_timeout` of that value + 10 s,
-   10 s connect timeout), so even with INT/TERM ignored while it runs, a dead node cannot hold it for
-   more than that per statement (5 statements at most). The credential header file is removed even if the cleanup SQL
+   is capped at `min(--ddl-timeout, 30)` s and every client call also carries a client-side bound of that
+   value + 10 s (10 s connect timeout). With `--transport http` (`curl --max-time`) that is a **total** bound. With the
+   native transport the call is wrapped in `timeout` (coreutils) and the bound is total when that command exists;
+   otherwise (e.g. stock macOS) only `clickhouse-client`'s `--send_timeout`/`--receive_timeout` apply, which are
+   **idle** timeouts, so a node that keeps trickling bytes could exceed it. Either way, with INT/TERM ignored while it
+   runs, a dead node cannot hold cleanup for more than that per statement (5 statements at most). The credential header file is removed even if the cleanup SQL
    fails; live files are never touched by cleanup.
 
 `_asb_next_*` is **intentionally kept as a full copy** next to the live files
@@ -235,12 +237,12 @@ count, each with the expected `len`/`sha`.
 Every step is idempotent: on any failure fix the cause and re-run the same command. If the
 installer was killed, its trap may not have run: re-running pre-cleans the temp tables, but
 a stale `_asb_stage_<token>.html` on the connected node (a plain copy of the SPA, never
-served) stays. A killed installer (`kill -9`, power loss) can leave exactly one such full-size file on
+served) stays. A killed installer (`kill -9`, power loss) can leave one such full-size file per killed run on
 the node it was connected to; SQL cannot glob-delete it, and the next run reuses nothing from it (it
 uploads a new stage under a new token). To find it and empty it by hand, on that node:
 
 ```sql
-SELECT DISTINCT _file, _size FROM file('_asb_stage_*', 'RawBLOB');   -- lists every stage file, 0-byte ones too
+SELECT DISTINCT _file, _size FROM file('_asb_stage_*', 'One');   -- lists every stage file with its size, 0-byte ones too; does not read contents
 INSERT INTO FUNCTION file('_asb_stage_<token>.html', 'RawBLOB')
   SETTINGS engine_file_truncate_on_insert = 1 SELECT '';
 ```

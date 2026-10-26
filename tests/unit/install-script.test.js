@@ -4,7 +4,7 @@
 // deploy-sim.cjs) to log every statement, scripted failures, and per-node
 // verification rows. Nothing builds and nothing leaves the box.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, symlinkSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ARTIFACT_BYTES, makeHarness, sha256 } from '../helpers/deploy-harness.js';
@@ -294,6 +294,21 @@ describe('inputs', () => {
       expect(x.r.status).toBe(1); expect(x.r.stderr).toContain('invalid ASB_TEST_BARRIER_POINT');
       x = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_TIMEOUT: 'x' }, ...cfg2 });
       expect(x.r.status).toBe(1); expect(x.r.stderr).toContain('invalid ASB_TEST_BARRIER_TIMEOUT');
+    });
+    it.each(['x', '0', '09', '10000', '-1'])('rejects the invalid timeout %j', (t) => {
+      const b = join(bdir, 'tmo');
+      const x = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_TIMEOUT: t }, ...cfg2 });
+      expect(x.r.status).toBe(1); expect(x.r.stderr).toContain('invalid ASB_TEST_BARRIER_TIMEOUT');
+    });
+    it('prints a loud stderr WARNING when active and keeps the hook out of child environments', () => {
+      const b = join(bdir, 'warn');
+      writeFileSync(`${b}.go`, '');
+      const x = h.install(cl, { env: { ...TOKEN, ASB_TEST_BARRIER: b, ASB_TEST_BARRIER_POINT: 'pre_promote', ASB_TEST_BARRIER_TIMEOUT: '5' }, ...cfg2 });
+      expect(x.r.status, x.r.stderr).toBe(0);
+      expect(x.r.stderr).toContain('WARNING: test hook ASB_TEST_BARRIER active');
+      expect(h.built()).not.toBe('');
+      expect(h.builtEnv()).not.toMatch(/ASB_TEST_BARRIER/);
+      expect(h.run('install.sh', ['--client-id', 'cid', '--ch-host', 'x', ...cl], { env: TOKEN, cfg: { nodes: 2 } }).r.stderr).not.toContain('WARNING');
     });
     it.each(['pre_fanout', 'pre_promote'])('%s: marks .reached and proceeds once .go exists', (point) => {
       const b = join(bdir, point);
@@ -725,6 +740,41 @@ describe('cleanup is robust', () => {
       expect(l.argv).toContain('--send_timeout=40');
       expect(l.argv).toContain('--receive_timeout=40');
     }
+  });
+  describe('native cleanup is wrapped in coreutils timeout when available', () => {
+    const run = (path) => h.install(['--cluster', 'c1', '--ddl-timeout', '100'], { env: { ...TOKEN, PATH: path }, cfg: { nodes: 2, rules: [failPhase1] } });
+    it('wraps cleanup calls (ddl 30 + slack 10 = 40 s) but not main calls', () => {
+      const tlog = join(h.work, 'timeout.log');
+      rmSync(tlog, { force: true });
+      const shim = join(h.work, 'tbin'); mkdirSync(shim, { recursive: true });
+      writeFileSync(join(shim, 'timeout'), `#!/bin/sh\necho "$1 $2" >> "${tlog}"\nshift\nexec "$@"\n`);
+      chmodSync(join(shim, 'timeout'), 0o755);
+      const { log } = run(`${shim}:${join(h.work, 'bin')}:${process.env.PATH}`);
+      const calls = readFileSync(tlog, 'utf8').trim().split('\n');
+      const fail = log.findIndex((l) => l.rc !== 0);
+      expect(calls.length).toBe(log.length - fail - 1);
+      expect(calls.length).toBeGreaterThanOrEqual(5);
+      expect(new Set(calls.map((c) => c.split(' ')[0]))).toEqual(new Set(['40']));
+      expect(calls.every((c) => c.split(' ')[1] === 'clickhouse-client' || c.endsWith('clickhouse-client'))).toBe(true);
+    });
+    it('falls back to the idle client timeouts alone when timeout is not installed', () => {
+      // a PATH holding every system tool except timeout/gtimeout
+      const only = join(h.work, 'nobin'); mkdirSync(only, { recursive: true });
+      for (const d of (process.env.PATH ?? '').split(':')) {
+        if (!d || !existsSync(d)) continue;
+        for (const f of readdirSync(d)) {
+          if (f === 'timeout' || f === 'gtimeout' || existsSync(join(only, f))) continue;
+          try { symlinkSync(join(d, f), join(only, f)); } catch { /* ignore */ }
+        }
+      }
+      const { r, log } = run(`${join(h.work, 'bin')}:${only}`);
+      expect(r.status).toBe(1);
+      const fail = log.findIndex((l) => l.rc !== 0);
+      const clean = log.slice(fail + 1);
+      expect(clean.length).toBeGreaterThanOrEqual(5);
+      for (const l of clean) expect(l.argv).toContain('--receive_timeout=40');
+      expect(r.stderr).not.toMatch(/timeout: /);
+    });
   });
   it('a SIGINT that lands while a cleanup statement is running is ignored: cleanup completes and the temp dir is removed', async () => {
     const tmpRoot = mkdtempSync(join(tmpdir(), 'asb-sigint-'));

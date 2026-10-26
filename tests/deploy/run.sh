@@ -316,11 +316,30 @@ barrier_run() {
   wait "$bg"; INSTALL_RC="$(cat "$WORK/$log.rc")"
 }
 barrier_seen() { [[ "$BARRIER_SEEN" == 1 ]]; }
+# Failure REASON, not just a non-zero rc (an unrelated early error would also be non-zero).
+m_fails_in_fanout_for_the_dead_node() {
+  log_has m 'ERROR: fan out sql\.html to every node failed' || { echo "      no 'fan out ... failed' ERROR in the log"; return 1; }
+  log_has m 'did not answer the ON CLUSTER DDL|TIMEOUT_EXCEEDED|Code: 159|Code: 209|Code: 210|NETWORK_ERROR|Connection refused|Could not resolve|node unreachable' \
+    || { echo "      the log names no dead-node/timeout/connection reason"; return 1; }
+  ! log_has m '==> Phase 2' || { echo "      the installer reached phase 2"; return 1; }
+}
+m3_fails_in_promote_after_phase1_passed() {
+  log_has m3 '==> Verifying phase 1 \(next files\)' || { echo "      phase-1 verification never ran"; return 1; }
+  ! log_has m3 'phase 1 verification failed|\[phase 1' || { echo "      phase-1 verification failed"; return 1; }
+  log_has m3 '==> Phase 2: promote' || { echo "      phase 2 never started"; return 1; }
+  log_has m3 'ERROR: promote sql(\.html|-config\.json) failed' || { echo "      the failure is not in the promote phase"; return 1; }
+}
+# how many survivors (n1-n3) were promoted (serve B, the new file) before the promote DDL gave up
+count_promoted() {
+  local i n=0; for i in "$@"; do [[ "$(http_sha "$i" /sql)" == "$SHA_B" ]] && n=$((n + 1)); done
+  echo "      promoted survivors: $n of $#"
+}
 
 scenario "(m) node killed at the barrier BEFORE the phase-1 fan-out: installer fails; survivors still serve B exactly; re-install converges on C"
 barrier_run m pre_fanout /work/C.html
 t "the barrier was reached while the installer was alive (the kill really landed mid-run)" barrier_seen
 t "installer exit non-zero" rc_nonzero
+t "failure reason: the fan-out failed on the dead node (timeout/connection), phase 2 never ran" m_fails_in_fanout_for_the_dead_node
 t "no live file was touched: every survivor serves exactly B" all_serve "$SHA_B" "$SHA_CFG" 1 2 3
 docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
 t "queued DDL replay settles" wait_ddl_queue_settled
@@ -341,6 +360,8 @@ scenario "(m3) node killed at the barrier AFTER phase-1 verify, BEFORE the promo
 barrier_run m3 pre_promote /work/B.html
 t "the barrier was reached while the installer was alive" barrier_seen
 t "installer exit non-zero" rc_nonzero
+t "failure reason: phase 1 verified, then the promote failed" m3_fails_in_promote_after_phase1_passed
+count_promoted 1 2 3
 t "each surviving node serves byte-exactly C (previous) or B (new)" serves_b_or_c 1 2 3
 docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
 t "queued DDL replay settles" wait_ddl_queue_settled

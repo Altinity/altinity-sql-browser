@@ -130,9 +130,11 @@ BARRIER="${ASB_TEST_BARRIER:-}" BARRIER_POINT="${ASB_TEST_BARRIER_POINT:-pre_fan
 BARRIER_TIMEOUT="${ASB_TEST_BARRIER_TIMEOUT:-120}"
 if [[ -n "$BARRIER" ]]; then
   [[ "$BARRIER" =~ ^/[A-Za-z0-9_./-]+$ && "$BARRIER" != *..* ]] || fail "invalid ASB_TEST_BARRIER '$BARRIER' (absolute path; allowed: A-Z a-z 0-9 _ . / -)"
+  echo "WARNING: test hook ASB_TEST_BARRIER active (${BARRIER}, point ${BARRIER_POINT}); never set this in production" >&2
   [[ "$BARRIER_POINT" == pre_fanout || "$BARRIER_POINT" == pre_promote ]] || fail "invalid ASB_TEST_BARRIER_POINT '$BARRIER_POINT' (pre_fanout|pre_promote)"
-  [[ "$BARRIER_TIMEOUT" =~ ^[0-9]{1,4}$ ]] || fail "invalid ASB_TEST_BARRIER_TIMEOUT '$BARRIER_TIMEOUT'"
+  [[ "$BARRIER_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] || fail "invalid ASB_TEST_BARRIER_TIMEOUT '$BARRIER_TIMEOUT'"
 fi
+unset ASB_TEST_BARRIER ASB_TEST_BARRIER_POINT ASB_TEST_BARRIER_TIMEOUT   # never inherited by child processes
 barrier() {
   [[ -n "$BARRIER" && "$BARRIER_POINT" == "$1" ]] || return 0
   : > "${BARRIER}.reached"

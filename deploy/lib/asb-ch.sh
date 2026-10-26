@@ -100,8 +100,11 @@ ch_query() {
 }
 
 ch_query_native() {
-  local sql="$1" in="${2:-/dev/null}"
-  if ! CLICKHOUSE_PASSWORD="$CH_PASSWORD" "${CH[@]}" --query "$sql" < "$in" 2>"$TMP/err"; then
+  local sql="$1" in="${2:-/dev/null}" wrap=()
+  # Cleanup only: clickhouse-client's send/receive timeouts are IDLE timeouts, not a total bound, so
+  # wrap the call in coreutils `timeout` when it exists (absent on stock macOS: idle timeouts only).
+  if (( CLIENT_SLACK < 100 )) && command -v timeout >/dev/null 2>&1; then wrap=(timeout "$((DDL_TIMEOUT + CLIENT_SLACK))"); fi
+  if ! CLICKHOUSE_PASSWORD="$CH_PASSWORD" "${wrap[@]}" "${CH[@]}" --query "$sql" < "$in" 2>"$TMP/err"; then
     explain_failure "$TMP/err"; return 1
   fi
 }
