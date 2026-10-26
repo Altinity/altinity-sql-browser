@@ -126,20 +126,30 @@ has no flag for this path.
 
 ## Multi-node clusters (interim, manual)
 
-Until the installer is fixed (#692), pull the file onto every node with
+Until the installer is fixed (#692), pull each file onto every node with
 `ON CLUSTER` DDL. Each node fetches the URL itself and writes its own
-`user_files/sql.html`:
+`user_files/` file. Run the sequence below **for both files** (`sql.html` and
+`sql-config.json`); every step is idempotent, so on any failure you simply
+start again from step 1.
+
+**1. Pre-clean** (removes leftovers from an earlier partial run; `IF EXISTS`
+because the table may exist on only some hosts):
+
+```sql
+DROP TABLE IF EXISTS default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_pull_sql_config_json ON CLUSTER '<cluster>' SYNC;
+```
+
+**2. Create** (each node writes its file as a side effect of the `CREATE`):
 
 ```sql
 CREATE TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>'
   ENGINE = File('RawBLOB', 'sql.html')
   AS SELECT * FROM url('<url-serving-sql.html>', 'RawBLOB')
   SETTINGS engine_file_truncate_on_insert = 1;
-
-DROP TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
 ```
 
-Repeat for the config, with the JSON as a SQL string literal (this is what
+For the config, use the JSON as a SQL string literal (this is what
 `install.sh` renders into `sql-config.json`; adapt issuer/client id/audience):
 
 ```sql
@@ -147,32 +157,57 @@ CREATE TABLE default._asb_pull_sql_config_json ON CLUSTER '<cluster>'
   ENGINE = File('RawBLOB', 'sql-config.json')
   AS SELECT '{"issuer":"https://accounts.google.com","client_id":"<client-id>"}' AS c
   SETTINGS engine_file_truncate_on_insert = 1;
-
-DROP TABLE default._asb_pull_sql_config_json ON CLUSTER '<cluster>' SYNC;
 ```
 
 The JSON must be escaped for a SQL string literal: `'` becomes `\'` and `\`
 becomes `\\`. A normal config contains neither, so it can be pasted as is. The
 file is written without a trailing newline (harmless to the JSON parser).
 
-The file survives the `DROP`. **Keep `engine_file_truncate_on_insert = 1`:**
-without it a re-run appends and doubles the file.
+**3. Drop the helper tables** (the files survive the `DROP`):
+
+```sql
+DROP TABLE IF EXISTS default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_pull_sql_config_json ON CLUSTER '<cluster>' SYNC;
+```
+
+**4. Verify on every node.** Compute the expected values locally from the
+artifact you intended to deploy (`sha256sum sql.html`, or
+`shasum -a 256 sql.html` on macOS; `wc -c < sql.html` for the length; likewise
+for the config file, which is the exact JSON without a trailing newline). Then:
+
+```sql
+SELECT hostName(), length(c), lower(hex(SHA256(c))) AS sha256
+FROM clusterAllReplicas('<cluster>', file('sql.html', 'RawBLOB', 'c String'));
+
+SELECT count() FROM system.clusters WHERE cluster = '<cluster>';
+```
+
+(Repeat the first query with `sql-config.json`.) The deployment is successful
+**only when** the first query returns exactly as many rows as the second
+query's node count, and every row shows the expected length and hash, for both
+files. A file missing on any node makes the verify query fail outright
+(`FILE_DOESNT_EXIST`), which also counts as a failure.
+
+**On any failure** (an `ON CLUSTER` statement errors, some nodes cannot reach
+the URL, or step 4 does not match): run step 1 again and retry from the start.
+A failed `CREATE ... ON CLUSTER` can leave `_asb_pull_*` tables on the hosts
+where it succeeded; a retry without the pre-clean would hit
+`TABLE_ALREADY_EXISTS`, and a plain `DROP ... ON CLUSTER` (without `IF EXISTS`)
+fails with `UNKNOWN_TABLE` on hosts where the table was never created. The
+`IF EXISTS` pre-clean avoids both. *The `IF EXISTS` recovery sequence follows
+from the ClickHouse behavior observed in testing, but the full
+partial-failure-then-retry flow was not separately tested.*
+
+**Keep `engine_file_truncate_on_insert = 1`:** without it a re-run appends and
+doubles the file.
 
 - **Grants** (minimal): `CLUSTER ON *.*`, `CREATE TABLE, DROP TABLE ON default.*`,
-  `FILE ON *.*`, `URL ON *.*`.
+  `FILE ON *.*`, `URL ON *.*`; verification also needs READ ON FILE and REMOTE.
 - **Egress:** every node must reach the URL (e.g. the release asset
   `https://github.com/Altinity/altinity-sql-browser/releases/download/<tag>/sql.html`,
   or an internal mirror), and the host must be allowed by
   `remote_url_allow_hosts` if configured. GitHub release downloads redirect, so
   `url()` must follow redirects, or use a mirror that serves the bytes directly.
-- **Verify** (also needs READ ON FILE and REMOTE grants); expect one row per node
-  with identical length and hash — a missing file on any node fails the query
-  with `FILE_DOESNT_EXIST`:
-
-  ```sql
-  SELECT hostName(), length(c), hex(SHA256(c))
-  FROM clusterAllReplicas('<cluster>', file('sql.html', 'RawBLOB', 'c String'))
-  ```
 
 **Tested** on ClickHouse 25.8 OSS, 26.3 OSS and Antalya 25.8.33, on all four
 nodes of a 2-shard x 2-replica cluster: byte-exact, idempotent with the

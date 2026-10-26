@@ -62,11 +62,28 @@ CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER")
 
 # user_files is node-local. NOTE: --cluster is currently broken (#692): the
 # clusterAllReplicas INSERT below fails on any cluster with more than one
-# replica (STORAGE_REQUIRES_PARAMETER). Fail fast, before building, when the
-# cluster has more than one replica in total; a 1-node cluster may proceed.
+# replica (STORAGE_REQUIRES_PARAMETER). The guard fails CLOSED, before building:
+# proceed only when the count query succeeds and prints exactly 1.
 if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
-  NODES=$("${CH[@]}" --query "SELECT count() FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>/dev/null || true)
-  if [[ "$NODES" =~ ^[0-9]+$ ]] && (( NODES > 1 )); then
+  GUARD_ERR_FILE="$(mktemp)"
+  if ! NODES=$("${CH[@]}" --query "SELECT count() FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>"$GUARD_ERR_FILE"); then
+    GUARD_ERR="$(head -n 1 "$GUARD_ERR_FILE")"
+    rm -f "$GUARD_ERR_FILE"
+    echo "ERROR: could not query system.clusters on ${CH_HOST} to check cluster" >&2
+    echo "'${CLUSTER}': ${GUARD_ERR:-no error output}" >&2
+    exit 2
+  fi
+  rm -f "$GUARD_ERR_FILE"
+  NODES="${NODES//[[:space:]]/}"
+  if [[ ! "$NODES" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: unexpected system.clusters output for cluster '${CLUSTER}':" >&2
+    echo "'${NODES}' (expected a node count). Refusing to continue." >&2
+    exit 2
+  elif (( NODES == 0 )); then
+    echo "ERROR: cluster '${CLUSTER}' was not found in system.clusters on ${CH_HOST}" >&2
+    echo "(0 replicas). Check the cluster name and the node you connected to." >&2
+    exit 2
+  elif (( NODES > 1 )); then
     echo "ERROR: cluster '${CLUSTER}' has ${NODES} replicas. --cluster is currently" >&2
     echo "broken on multi-node clusters (#692); user_files is node-local. Use the" >&2
     echo "manual procedure: 'Multi-node clusters (interim, manual)' in" >&2

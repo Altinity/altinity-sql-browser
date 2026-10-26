@@ -28,12 +28,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   multi-replica cluster (`INSERT INTO FUNCTION clusterAllReplicas` ->
   `STORAGE_REQUIRES_PARAMETER`) and, since the script exits (`set -e`) before its
   `DROP`, may leave a temp `_asb_*` table behind (cleanup `DROP ... ON CLUSTER`
-  statements are documented). `install.sh --cluster` now fails fast (exit 2,
-  before building) when `system.clusters` lists more than one replica for the
-  cluster, pointing at the manual procedure; a one-node cluster still proceeds. Added a
-  tested interim manual `ON CLUSTER ... ENGINE = File ... AS SELECT FROM url()`
-  procedure (including the `sql-config.json` literal, tested on single-node 26.3
-  only) to `docs/ASSET-DISTRIBUTION.md`; the installer fix is tracked in #692.
+  statements are documented). `install.sh --cluster` now fails closed (exit 2,
+  before building) unless the `system.clusters` count query succeeds and returns
+  exactly 1: query failure, an unknown cluster (0), malformed output and more
+  than one replica each get a distinct message (the last points at the manual
+  procedure). Added a tested interim manual `ON CLUSTER ... ENGINE = File ... AS
+  SELECT FROM url()` procedure (including the `sql-config.json` literal, tested on single-node 26.3
+  only) to `docs/ASSET-DISTRIBUTION.md`, structured as an idempotent
+  pre-clean/create/drop/verify sequence for retrying after a partial failure
+  (the retry flow itself is untested); the installer fix is tracked in #692.
 
 ### Added
 - **#592: lock in the #586/#587 shell primitive guardrails mechanically.**
