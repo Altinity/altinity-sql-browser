@@ -1,7 +1,9 @@
 # Serving the assets across a ClickHouse® cluster
 
-The Altinity® SQL Browser is served *from ClickHouse itself* — there is no
-separate web server. That makes "how do the asset bytes reach every node?" a
+In ClickHouse-native hosting, the Altinity® SQL Browser is served *from
+ClickHouse itself* — there is no separate web server. (The containerized Caddy
+runtime in [DEVELOPMENT.md](DEVELOPMENT.md) is the alternative that does use
+one; this document is about the native mode.) That makes "how do the asset bytes reach every node?" a
 real design question on a multi-node cluster, because **ClickHouse does not
 replicate the `user_files/` directory**: it is a node-local folder.
 
@@ -20,10 +22,17 @@ Two independent things must be present on every node that can answer a request:
    This already rides your existing config-management channel —
    clickhouse-operator, ACM cluster settings, a mounted ConfigMap, Ansible,
    etc. — which by construction reaches every node, including ones added later.
-   No problem here.
+   Caveat: some managed providers forbid changes to `config.d/` or
+   `http_handlers`. If you cannot install `http_handlers`, ClickHouse-native
+   hosting is impossible; use the container image, the Helm chart, or any
+   external static host instead (see [DEVELOPMENT.md](DEVELOPMENT.md)).
 
-2. **The ~65 KB asset bytes** (`sql.html` and `sql-config.json`). This is the
-   part affected by `user_files/` being node-local.
+2. **The asset bytes** (`sql.html` and `sql-config.json`). `sql.html` is a
+   single self-contained file of about 2 MB raw (measure your build:
+   `ls -l dist/sql.html`); the config is tiny. HTTP compression (gzip/br)
+   shrinks what goes over the wire to roughly a quarter to a third, but the
+   stored file, and anything that caps stored size, sees the raw bytes. This is
+   the part affected by `user_files/` being node-local.
 
 ## The options
 
@@ -57,7 +66,9 @@ Keep the bytes in a `ReplicatedMergeTree` table and serve them with a
 `SELECT argMax(content, updated) FROM asb_assets WHERE name = 'sql.html' FORMAT RawBLOB`.
 
 - **Pro:** ClickHouse replication distributes the bytes to every replica
-  automatically, **including replicas added later**. Pure SQL, portable.
+  of the table's shard/replication group automatically, **including replicas
+  added later**. A `ReplicatedMergeTree` does not replicate to other shards, so
+  a multi-shard cluster needs the table (or its data) on each shard. Pure SQL, portable.
 - **Con:** a `predefined_query_handler` runs the query as a ClickHouse user, so
   the unauthenticated `/sql` GET needs a small read-only grant on the assets
   table for whatever anonymous resolves to. The `Replicated*` engine's
@@ -72,15 +83,18 @@ serve it with the same `file://` static handler.
 - **Pro:** rides the exact channel that already distributes `http_handlers.xml`
   to all nodes, so new replicas are covered for free; still served statically
   (no auth, no read-grant).
-- **Con:** the bytes live in config. Inlining 65 KB needs CDATA/escaping, and
-  some control planes cap inline config size (for example, ACM's setting-push
-  has an ~8 KB URI limit), so in practice the asset goes in as a *mounted file*
-  rather than an inline value.
+- **Con:** the bytes live in config. The artifact is about 2 MB (measure your
+  build), which is too large for several channels: clickhouse-operator
+  `spec.configuration.files` lands in a Kubernetes ConfigMap, which is capped at
+  1 MiB, and control planes that push settings inline (for example, ACM's
+  setting-push has an ~8 KB URI limit) cannot carry it either. In practice it
+  has to be a file delivered by some other mechanism (image layer, volume,
+  init container), not an inline config value.
 
 ## What this project ships
 
 `deploy/install.sh` implements **option A**. It is the simplest mechanism, needs
-nothing but `clickhouse-client`, and serves the bootstrap page anonymously. The
+only a shell toolchain (see below), and serves the bootstrap page anonymously. The
 trade-off to be aware of:
 
 > After scaling a cluster out (or replacing a node), re-run `install.sh` so the
@@ -91,6 +105,16 @@ node replacement — option B (replicated table) or option C (config-distributed
 file) removes it. Both are straightforward to adopt: option B is a schema +
 `predefined_query_handler` change to `deploy/`; option C is a change to how the
 file is placed on the nodes, with the existing `file://` handler unchanged.
+
+### Installer prerequisites
+
+`deploy/install.sh` builds the SPA from a checkout, so it needs `npm` and
+`node` (22 or newer) as well as `clickhouse-client`; `curl` is used only for
+OIDC discovery (the CSP `connect-src` falls back to the Google default without
+it). Each GitHub release also ships a prebuilt `sql.html` asset; if you do not
+want to build, download it and upload it (plus a `sql-config.json`) to
+`user_files/` yourself, then install `http_handlers.xml` as above. The installer
+has no flag for this path.
 
 ## Single-node installs
 

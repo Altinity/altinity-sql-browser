@@ -8,7 +8,9 @@
     GET /sql              -> the SPA (dist/sql.html in user_files)
     GET /sql/config.json  -> the OAuth config (issuer + client_id [+ audience])
 
-  The SPA POSTs queries to "/" with `Authorization: Bearer <id_token>`; that is
+  The SPA POSTs queries to "/" with the IdP JWT in `Authorization: Bearer <jwt>`
+  (id_token by default, access_token when an audience is set; with
+  `ch_auth: "basic"` the JWT is the Basic password instead); that is
   handled by ClickHouse's built-in dynamic query handler (the <defaults/> rule),
   so no extra route is needed for query execution. ClickHouse must be configured
   to accept the JWT (token_processor / JWKS, or a delegated http_authentication

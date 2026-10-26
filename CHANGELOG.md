@@ -9,6 +9,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **#692 (part 1): deployment docs and installer output corrections.**
+  `deploy/install.sh` printed `https://` even without `--secure` and omitted the
+  HTTP port; the next-steps text now comes from a `print_next_steps` function
+  (also shown by `--dry-run`, covered by `tests/unit/install-script.test.js`) and
+  prints the right scheme and the default HTTP(S) port (8123/8443). Docs: removed
+  frozen artifact-size figures (`dist/sql.html` is about 2 MB raw; measure your
+  build), stated the real installer prerequisites (npm, node 22+, curl,
+  clickhouse-client; prebuilt release asset noted), clarified that
+  ClickHouse-native hosting needs `http_handlers` access and that the
+  container/Helm runtime is the alternative, corrected the option B/C caveats
+  (replication scope, ConfigMap 1 MiB cap), corrected the auth wording
+  (Bearer id_token by default, access_token with an audience, JWT as Basic
+  password with `ch_auth: "basic"`), and updated the wiki from nginx to Caddy.
+
 ### Added
 - **#592: lock in the #586/#587 shell primitive guardrails mechanically.**
   `check:arch` now rejects three regrowth shapes the six-copy-pasted-overlays

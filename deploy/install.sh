@@ -9,6 +9,12 @@
 # The password is read from the CLICKHOUSE_PASSWORD env var or prompted — never
 # passed on the command line (it would leak via `ps`/shell history).
 #
+# Prerequisites: bash, node 22+ and npm (the installer builds the SPA from source),
+# curl (only for OIDC discovery; it falls back to the Google connect-src without
+# it), and clickhouse-client (not needed for --dry-run). To skip the build, take
+# the prebuilt sql.html from the GitHub release and upload it yourself; see
+# docs/ASSET-DISTRIBUTION.md.
+#
 # Usage:
 #   CLICKHOUSE_PASSWORD=... ./deploy/install.sh \
 #     --ch-host clickhouse.example.com \
@@ -119,6 +125,34 @@ HANDLERS_OUT="$ROOT/dist/http_handlers.xml"
 sed -E "s#(connect-src 'self')[^;]*#\1 ${CONNECT_HOSTS}#" \
   "$ROOT/deploy/http_handlers.xml" > "$HANDLERS_OUT"
 
+# Print the post-install instructions. Called after upload, and also by --dry-run
+# so the URL/scheme logic is testable without a ClickHouse. The native port
+# --ch-host is used with (9000/9440) differs from the HTTP(S) port the browser
+# needs, so print the HTTP defaults (8123 plain / 8443 TLS) explicitly.
+print_next_steps() {
+  local scheme="http" port="8123" host="${CH_HOST:-<ch-host>}"
+  if [[ "$SECURE" == 1 ]]; then scheme="https"; port="8443"; fi
+  cat <<EOT
+
+Final step - enable the HTTP routes. Add the rendered dist/http_handlers.xml
+(its CSP connect-src is filled in for your issuer) to the server config.d/ (or
+push it as an ACM cluster setting named "config.d/sql-browser.xml") and reload
+ClickHouse. Then open:
+
+    ${scheme}://${host}:${port}/sql
+
+(${port} is the default ClickHouse HTTP$([[ "$SECURE" == 1 ]] && echo S) port; use the port your
+HTTP endpoint, load balancer, or ingress actually exposes, and omit it if that
+is the scheme default.)
+
+Also register the OAuth redirect URI  ${scheme}://${host}:${port}/sql  (same
+origin, same port as above) with your IdP, and make sure ClickHouse is
+configured to accept the token the SPA sends: a Bearer JWT (token_processor +
+JWKS), or with --ch-auth basic the JWT as the Basic password via a delegated
+http_authentication verifier. See README.
+EOT
+}
+
 if [[ "$DRY_RUN" == 1 ]]; then
   echo
   echo "==> DRY RUN — no ClickHouse contact. Rendered artifacts:"
@@ -126,6 +160,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
   cat "$CONFIG_FILE"
   echo "--- dist/http_handlers.xml ---"
   cat "$HANDLERS_OUT"
+  print_next_steps
   exit 0
 fi
 
@@ -155,18 +190,6 @@ upload "$ROOT/dist/sql.html" "sql.html"
 echo "==> Uploading sql-config.json"
 upload "$CONFIG_FILE" "sql-config.json"
 
-cat <<EOF
-
-==> Assets uploaded to ClickHouse user_files/.
-
-Final step — enable the HTTP routes. Add the rendered dist/http_handlers.xml
-(its CSP connect-src is filled in for your issuer) to the server config.d/ (or
-push it as an ACM cluster setting named "config.d/sql-browser.xml") and reload
-ClickHouse. Then open:
-
-    http${SECURE:+s}://$CH_HOST/sql
-
-Also register the OAuth redirect URI  http(s)://$CH_HOST/sql  with your IdP,
-and make sure ClickHouse is configured to accept the bearer JWT (token_processor
-+ JWKS, or a delegated http_authentication verifier). See README.
-EOF
+echo
+echo "==> Assets uploaded to ClickHouse user_files/."
+print_next_steps
