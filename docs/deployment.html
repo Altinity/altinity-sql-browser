@@ -80,7 +80,8 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
     <p><code class="k">--cluster</code> distributes the files to every node with server-side SQL in two phases
       (stage and verify, then promote and verify) and checks each node's SHA-256. The cluster needs a
       <code class="k">&lt;secret&gt;</code> and the deploy user a few grants; see
-      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md#installing-with-deployinstallsh">ASSET-DISTRIBUTION.md</a>.</p>
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md#installing-with-deployinstallsh">ASSET-DISTRIBUTION.md</a>. Altinity Cloud, clickhouse-operator and other restricted environments:
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/HOSTED-INSTALL.md">HOSTED-INSTALL.md</a>.</p>
 
     <div class="callout"><strong>Public file, by design.</strong> <code class="k">config.json</code> is served to
       browsers, so prefer a PKCE public client. If your IdP requires a <code class="k">client_secret</code>,
@@ -99,6 +100,7 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
       <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/CLICKHOUSE-OAUTH.md">CLICKHOUSE-OAUTH.md</a> ·
       <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/CLICKHOUSE-OSS-OAUTH.md">OSS (delegated verifier)</a> ·
       <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md">ASSET-DISTRIBUTION.md</a> ·
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/HOSTED-INSTALL.md">HOSTED-INSTALL.md</a> ·
       <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/LOGIN-SCREEN.md">LOGIN-SCREEN.md</a>
     </p>
   </div>
@@ -126,12 +128,14 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
 <section>
   <div class="wrap narrow">
     <div class="eyebrow">Mode 3 · Docker local runner</div>
-    <h2>Run the existing local app in a container</h2>
-    <p>The container image packages the same zero-dependency Python runner used by the curl-installed local app.
-      It serves <code class="k">/sql</code> and a generated <code class="k">/config.json</code>, then reads saved
-      connections from a mounted <code class="k">clickhouse-client</code> config directory.</p>
-    <pre class="code">docker compose up --build
-SQL_BROWSER_PROBE=0 docker compose up --build   <span class="c"># skip startup /ping checks, keep all hosts</span></pre>
+    <h2>Run the static container image</h2>
+    <p>The production image is a static Caddy server for the single-file SPA. It serves
+      <code class="k">/sql</code> and a <code class="k">config.json</code> you provide at
+      <code class="k">/sql/config.json</code>; queries go from the browser straight to ClickHouse. This is also
+      the fallback when a managed provider does not let you install <code class="k">http_handlers</code> (see
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/DEVELOPMENT.md">DEVELOPMENT.md</a>).</p>
+    <pre class="code">docker run --rm -p 8900:8080 -v "$PWD/config.json:/config/config.json:ro" \
+  ghcr.io/altinity/altinity-sql-browser:latest   <span class="c"># then open http://localhost:8900/sql</span></pre>
     <p>The repo also ships Kubernetes examples under <code class="k">deploy/k8s/</code>: a Deployment, Service,
       ConfigMap-backed connection file, and an Ingress example for cluster testing.</p>
   </div>

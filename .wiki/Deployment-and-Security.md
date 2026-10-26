@@ -20,6 +20,14 @@ including a node killed mid-run. The release bundle ships `deploy/` (install.sh,
 uninstall.sh, lib/) for use with `--artifact`. One installer at a time (no lock);
 `--ddl-timeout` must be >= 1; the password reaches only `clickhouse-client`.
 
+The operator runbook for restricted environments (#692 part 3) is
+[`docs/HOSTED-INSTALL.md`](../docs/HOSTED-INSTALL.md): preflight decision table and SQL,
+tested grants as `GRANT` statements, self-managed / HTTPS-only / Altinity Cloud / clickhouse-operator
+examples (the last two are **not tested end to end**), topology, scale-out and retry, handler
+verification. If `http_handlers` cannot be pushed, ClickHouse-native hosting is impossible: use the Caddy
+image or Helm chart below. `--cluster` takes the literal name from `system.clusters` (the `{cluster}` macro
+is rejected).
+
 ## Authentication modes
 
 - Native/Bearer OAuth for ClickHouse variants with token processors and ephemeral
