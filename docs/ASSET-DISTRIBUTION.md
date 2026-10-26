@@ -162,15 +162,18 @@ is never the target of anything that can fail on a remote source:
    `url()`-download it (following redirects). Result: `_asb_next_sql.html` and
    `_asb_next_sql-config.json` on every node. A failure here leaves the live files untouched.
 4. **Verify phase 1:** every node's next files match the expected length and SHA-256. The
-   check is strict: exactly one row per node (`count() = 1`), as many distinct `hostName()`s as
-   `system.clusters` lists, each with the expected length and hash - a dropped, extra or
+   check is strict: exactly one row per node (`count() = 1`), as many distinct node identities (`hostName():tcpPort()`, so several instances
+   on one host stay distinct) as `system.clusters` lists, each with the expected length and hash - a dropped, extra or
    duplicated-host row fails it. (`uninstall.sh`'s 0-byte check alone also accepts `count() = 0`.)
 5. **Phase 2 — promote.** Each node copies *its own* verified `_asb_next_*` over the live
    `sql.html` / `sql-config.json` (a local read, so it cannot fail for network or auth reasons).
 6. **Verify live:** per-node table; success only when every node matches.
-7. **Always (trap):** the stage file is truncated and the temp tables dropped, with a DDL timeout capped at
-   30 s, INT/TERM ignored while it runs, and the credential header file removed even if the cleanup SQL fails;
-   live files are never touched by cleanup.
+7. **Always (trap):** the stage file is truncated and the temp tables dropped. Cleanup is **bounded**: its DDL timeout
+   is capped at `min(--ddl-timeout, 30)` s and every client call also carries a client-side timeout
+   (`curl --max-time` / `clickhouse-client --receive_timeout --send_timeout` of that value + 10 s,
+   10 s connect timeout), so even with INT/TERM ignored while it runs, a dead node cannot hold it for
+   more than that per statement (5 statements at most). The credential header file is removed even if the cleanup SQL
+   fails; live files are never touched by cleanup.
 
 `_asb_next_*` is **intentionally kept as a full copy** next to the live files
 (about 2 MB per node): it is the node-local, already-verified source for the
@@ -194,7 +197,7 @@ wiped or whose file was tampered with; `--verify-only` detects both.
   |---|---|
   | stage (default) | `FILE ON *.*`, `CLUSTER ON *.*`, `REMOTE ON *.*`, `CREATE TABLE, DROP TABLE ON default.*`, `SELECT ON system.clusters` |
   | `--pull-url` | the above plus `URL ON *.*` |
-  | `--verify-only` | `FILE`, `REMOTE`, `CREATE TEMPORARY TABLE ON *.*`, `SELECT ON system.clusters` |
+  | `--verify-only` (no install grants) | `FILE`, `REMOTE`, `CREATE TEMPORARY TABLE ON *.*`, `SELECT ON system.clusters` |
   | single node (no `--cluster`) | tested with the stage grants; `CLUSTER`/`REMOTE` are not exercised |
   | `uninstall.sh` | same as stage |
 
@@ -202,8 +205,12 @@ wiped or whose file was tampered with; `--verify-only` detects both.
   `--verify-only` set also in a `deploy_verify` user). Minimality is only partly proven: the negative
   tests drop `REMOTE` and `URL` (both are rejected before any live file is touched, with a hint) and
   check that a `--verify-only`-only user cannot install; the other grants are not individually
-  removed. `CREATE TEMPORARY TABLE` is what the `clusterAllReplicas(view(...))` verification query
-  needs (found by the suite).
+  removed. `CREATE TEMPORARY TABLE ON *.*` is a separate, **verify-only** requirement: revoking it from the
+  `deploy_verify` user makes `--verify-only` fail with `ACCESS_DENIED ... CREATE TEMPORARY TABLE ON *.*`
+  on both tested images (ClickHouse 26.3.18.32 and Antalya 25.8.33), while the install/uninstall user,
+  which holds `CREATE TABLE ON default.*` but no separate temporary-table grant, runs the same
+  `clusterAllReplicas(view(...))` verification successfully on both. So the stage, `--pull-url` and
+  uninstall rows do not list it; add it only for a verification user that lacks `CREATE TABLE`.
 - **Egress** (`--pull-url` only): every node must reach the URL and `remote_url_allow_hosts`
   must permit it; GitHub release URLs redirect and are followed (up to 10 hops).
 
@@ -214,7 +221,7 @@ row per node even when the file is missing:
 
 ```sql
 SELECT h, n, len, sha FROM clusterAllReplicas('<cluster>', view(
-  SELECT hostName() h, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha
+  SELECT concat(hostName(), ':', toString(tcpPort())) h, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha
   FROM file('sql.html', 'RawBLOB', 'c String')))
 ORDER BY h SETTINGS engine_file_empty_if_not_exists = 1;
 SELECT count() FROM system.clusters WHERE cluster = '<cluster>';
@@ -228,7 +235,17 @@ count, each with the expected `len`/`sha`.
 Every step is idempotent: on any failure fix the cause and re-run the same command. If the
 installer was killed, its trap may not have run: re-running pre-cleans the temp tables, but
 a stale `_asb_stage_<token>.html` on the connected node (a plain copy of the SPA, never
-served) stays until you truncate or delete it by hand.
+served) stays. A killed installer (`kill -9`, power loss) can leave exactly one such full-size file on
+the node it was connected to; SQL cannot glob-delete it, and the next run reuses nothing from it (it
+uploads a new stage under a new token). To find it and empty it by hand, on that node:
+
+```sql
+SELECT DISTINCT _file, _size FROM file('_asb_stage_*', 'RawBLOB');   -- lists every stage file, 0-byte ones too
+INSERT INTO FUNCTION file('_asb_stage_<token>.html', 'RawBLOB')
+  SETTINGS engine_file_truncate_on_insert = 1 SELECT '';
+```
+
+(Removing the file itself needs shell access to `user_files/`.)
 
 ### Tested
 
@@ -239,10 +256,10 @@ checks the byte-exact SHA-256 of `/sql` and `/sql/config.json` served by every n
 fresh install, upgrade, HTTP transport, `--pull-url` through a 2-hop redirect, wiped-node
 repair, `--verify-only` on a tampered node and as the minimal `deploy_verify` user, a node stopped
 before the run (the preflight rejects it), a node **killed mid-run** right after the stage upload
-(installer fails, the other nodes keep the previous good version, the queued DDL replay settles,
-re-install succeeds), an unreachable pull URL, missing `REMOTE` / `URL`
+(the installer fails; each surviving node then serves byte-exactly the previous or the new version,
+never an empty or partial file; the queued DDL replay settles; a re-install converges every node on the new one), an unreachable pull URL, missing `REMOTE` / `URL`
 grants, a single node, and uninstall. Images (exact tags): `clickhouse/clickhouse-server:26.3.18.32` and
-`altinity/clickhouse-server:25.8.33.20001.altinityantalya`, with `clickhouse/clickhouse-keeper:25.8.33.6`.
+`altinity/clickhouse-server:25.8.33.20001.altinityantalya`, with `clickhouse/clickhouse-keeper:25.8.33.6` (CI; locally `clickhouse-keeper:25.8` works too).
 **Not covered:** the real GitHub release URL, TLS (`--secure`) against a live server, and the
 per-replica-credentials interserver path. The script logic (strict row checks, cleanup, the
 password's reach) is additionally unit-tested against a simulator.

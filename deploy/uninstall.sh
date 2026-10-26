@@ -60,7 +60,7 @@ cleanup() {
   trap - EXIT
   set +e   # always reach `rm -rf "$TMP"` (it holds the credentials)
   if [[ "$CLEANUP_ARMED" == 1 ]]; then
-    limit_ddl_timeout 30
+    limit_ddl_timeout 30   # bounded: each call ends within min(--ddl-timeout,30)+10 s
     for t in "$T_RM_HTML" "$T_RM_CFG" "$T_NX_HTML" "$T_NX_CFG"; do
       ch_query "DROP TABLE IF EXISTS ${t}${ON_CLUSTER} SYNC" >/dev/null \
         || echo "WARN: could not drop ${t}; drop it by hand" >&2

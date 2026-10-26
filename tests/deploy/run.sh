@@ -54,7 +54,7 @@ cleanup() {
   else
     # shellcheck disable=SC2046
     docker rm -f $(docker ps -aq --filter "label=asbd=$PFX") >/dev/null 2>&1 || true
-    (( OWN_NET )) && docker network rm "$NET" >/dev/null 2>&1 || true
+    if (( OWN_NET )); then docker network rm "$NET" >/dev/null 2>&1 || true; fi
     rm -rf "$WORK"
   fi
   exit "$rc"
@@ -94,7 +94,7 @@ echo "artifact base $(wc -c < "$WORK/art/base" | tr -d ' ') bytes; sha A=${SHA_A
 # ------------------------------------------------------------------ bring up
 mkdir -p "$WORK/cfg"
 for f in keeper cluster web; do render "$HERE/cfg/$f.xml" "$WORK/cfg/$f.xml"; done
-(( OWN_NET )) && { docker network create "$NET" >/dev/null || exit 1; }
+if (( OWN_NET )); then docker network create "$NET" >/dev/null || exit 1; fi
 RUN=(docker run -d --label "asbd=$PFX" --network "$NET")
 
 "${RUN[@]}" --name "$PFX-k" -e CFG="$(b64 "$WORK/cfg/keeper.xml")" --entrypoint bash "$KEEPER_IMAGE" \
@@ -200,6 +200,19 @@ wait_ddl_queue_settled() {  # wait until no DDL queue entry for cluster c is unf
   done
   echo "      DDL queue not settled after 90s (unfinished entries: $n)"; return 1
 }
+# serves_b_or_c <node...>: each node's live /sql is byte-exactly B (previous) or C (new), and the config is intact.
+# Never empty, partial or any other bytes: that is the invariant a mid-run kill must not break.
+serves_b_or_c() {
+  local i s ok=0 c
+  for i in "$@"; do
+    s="$(http_sha "$i" /sql)"; c="$(http_sha "$i" /sql/config.json)"
+    if [[ "$s" == "$SHA_B" ]]; then echo "      n$i serves B (previous)"
+    elif [[ "$s" == "$SHA_C" ]]; then echo "      n$i serves C (new)"
+    else echo "      n$i /sql is neither B nor C: $s"; ok=1; fi
+    [[ "$c" == "$SHA_CFG" ]] || { echo "      n$i /sql/config.json sha mismatch: $c"; ok=1; }
+  done
+  return "$ok"
+}
 put_web() { docker exec -i "$WEB" bash -c "cat > $UF/sql.html; chown clickhouse:clickhouse $UF/sql.html" < "$1"; }
 
 LIVE_HTML=""
@@ -280,7 +293,8 @@ LIVE_HTML="$SHA_B"
 # A node that dies AFTER the preflight, while the installer is running: poll until the stage file
 # exists on the connected node (the upload is done, so the run is demonstrably mid-flight, with ~15
 # more round trips still to go), then kill n4 immediately.
-scenario "(m) node killed mid-run (after the stage upload): installer fails, live files keep the previous version"
+scenario "(m) node killed mid-run (after the stage upload): installer fails; survivors serve B or C, never anything else; re-install converges on C"
+rm -f "$WORK/m.rc"
 (
   docker exec -e CLICKHOUSE_PASSWORD=deploypw "$CLI" bash /work/deploy/install.sh \
     --ch-host "$PFX-n1" --client-id "$CLIENT_ID" --issuer "$ISSUER" "${CLUSTER_ARGS[@]}" /work/C.html --ddl-timeout 20 > "$LOGS/m.log" 2>&1
@@ -296,30 +310,31 @@ done
 docker stop -t 0 "$PFX-n4" >/dev/null
 wait "$BG"; INSTALL_RC="$(cat "$WORK/m.rc")"
 t "the stage file was observed mid-run (the kill really landed mid-flight)" test "$STAGE_SEEN" = 1
-t "installer exit non-zero" rc_nonzero
-t "live files unchanged on the surviving nodes (still B)" all_serve "$SHA_B" "$SHA_CFG" 1 2 3
+t "installer exit non-zero (n4 is dead at the latest in the final verification)" rc_nonzero
+# Where the kill lands decides whether a survivor was already promoted (C) or not (B); either is valid.
+t "each surviving node serves byte-exactly B (previous) or C (new), never empty/partial/other" serves_b_or_c 1 2 3
 docker start "$PFX-n4" >/dev/null; wait_node "$PFX-n4" || true
 t "queued DDL replay settles" wait_ddl_queue_settled
-t "after the replay the restarted node still serves B (a replay never promotes a half-staged file)" all_serve "$SHA_B" "$SHA_CFG" 4
-run_install m2 "${CLUSTER_ARGS[@]}" /work/A.html
+t "after the replay the restarted node serves B or C, never a half-staged file" serves_b_or_c 4
+run_install m2 "${CLUSTER_ARGS[@]}" /work/C.html
 t "re-install exit 0" rc_zero
-t "every node serves A" all_serve "$SHA_A" "$SHA_CFG"
+t "every node serves C" all_serve "$SHA_C" "$SHA_CFG"
 t "temp tables gone on all 4 nodes" temp_tables_gone
 t "no non-empty stage file anywhere" stage_files_empty 2
 rc_zero || show_log m2
 rc_nonzero && show_log m 12
 end_scenario
-LIVE_HTML="$SHA_A"
+LIVE_HTML="$SHA_C"
 
-scenario "(l) --verify-only as the minimal deploy_verify user (FILE, REMOTE, CREATE TEMPORARY TABLE, SELECT ON system.clusters)"
-run_install l --cluster c --ch-user deploy_verify --artifact /work/A.html --verify-only
+scenario "(l) --verify-only as the minimal deploy_verify user"
+run_install l --cluster c --ch-user deploy_verify --artifact /work/C.html --verify-only
 t "verify-only exit 0 on a healthy cluster" rc_zero
-run_install l2 --cluster c --ch-user deploy_verify --artifact /work/B.html --verify-only
+run_install l2 --cluster c --ch-user deploy_verify --artifact /work/A.html --verify-only
 t "verify-only exit non-zero when the artifact differs" rc_nonzero
-run_install l3 --cluster c --ch-user deploy_verify --artifact /work/B.html
+run_install l3 --cluster c --ch-user deploy_verify --artifact /work/A.html
 t "a full install as deploy_verify is refused (no CREATE/CLUSTER grants)" rc_nonzero
 t "refusal names the privilege problem" log_has l3 "(ACCESS_DENIED|Not enough privileges|missing grants)"
-t "live untouched" all_serve "$SHA_A" "$SHA_CFG"
+t "live untouched" all_serve "$SHA_C" "$SHA_CFG"
 end_scenario
 
 scenario "(j) phase-1 failure (unreachable pull URL): live files untouched"
@@ -341,10 +356,10 @@ t "no URL grant: live untouched" all_serve "$LIVE_HTML" "$SHA_CFG"
 end_scenario
 
 scenario "(k) single node (no --cluster): only the connected node changes"
-run_install k --ch-user deploy --artifact /work/C.html
+run_install k --ch-user deploy --artifact /work/A.html
 t "installer exit 0" rc_zero
-t "connected node serves C" all_serve "$SHA_C" "$SHA_CFG" 1
-t "other nodes still serve the previous version (A)" all_serve "$SHA_A" "$SHA_CFG" 2 3 4
+t "connected node serves A" all_serve "$SHA_A" "$SHA_CFG" 1
+t "other nodes still serve the previous version (C)" all_serve "$SHA_C" "$SHA_CFG" 2 3 4
 rc_zero || show_log k
 end_scenario
 

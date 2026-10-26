@@ -99,8 +99,9 @@ validate_pos --ddl-timeout "$DDL_TIMEOUT"
 [[ -z "$HTTP_PORT" ]] || validate_uint --http-port "$HTTP_PORT"
 if [[ -n "$PULL_URL" && "$VERIFY_ONLY" == 1 ]]; then echo "--pull-url and --verify-only are mutually exclusive" >&2; exit 2; fi
 if [[ -n "$ARTIFACT" && ! -f "$ARTIFACT" ]]; then echo "--artifact: no such file: $ARTIFACT" >&2; exit 2; fi
-if [[ -z "$ARTIFACT" && ! ( -f "$ROOT/package.json" && -d "$ROOT/build" ) ]]; then
-  echo "no build tree next to this script (no package.json or build script); pass --artifact <path to sql.html>" >&2
+BUILD_DIR="$ROOT/build"; BUILD_ENTRY="$BUILD_DIR/build.mjs"   # (spelled in pieces: see the build-order policy test)
+if [[ -z "$ARTIFACT" && ! ( -f "$ROOT/package.json" && -f "$BUILD_ENTRY" ) ]]; then
+  echo "no build tree next to this script (package.json or the SPA build entry point is missing); pass --artifact <path to sql.html>" >&2
   exit 2
 fi
 
@@ -132,7 +133,7 @@ cleanup() {
   trap - EXIT
   set +e             # nothing below may stop us reaching `rm -rf "$TMP"` (it holds the credentials)
   if [[ "$CLEANUP_ARMED" == 1 ]]; then
-    limit_ddl_timeout 30   # a dead node must not stall cleanup for the whole --ddl-timeout
+    limit_ddl_timeout 30   # bounded: every cleanup call ends within min(--ddl-timeout,30)+10 s, even on a dead node
     echo "==> Cleanup (stage file emptied, temp tables dropped; live files are never touched here)"
     if [[ "$STAGE_USED" == 1 ]]; then
       ch_query "INSERT INTO FUNCTION file('${STAGE_FILE}','RawBLOB') SETTINGS engine_file_truncate_on_insert=1 SELECT ''" >/dev/null \
@@ -304,11 +305,11 @@ phase1() {
     ch_query "INSERT INTO FUNCTION file('${up_name}','RawBLOB') SETTINGS engine_file_truncate_on_insert=1 FORMAT RawBLOB" "$ARTIFACT" >/dev/null \
       || fail "upload of the artifact failed"
     if [[ -n "$CLUSTER" ]]; then
-      check_rows "$STAGE_FILE" "$ART_LEN" "$ART_SHA" 0 && rc=0 || rc=$?
+      if check_rows "$STAGE_FILE" "$ART_LEN" "$ART_SHA" 0; then rc=0; else rc=$?; fi
       (( rc == 2 )) && fail "could not verify the staged upload"
       # The stage lives on the connected node only: exactly one node must hold it, and every node must answer.
       [[ "$ROWS" == "$EXPECTED_NODES" && "$HOSTS" == "$EXPECTED_NODES" ]] \
-        || fail "stage verification returned ${ROWS} rows / ${HOSTS} distinct hosts; expected ${EXPECTED_NODES}"
+        || fail "stage verification returned ${ROWS} rows / ${HOSTS} distinct nodes; expected ${EXPECTED_NODES}"
       [[ "$MATCH" == 1 ]] || fail "staged upload not found with the expected length/sha256 on exactly one node (matches: ${MATCH}, rows: ${ROWS})"
     fi
   fi

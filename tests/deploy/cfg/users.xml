@@ -27,9 +27,10 @@
       <query>GRANT CREATE TABLE, DROP TABLE ON default.*</query>
       <query>GRANT SELECT ON system.clusters</query>
     </grants></deploy_noremote>
-  <!-- verify-only: the tested sufficient set. CREATE TEMPORARY TABLE is needed by the
-       clusterAllReplicas(view(...)) verification query (found by this suite). Negative-tested
-       only for a full install (refused); minimality of the rest is not proven. -->
+  <!-- verify-only, no install grants. CREATE TEMPORARY TABLE ON *.* is REQUIRED here: revoking it
+       makes the clusterAllReplicas(view(...)) verification fail with ACCESS_DENIED on both tested
+       images (26.3.18.32, 25.8.33 Antalya) - while the `deploy` user above passes the same query
+       holding only CREATE TABLE ON default.*. Minimality of the rest is not proven. -->
   <deploy_verify><password>deploypw</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota>
     <grants>
       <query>GRANT FILE ON *.*</query>

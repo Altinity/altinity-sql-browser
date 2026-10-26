@@ -28,7 +28,8 @@ validate_cluster_name() {  # injection guard: the name lands in SQL
 validate_token() { [[ "$1" =~ ^[A-Za-z0-9_]+$ ]] || fail "invalid stage token '$1' (allowed: A-Z a-z 0-9 _)"; }
 validate_uint() { [[ "$2" =~ ^[0-9]+$ ]] || fail "$1 must be a non-negative integer (got '$2')"; }
 # 0 would make ClickHouse run the DDL asynchronously (no wait, no error surfaced): refuse it.
-validate_pos() { [[ "$2" =~ ^[0-9]+$ && "$2" -ge 1 ]] || fail "$1 must be an integer >= 1 (got '$2'; 0 means asynchronous DDL in ClickHouse)"; }
+# Digits only, no leading zero (bash arithmetic would read 09 as a bad octal and 010 as 8), at most 6.
+validate_pos() { [[ "$2" =~ ^[1-9][0-9]{0,5}$ ]] || fail "$1 must be a decimal integer from 1 to 999999 without leading zeros (got '$2'; 0 means asynchronous DDL in ClickHouse)"; }
 
 # ---------------------------------------------------------------- transport
 setup_transport() {
@@ -52,14 +53,22 @@ setup_transport() {
 # *_only_active would turn a dead node's DDL failure into a silent success.
 build_native_args() {
   CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER" "--distributed_ddl_task_timeout=${DDL_TIMEOUT}" --distributed_ddl_output_mode=throw --format TSV)
+  # Cleanup only: bound every socket wait too, so an unreachable node cannot stall it for minutes.
+  if (( CLIENT_SLACK < 100 )); then
+    CH+=("--connect_timeout=${CONNECT_TIMEOUT}" "--send_timeout=$((DDL_TIMEOUT + CLIENT_SLACK))" "--receive_timeout=$((DDL_TIMEOUT + CLIENT_SLACK))")
+  fi
   [[ "$SECURE" == 1 ]] && CH+=(--secure)
   return 0
 }
 
-# Cleanup must not hang for the full --ddl-timeout on a dead node: cap it.
+# Client-side bounds. A normal call may legitimately take --ddl-timeout plus a long tail
+# (fan-out of a large file), so it gets 300 s of slack; cleanup gets 10 s and a 10 s connect
+# timeout. limit_ddl_timeout (cleanup only) therefore makes every cleanup call finish within
+# min(--ddl-timeout, <max-seconds>) + 10 s, whatever the server or network does.
+CLIENT_SLACK=300 CONNECT_TIMEOUT=30
 limit_ddl_timeout() {  # limit_ddl_timeout <max-seconds>
-  (( DDL_TIMEOUT <= $1 )) && return 0
-  DDL_TIMEOUT="$1"
+  (( DDL_TIMEOUT <= $1 )) || DDL_TIMEOUT="$1"
+  CLIENT_SLACK=10 CONNECT_TIMEOUT=10
   [[ "$TRANSPORT" == http ]] || build_native_args
   return 0
 }
@@ -75,7 +84,8 @@ explain_failure() {
       echo "      exist on every node. Otherwise check the user/password." >&2 ;;
     *ACCESS_DENIED*|*NOT_ENOUGH_PRIVILEGES*|*"Code: 497"*)
       echo "HINT: missing grants - see 'Grants' in docs/ASSET-DISTRIBUTION.md (FILE, CLUSTER, REMOTE," >&2
-      echo "      CREATE/DROP TABLE on default.*, CREATE TEMPORARY TABLE, SELECT on system.clusters; URL for --pull-url)." >&2 ;;
+      echo "      CREATE/DROP TABLE on default.*, SELECT on system.clusters; URL for --pull-url; a --verify-only-only" >&2
+      echo "      user also needs CREATE TEMPORARY TABLE)." >&2 ;;
     *TIMEOUT_EXCEEDED*|*"Code: 159"*)
       echo "HINT: a node did not answer the ON CLUSTER DDL within ${DDL_TIMEOUT}s (--ddl-timeout). It may be down;" >&2
       echo "      its queued DDL replays when it returns. Bring it back and re-run." >&2 ;;
@@ -100,7 +110,7 @@ ch_query_http() {
   local sql="$1" in="${2:-}" code
   : > "$TMP/body"; : > "$TMP/hdrs"
   if [[ -n "$in" ]]; then { printf '%s\n' "$sql"; cat "$in"; } > "$TMP/req"; else printf '%s' "$sql" > "$TMP/req"; fi
-  if ! code="$(curl -q -sS --max-time "$((DDL_TIMEOUT + 300))" -o "$TMP/body" -D "$TMP/hdrs" -w '%{http_code}' \
+  if ! code="$(curl -q -sS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$((DDL_TIMEOUT + CLIENT_SLACK))" -o "$TMP/body" -D "$TMP/hdrs" -w '%{http_code}' \
       -H "@$TMP/auth" -H 'Content-Type: text/plain' --data-binary "@$TMP/req" \
       "${HTTP_URL}?wait_end_of_query=1&distributed_ddl_task_timeout=${DDL_TIMEOUT}&distributed_ddl_output_mode=throw" 2>"$TMP/err")"; then
     explain_failure "$TMP/err"; return 1
@@ -153,7 +163,7 @@ set_cluster_clause() {
 
 # Per-node row (h, n, len, sha) for a user_files file; a missing file yields a row, not an error.
 verify_sql() {  # verify_sql <user_files-name>
-  local inner="SELECT hostName() h, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha FROM file('$1','RawBLOB','c String')"
+  local inner="SELECT concat(hostName(), ':', toString(tcpPort())) h, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha FROM file('$1','RawBLOB','c String')"
   if [[ -n "$CLUSTER" ]]; then
     printf "SELECT h, n, len, sha FROM clusterAllReplicas('%s', view(%s)) ORDER BY h SETTINGS engine_file_empty_if_not_exists=1" "$CLUSTER" "$inner"
   else
@@ -162,7 +172,7 @@ verify_sql() {  # verify_sql <user_files-name>
 }
 
 # check_rows <name> <expected-len> <expected-sha> <show 0|1> [one|any]
-# Sets ROWS (rows returned), HOSTS (distinct hostName() values) and MATCH (rows matching
+# Sets ROWS (rows returned), HOSTS (distinct node identities, hostName():tcpPort(), so several instances on one host stay distinct) and MATCH (rows matching
 # len+sha, and - in mode "one", the default - exactly one row n==1 in the file). Mode "any"
 # also accepts n==0 (uninstall's empty-file check: a 0-byte RawBLOB may yield 0 rows).
 # Prints a table when show=1. Returns 0 iff ROWS == HOSTS == EXPECTED_NODES and every row
@@ -187,9 +197,9 @@ verify_files() {
   local label="$1" mode="$2" ok=0 rc; shift 2
   info "==> Verifying ${label} (${EXPECTED_NODES} node(s))"
   while [[ $# -ge 3 ]]; do
-    check_rows "$1" "$2" "$3" 1 "$mode" && rc=0 || rc=$?
+    if check_rows "$1" "$2" "$3" 1 "$mode"; then rc=0; else rc=$?; fi
     if (( rc == 2 )); then echo "ERROR: verification query failed for $1" >&2; ok=1
-    elif (( rc != 0 )); then echo "ERROR: $1: ${MATCH}/${EXPECTED_NODES} nodes match (rows returned: ${ROWS}, distinct hosts: ${HOSTS}; expected ${EXPECTED_NODES} each) [${label}]" >&2; ok=1; fi
+    elif (( rc != 0 )); then echo "ERROR: $1: ${MATCH}/${EXPECTED_NODES} nodes match (rows returned: ${ROWS}, distinct nodes: ${HOSTS}; expected ${EXPECTED_NODES} each) [${label}]" >&2; ok=1; fi
     shift 3
   done
   return "$ok"
@@ -208,12 +218,14 @@ cluster_node_count() {
 
 # Every node reachable, interserver auth working.
 preflight_cluster() {
-  local out rows
+  local out rows ids
   cluster_node_count
   info "==> Preflight: cluster '${CLUSTER}' has ${EXPECTED_NODES} node(s)"
-  out="$(ch_query "SELECT hostName() FROM clusterAllReplicas('${CLUSTER}', view(SELECT hostName())) ORDER BY 1")" \
+  out="$(ch_query "SELECT id FROM clusterAllReplicas('${CLUSTER}', view(SELECT concat(hostName(), ':', toString(tcpPort())) AS id)) ORDER BY 1")" \
     || fail "preflight failed: cannot reach every node of '${CLUSTER}' (needs <secret> or per-replica credentials for cross-node reads)"
   rows="$(printf '%s\n' "$out" | sed '/^$/d' | wc -l | tr -d ' ')"
   [[ "$rows" == "$EXPECTED_NODES" ]] || fail "preflight: only ${rows} of ${EXPECTED_NODES} nodes answered; refusing to continue"
+  ids="$(printf '%s\n' "$out" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+  [[ "$ids" == "$EXPECTED_NODES" ]] || fail "preflight: ${ids} distinct node identities (hostName:tcpPort) for ${EXPECTED_NODES} nodes; the cluster definition repeats an instance. Refusing to continue"
   return 0
 }

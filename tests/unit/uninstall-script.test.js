@@ -46,14 +46,14 @@ describe('uninstall.sh cluster', () => {
     expect(r.status, r.stderr).toBe(0);
     for (const s of sqls.filter((x) => /^(CREATE|DROP)/.test(x))) expect(s).toContain('ON CLUSTER `c1`');
     expect(files['sql.html']).toEqual(EMPTY);
-    expect(r.stdout).toMatch(/node-3\s+0\s+e3b0c442[0-9a-f]{56} ok/);
+    expect(r.stdout).toMatch(/node-3:9000\s+0\s+e3b0c442[0-9a-f]{56} ok/);
     expect(r.stdout).toContain('emptied on 3 node(s)');
   });
   it('fails when any node still serves bytes', () => {
     const { r } = run([], { cfg: { nodes: 3, badNodes: { 'sql-config.json': { 2: { len: 4, sha: 'cc' } } } } });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('some files were not emptied on every node');
-    expect(r.stdout).toMatch(/node-2\s+4\s+cc\s+MISMATCH/);
+    expect(r.stdout).toMatch(/node-2:9000\s+4\s+cc\s+MISMATCH/);
   });
   it('a failing CTAS stops the run and still drops the temp tables', () => {
     const { r, sqls } = run([], { cfg: { nodes: 3, rules: [{ match: '^CREATE TABLE default\\._asb_t_rm_cfg', stderr: 'Code: 1. injected' }] } });
@@ -67,7 +67,7 @@ describe('uninstall.sh cluster', () => {
     expect(files['_asb_next_sql.html']).toEqual(EMPTY);
     expect(files['_asb_next_sql-config.json']).toEqual(EMPTY);
     expect(sqls.some((s) => /^CREATE TABLE default\._asb_t_next_html ON CLUSTER `c1` ENGINE=File\('RawBLOB','_asb_next_sql\.html'\) AS SELECT '' AS c/.test(s))).toBe(true);
-    expect(r.stdout).toMatch(/node-3\s+0\s+e3b0c442[0-9a-f]{56} ok/);
+    expect(r.stdout).toMatch(/node-3:9000\s+0\s+e3b0c442[0-9a-f]{56} ok/);
   });
   it('fails when a stale non-empty _asb_next_* copy survives on a node', () => {
     const { r } = run([], { cfg: { nodes: 3, badNodes: { '_asb_next_sql.html': { 3: { len: 7, sha: 'dd' } } } } });
@@ -140,7 +140,10 @@ describe('uninstall.sh arguments', () => {
     [['--ch-host'], 'missing value for --ch-host'],
     [['--ch-host', 'x', '--transport', 'ftp'], '--transport must be'],
     [['--ch-host', 'x', '--ddl-timeout', 'z'], '--ddl-timeout must be'],
-    [['--ch-host', 'x', '--ddl-timeout', '0'], '--ddl-timeout must be an integer >= 1'],
+    [['--ch-host', 'x', '--ddl-timeout', '0'], '--ddl-timeout must be a decimal integer from 1 to 999999'],
+    [['--ch-host', 'x', '--ddl-timeout', '09'], '--ddl-timeout must be a decimal integer from 1 to 999999'],
+    [['--ch-host', 'x', '--ddl-timeout', '010'], '--ddl-timeout must be a decimal integer from 1 to 999999'],
+    [['--ch-host', 'x', '--ddl-timeout', '99999999999999999999999'], '--ddl-timeout must be a decimal integer from 1 to 999999'],
     [['--ch-host', 'x', '--http-port', 'z'], '--http-port must be'],
   ])('rejects %j', (args, msg) => {
     const { r, log } = h.run('uninstall.sh', args);
