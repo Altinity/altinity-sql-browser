@@ -42,6 +42,7 @@ Back to [[Home]]. Related: [[Architecture]], [[Product-and-Features]].
 - [`docs/ADR-0004-ui-shell.md`](../docs/ADR-0004-ui-shell.md) — the #577 Preact evaluation and its RETAIN-vanilla outcome.
 - [`docs/V2-UX-HANDOVER.md`](../docs/V2-UX-HANDOVER.md) — shipped-UX + committed-contract inventory for the V2 redesign (#582).
 - [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md) — deployment sequence.
+- [`docs/HOSTED-INSTALL.md`](../docs/HOSTED-INSTALL.md) — restricted-environment install runbook (#692); [`docs/ASSET-DISTRIBUTION.md`](../docs/ASSET-DISTRIBUTION.md) is the mechanism.
 - [`docs/LOGIN-SCREEN.md`](../docs/LOGIN-SCREEN.md) — login configuration.
 - [`CHANGELOG.md`](../CHANGELOG.md) — released and unreleased behavior.
 - [`docs/ui-snapshots/CAPTURE-SPEC.md`](../docs/ui-snapshots/CAPTURE-SPEC.md) — visual baseline.

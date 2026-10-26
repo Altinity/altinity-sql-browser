@@ -665,6 +665,8 @@ verify), and checks each node's length and SHA-256; re-run it after a scale-out.
 `deploy/uninstall.sh` empties the files. Cross-node reads need the cluster's `<secret>`
 (or per-replica credentials), run one installer at a time, and the deploy user needs a few grants — see
 [docs/ASSET-DISTRIBUTION.md](docs/ASSET-DISTRIBUTION.md#installing-with-deployinstallsh).
+Restricted environments (Altinity Cloud, clickhouse-operator, no filesystem access, HTTP-only): see the
+runbook [docs/HOSTED-INSTALL.md](docs/HOSTED-INSTALL.md).
 
 With **no** `--audience`, the IdP returns an **id_token** (its `aud` is the
 client_id) and the browser sends that as the bearer — so ClickHouse's
@@ -763,7 +765,7 @@ deploy/k8s/   sample Deployment, Service, ConfigMap, Ingress example
 helm/         published Helm chart source
 tests/        vitest + happy-dom, one spec per module
 docs/         DEVELOPMENT.md, ARCHITECTURE.md, DEPLOYMENT.md,
-              ASSET-DISTRIBUTION.md, CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
+              ASSET-DISTRIBUTION.md, HOSTED-INSTALL.md, CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
 ```
 
 ## Supported browsers

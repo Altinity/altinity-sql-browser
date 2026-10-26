@@ -10,6 +10,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **#692 (part 3): restricted-environment install runbook, `docs/HOSTED-INSTALL.md`.** Preflight
+  decision table and copy-paste preflight SQL (grants, clusters, `file()` write/read/truncate probe,
+  interserver auth, egress), tested grants as `GRANT` statements per mode, end-to-end examples (self-managed,
+  HTTPS-only, Altinity Cloud, clickhouse-operator; the last two clearly marked not tested end to end),
+  topology/scale-out/retry procedures, handler enablement and verification, Option B as a described
+  alternative. README, DEPLOYMENT.md, ASSET-DISTRIBUTION.md, `docs/deployment.html` and the wiki link to it;
+  `docs/deployment.html` no longer describes the container image as the Python runner (it is Caddy).
 - **#692 (part 2): `deploy/install.sh --cluster` now works on multi-replica clusters.**
   SQL-only, two-phase install with server-side fan-out: preflight, pre-clean,
   phase 1 to `_asb_next_*` (upload once and copy, or `--pull-url`), per-node length

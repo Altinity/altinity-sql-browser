@@ -7,7 +7,9 @@ There are now two distinct deployment surfaces:
 2. **Containerized runtime** — run the static SPA image in Docker or Kubernetes
    for local or shared use, with browser requests sent directly to ClickHouse.
 
-This document focuses on the first mode. For source development, Docker, and
+This document focuses on the first mode. If you cannot touch the server filesystem (Altinity Cloud,
+clickhouse-operator, other managed clusters) or run a multi-node cluster, follow the runbook
+[HOSTED-INSTALL.md](HOSTED-INSTALL.md) (preflight, tested grants, examples, scale-out). For source development, Docker, and
 Kubernetes/Helm instructions, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 The app is three things on the target ClickHouse:

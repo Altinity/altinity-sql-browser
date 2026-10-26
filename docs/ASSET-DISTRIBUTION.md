@@ -7,7 +7,9 @@ one; this document is about the native mode.) That makes "how do the asset bytes
 real design question on a multi-node cluster, because **ClickHouse does not
 replicate the `user_files/` directory**: it is a node-local folder.
 
-This doc explains the trade-offs and what `deploy/install.sh` ships.
+This doc explains the trade-offs and what `deploy/install.sh` ships. The operator procedure for restricted
+environments (preflight, tested grants, Altinity Cloud / clickhouse-operator examples, scale-out) is the
+runbook [HOSTED-INSTALL.md](HOSTED-INSTALL.md); this page stays the mechanism and design reference.
 (A `docs/sql.html` mirror is also published to GitHub Pages on every tagged
 release, for an unauthenticated try-it-now demo — see `release.yml` — but
 that's a separate distribution channel from the cluster-serving problem
@@ -84,7 +86,7 @@ serve it with the same `file://` static handler.
   build), which is too large for several channels: clickhouse-operator
   `spec.configuration.files` lands in a Kubernetes ConfigMap, which is capped at
   1 MiB, and control planes that push settings inline (for example, ACM's
-  setting-push has an ~8 KB URI limit) cannot carry it either. In practice it
+  setting-push is reported to have a small, ~8 KB URI limit; **unverified**) cannot carry it either. In practice it
   has to be a file delivered by some other mechanism (image layer, volume,
   init container), not an inline config value.
 
@@ -262,7 +264,7 @@ before the run (the preflight rejects it), a node **killed mid-run** right after
 never an empty or partial file; the queued DDL replay settles; a re-install converges every node on the new one), an unreachable pull URL, missing `REMOTE` / `URL`
 grants, a single node, and uninstall. Images (exact tags): `clickhouse/clickhouse-server:26.3.18.32` and
 `altinity/clickhouse-server:25.8.33.20001.altinityantalya`, with `clickhouse/clickhouse-keeper:25.8.33.6` (CI; locally `clickhouse-keeper:25.8` works too).
-**Not covered:** the real GitHub release URL, TLS (`--secure`) against a live server, and the
+**Not covered:** the real GitHub release URL through the installer (a single-node `url()` download of it was probed by hand, see HOSTED-INSTALL.md), TLS (`--secure`) against a live server, and the
 per-replica-credentials interserver path. The script logic (strict row checks, cleanup, the
 password's reach) is additionally unit-tested against a simulator.
 
