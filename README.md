@@ -670,7 +670,7 @@ see "Security headers" below), and uploads the SPA + config into ClickHouse
    it as an ACM cluster setting `config.d/sql-browser.xml`) and reload ClickHouse.
    The SPA handler serves `/sql`; Workbench and Dashboard bookmarks differ only
    by the `ws`, `surface`, and optional `mode` query parameters.
-2. Register the single redirect URI `https://<ch-host>/sql` with your OAuth IdP.
+2. Register the single redirect URI `https://<ch-host>:8443/sql` with your OAuth IdP (the URI must match the origin exactly: include the HTTP(S) port unless it is the scheme default, 443/80, or use the port/ingress host actually exposed).
 3. Make sure ClickHouse accepts the bearer JWT — either a CH
    `<token_processors>` entry validating your IdP's JWKS, or a delegated
    `<http_authentication_servers>` verifier. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

@@ -191,7 +191,7 @@ defaults. See [LOGIN-SCREEN.md](LOGIN-SCREEN.md).
 1. Drop the `config.d/*.xml` fragments onto every node (your config-management
    channel) and reload/restart ClickHouse.
 2. Apply the role DDL once.
-3. Register the browser's redirect URI (`https://<ch-host>/sql`) with your IdP.
+3. Register the browser's redirect URI (e.g. `https://<ch-host>:8443/sql`; include the HTTP(S) port unless it is the scheme default, or use the externally exposed port/ingress host) with your IdP.
 4. Smoke-test with a real token:
 
 ```bash

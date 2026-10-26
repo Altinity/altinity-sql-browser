@@ -115,7 +115,7 @@ GRANT sql_reader TO `you@example.com`;
 ## 4. config.json + IdP
 
 - `config.json`: `issuer`, `client_id`, and `ch_auth: "basic"` (above).
-- Register the redirect URI `https://<ch-host>/sql` with your IdP.
+- Register the redirect URI, e.g. `https://<ch-host>:8443/sql` (include the HTTP(S) port unless it is the scheme default, or use the externally exposed port/ingress host), with your IdP.
 - Ensure the JWT actually carries the `email` claim (scopes / a mapper), since
   it is both the Basic username and what the verifier matches.
 

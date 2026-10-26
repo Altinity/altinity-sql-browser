@@ -95,7 +95,7 @@ Either way the SPA only ever sends the IdP-issued JWT; which header carries it
 
 ## 5. OAuth IdP
 
-Register the redirect URI `https://<ch-host>/sql` with your IdP and put the
+Register the redirect URI the installer printed (e.g. `https://<ch-host>:8443/sql`; it must match the origin exactly, so include the HTTP(S) port unless it is the scheme default, 443/80, or use the externally exposed port/ingress host) with your IdP and put the
 `issuer` + `client_id` in `config.json` (the installer does this from
 `--issuer`/`--client-id`). Whether `config.json` also needs a `client_secret`
 depends on the IdP and client type — see [LOGIN-SCREEN.md](LOGIN-SCREEN.md)
