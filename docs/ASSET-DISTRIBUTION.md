@@ -7,7 +7,7 @@ one; this document is about the native mode.) That makes "how do the asset bytes
 real design question on a multi-node cluster, because **ClickHouse does not
 replicate the `user_files/` directory**: it is a node-local folder.
 
-This doc explains the trade-offs and what `deploy/install.sh` ships today.
+This doc explains the trade-offs and what `deploy/install.sh` ships.
 (A `docs/sql.html` mirror is also published to GitHub Pages on every tagged
 release, for an unauthenticated try-it-now demo — see `release.yml` — but
 that's a separate distribution channel from the cluster-serving problem
@@ -42,28 +42,19 @@ trade-offs. The key tension is **anonymous serving vs. native replication**: the
 served without credentials, which favours a static handler; native replication
 of the bytes favours a table, whose read path needs a user.
 
-### A. Push to each node's `user_files` (single node today)
+### A. Push to each node's `user_files` (what `deploy/install.sh` does)
 
-`install.sh` (without `--cluster`) creates a `File`-engine table that writes the
-bytes into the node's local `user_files/`. The handler serves them with a
-`type=static` `file://` rule. **`install.sh --cluster` is currently broken** on
-any cluster with more than one replica (see below); the multi-node variant of
-this option is the manual procedure in
-[Multi-node clusters](#multi-node-clusters-interim-manual).
+`install.sh` writes the bytes into every node's local `user_files/` using SQL
+only (no ssh, no per-node upload), and the handler serves them with a
+`type=static` `file://` rule. With `--cluster` the fan-out is a server-side
+`CREATE TABLE ... ON CLUSTER ... ENGINE = File('RawBLOB', ...) AS SELECT ...`;
+see [How the installer works](#how-the-installer-works).
 
 - **Pro:** the page is served statically, with no authentication — exactly what
-  an unauthenticated bootstrap page needs. Simple; pure `clickhouse-client`.
+  an unauthenticated bootstrap page needs. Pure SQL; verified per node, byte-exact.
 - **Con:** `user_files/` is node-local, so a replica **added or replaced later
-  starts empty** — you re-run the install after a scale-out. The install also
-  assumes every replica is up at the time it runs. **`--cluster` is broken:**
-  `INSERT INTO FUNCTION clusterAllReplicas(...)` fails on any cluster with more
-  than one replica (`Code 55 STORAGE_REQUIRES_PARAMETER`: Distributed write with
-  more than one shard and no sharding key, regardless of `internal_replication`),
-  and because the script runs under `set -e`, it exits after the failed `INSERT`
-  and never reaches its `DROP TABLE`, so the temporary `_asb_*` table may be left
-  behind (see the cleanup below). `install.sh --cluster` now refuses to run
-  against a multi-replica cluster. Tracked in #692; use the manual procedure
-  below, or option B.
+  starts empty** — re-run the install after a scale-out (it is idempotent and
+  repairs any node). Every node must be up while it runs.
 
 ### B. Store the asset in a Replicated table + `predefined_query_handler`
 
@@ -99,140 +90,231 @@ serve it with the same `file://` static handler.
 
 ## What this project ships
 
-`deploy/install.sh` implements **option A for a single node** (no `--cluster`).
-It is the simplest mechanism, needs only a shell toolchain (see below), and
-serves the bootstrap page anonymously. Multi-node clusters are not supported by
-the installer yet (#692); see the interim procedure below. The trade-off to be
-aware of:
+`deploy/install.sh` implements **option A**, for one node or a whole cluster.
+It is the simplest mechanism and serves the bootstrap page anonymously. The
+trade-off to be aware of:
 
-> After scaling a cluster out (or replacing a node), re-install (or re-run the
-> manual multi-node procedure) so the new replica's `user_files/` gets the assets.
+> After scaling a cluster out (or replacing a node), re-run the install so the
+> new replica's `user_files/` gets the assets.
 
 For deployments where that re-push is undesirable — autoscaling fleets, frequent
 node replacement — option B (replicated table) or option C (config-distributed
-file) removes it. Both are straightforward to adopt: option B is a schema +
-`predefined_query_handler` change to `deploy/`; option C is a change to how the
-file is placed on the nodes, with the existing `file://` handler unchanged.
+file) removes it.
 
-### Installer prerequisites
+## Installing with `deploy/install.sh`
 
-`deploy/install.sh` builds the SPA from a checkout, so it needs `npm` and
-`node` (22 or newer) as well as `clickhouse-client`; `curl` is used only for
-OIDC discovery (the CSP `connect-src` falls back to the Google default without
-it). Each GitHub release also ships a prebuilt `sql.html` asset; if you do not
-want to build, download it and upload it (plus a `sql-config.json`) to
-`user_files/` yourself, then install `http_handlers.xml` as above. The installer
-has no flag for this path.
-
-## Multi-node clusters (interim, manual)
-
-Until the installer is fixed (#692), pull each file onto every node with
-`ON CLUSTER` DDL. Each node fetches the URL itself and writes its own
-`user_files/` file. Run the sequence below **for both files** (`sql.html` and
-`sql-config.json`); every step is idempotent, so on any failure you simply
-start again from step 1.
-
-**1. Pre-clean** (removes leftovers from an earlier partial run; `IF EXISTS`
-because the table may exist on only some hosts):
-
-```sql
-DROP TABLE IF EXISTS default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
-DROP TABLE IF EXISTS default._asb_pull_sql_config_json ON CLUSTER '<cluster>' SYNC;
+```bash
+CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
+  --ch-host <any-node> --ch-user <deploy-user> --client-id <oauth-client-id> \
+  --cluster <cluster-name> \
+  [--artifact sql.html] [--pull-url <url>] [--transport native|http] [--http-port N] \
+  [--ddl-timeout 180] [--verify-only] [--secure]
 ```
 
-**2. Create** (each node writes its file as a side effect of the `CREATE`):
+| Flag | Meaning |
+|---|---|
+| `--cluster C` | fan out to every node of cluster `C` (as named in `system.clusters` on the node you connect to). Without it only the connected node is updated (behind a load balancer that is one random node). |
+| `--artifact PATH` | install this prebuilt `sql.html` (e.g. the release asset); skips the build, so no `npm`/`node` is needed. Required when there is no build tree (the release bundle). A zero-byte file is rejected before any write. |
+| `--pull-url URL` | cluster mode: every node downloads the SPA from `URL` itself (needs egress + the `URL` grant). The bytes at `URL` **must equal the artifact** (`--artifact`, or the build): the installer verifies length and SHA-256 against the local artifact, so anything else fails phase-1 verification and the live files stay untouched. Mutually exclusive with `--verify-only`. Default is **stage** mode: the installer uploads once to the connected node and the nodes copy it over the interserver connection (no egress). |
+| `--transport native\|http` | `native` (default) drives `clickhouse-client`; `http` uses `curl` against the HTTP(S) port (`--http-port`, default 8123 / 8443 with `--secure`). The password never appears in argv: with `http` it is sent from a 0600 header file, with `native` it is handed to `clickhouse-client` alone through its environment (never to `npm`, `node` or the OIDC `curl`). |
+| `--http-port N` | HTTP(S) port for `--transport http` (default 8123, or 8443 with `--secure`). |
+| `--ddl-timeout S` | `distributed_ddl_task_timeout` for the `ON CLUSTER` statements (default 180, **must be >= 1**: 0 makes ClickHouse run DDL asynchronously and the installer would verify too early). Also bounds a `--pull-url` download (`max_execution_time`, HTTP receive timeout). The cleanup at the end uses at most 30 s. `distributed_ddl_output_mode=throw` is pinned on every request, so a profile default of `never_throw` cannot hide a dead node. |
+| `--verify-only` | change nothing; compare every node's live files to the artifact and exit non-zero on any mismatch. |
+
+Credentials come from `CLICKHOUSE_PASSWORD` (or a prompt). **Check that a
+personal `~/.clickhouse-client/config.xml` is not overriding the host, user or
+password** you pass — `clickhouse-client` reads it and it can silently change
+which server or account the installer talks to.
+
+**One run at a time.** Concurrent installs or uninstalls against the same cluster are
+unsupported (there is no lock): they share the `_asb_t_*` temp tables and the
+`_asb_next_*` files and can corrupt each other.
+
+**Proxies.** The scripts call `curl -q` (so `~/.curlrc` is ignored) but curl still honours
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`; the installer adds no `--noproxy`. With
+`--transport http` over plain HTTP a configured proxy would see the credentials, so use
+`--secure` or unset the proxy variables.
+
+`uninstall.sh` takes the same connection flags and **empties** both files on
+every node (0 bytes, verified) and also the `_asb_next_*` copies (they hold a full copy of
+the SPA). SQL cannot delete a file, so `/sql` then answers
+`200` with an empty body; remove the `http_handlers` fragment from `config.d/`
+and reload to really disable the route.
+
+### How the installer works
+
+Two facts shape it, both proven on 25.8 OSS, 26.3 OSS and Antalya 25.8.33
+([spike 1](https://github.com/Altinity/altinity-sql-browser/issues/692#issuecomment-6412840355),
+and the follow-up design comment on #692): a write through `clusterAllReplicas`
+is rejected (`Code 55`), so fan-out has to be `CREATE ... ON CLUSTER ... AS SELECT`
+into a `File(RawBLOB)` table (the file survives the `DROP`); and **a failed
+`CREATE ... AS SELECT` truncates its target file to 0 bytes**. So the live file
+is never the target of anything that can fail on a remote source:
+
+1. **Preflight** (no writes): the node count from `system.clusters`, and a
+   `clusterAllReplicas` probe proving every node is reachable and cross-node reads authenticate.
+2. **Pre-clean:** `DROP TABLE IF EXISTS default._asb_* ON CLUSTER ... SYNC` (a leftover
+   table on one node would otherwise raise `TABLE_ALREADY_EXISTS` there), then both
+   `_asb_next_*` files are **emptied on every node**, so a stale next file from an earlier
+   run can never satisfy the phase-1 verification.
+3. **Phase 1 — next files.** Stage mode uploads the artifact to the connected node as
+   `_asb_stage_<token>.html` and every node copies it; `--pull-url` has every node
+   `url()`-download it (following redirects). Result: `_asb_next_sql.html` and
+   `_asb_next_sql-config.json` on every node. A failure here leaves the live files untouched.
+4. **Verify phase 1:** every node's next files match the expected length and SHA-256. The
+   check is strict: exactly one row per node (`count() = 1`), as many distinct node identities (`serverUUID()`, unique per server instance and independent of ports, so several instances
+   on one host stay distinct) as `system.clusters` lists, each with the expected length and hash - a dropped, extra or
+   duplicated-host row fails it. (`uninstall.sh`'s 0-byte check alone also accepts `count() = 0`.)
+5. **Phase 2 — promote.** Each node copies *its own* verified `_asb_next_*` over the live
+   `sql.html` / `sql-config.json` (a local read, so it cannot fail for network or auth reasons).
+6. **Verify live:** per-node table; success only when every node matches.
+7. **Always (trap):** the stage file is truncated and the temp tables dropped. Cleanup is **bounded**: its DDL timeout
+   is capped at `min(--ddl-timeout, 30)` s and every client call also carries a client-side bound of that
+   value + 10 s (10 s connect timeout). With `--transport http` (`curl --max-time`) that is a **total** bound. With the
+   native transport the call is wrapped in `timeout` (coreutils) and the bound is total when that command exists;
+   otherwise (e.g. stock macOS) only `clickhouse-client`'s `--send_timeout`/`--receive_timeout` apply, which are
+   **idle** timeouts, so a node that keeps trickling bytes could exceed it. Either way, with INT/TERM ignored while it
+   runs, a dead node cannot hold cleanup for more than that per statement (5 statements at most). The credential header file is removed even if the cleanup SQL
+   fails; live files are never touched by cleanup.
+
+`_asb_next_*` is **intentionally kept as a full copy** next to the live files
+(about 2 MB per node): it is the node-local, already-verified source for the
+promote step, so promotion is a local read that cannot fail on network or auth. A node that is down during an `ON CLUSTER` statement
+makes the installer fail after `--ddl-timeout`; the DDL stays queued and **replays
+when the node returns, against whatever source exists then** — so after a failure
+bring the node back and simply re-run the installer (idempotent) rather than
+waiting for the replay. Re-running also repairs a node whose `user_files/` was
+wiped or whose file was tampered with; `--verify-only` detects both.
+
+### Requirements
+
+- **Interserver authentication.** Cross-node reads (`clusterAllReplicas`) need the
+  cluster to have a `<secret>` in `remote_servers` (the operator default) or per-replica
+  `<user>/<password>`, and the deploy user must exist on **every** node. Without it the
+  preflight fails with `AUTHENTICATION_FAILED (516)`. The `<secret>` path is what CI tests; the
+  per-replica-credentials path was verified in a spike (#692) but is **not** in CI.
+- **Grants** (tested; `READ`/`WRITE ON FILE` are covered by `FILE`):
+
+  | Mode | Grants |
+  |---|---|
+  | stage (default) | `FILE ON *.*`, `CLUSTER ON *.*`, `REMOTE ON *.*`, `CREATE TABLE, DROP TABLE ON default.*`, `SELECT ON system.clusters` |
+  | `--pull-url` | the above plus `URL ON *.*` |
+  | `--verify-only` (no install grants) | `FILE`, `REMOTE`, `CREATE TEMPORARY TABLE ON *.*`, `SELECT ON system.clusters` |
+  | single node (no `--cluster`) | tested with the stage grants; `CLUSTER`/`REMOTE` are not exercised |
+  | `uninstall.sh` | same as stage |
+
+  These sets are **tested sufficient** (every mode runs in CI as a user holding exactly that set; the
+  `--verify-only` set also in a `deploy_verify` user). Minimality is only partly proven: the negative
+  tests drop `REMOTE` and `URL` (both are rejected before any live file is touched, with a hint) and
+  check that a `--verify-only`-only user cannot install; the other grants are not individually
+  removed. `CREATE TEMPORARY TABLE ON *.*` is a separate, **verify-only** requirement: revoking it from the
+  `deploy_verify` user makes `--verify-only` fail with `ACCESS_DENIED ... CREATE TEMPORARY TABLE ON *.*`
+  on both tested images (ClickHouse 26.3.18.32 and Antalya 25.8.33), while the install/uninstall user,
+  which holds `CREATE TABLE ON default.*` but no separate temporary-table grant, runs the same
+  `clusterAllReplicas(view(...))` verification successfully on both. So the stage, `--pull-url` and
+  uninstall rows do not list it; add it only for a verification user that lacks `CREATE TABLE`.
+- **Egress** (`--pull-url` only): every node must reach the URL and `remote_url_allow_hosts`
+  must permit it; GitHub release URLs redirect and are followed (up to 10 hops).
+
+### Verifying by hand
+
+Expected length and hash come from the artifact (`wc -c`, `sha256sum`); the query returns a
+row per node even when the file is missing:
 
 ```sql
-CREATE TABLE default._asb_pull_sql_html ON CLUSTER '<cluster>'
-  ENGINE = File('RawBLOB', 'sql.html')
-  AS SELECT * FROM url('<url-serving-sql.html>', 'RawBLOB')
-  SETTINGS engine_file_truncate_on_insert = 1;
-```
-
-For the config, use the JSON as a SQL string literal (this is what
-`install.sh` renders into `sql-config.json`; adapt issuer/client id/audience):
-
-```sql
-CREATE TABLE default._asb_pull_sql_config_json ON CLUSTER '<cluster>'
-  ENGINE = File('RawBLOB', 'sql-config.json')
-  AS SELECT '{"issuer":"https://accounts.google.com","client_id":"<client-id>"}' AS c
-  SETTINGS engine_file_truncate_on_insert = 1;
-```
-
-The JSON must be escaped for a SQL string literal: `'` becomes `\'` and `\`
-becomes `\\`. A normal config contains neither, so it can be pasted as is. The
-file is written without a trailing newline (harmless to the JSON parser).
-
-**3. Drop the helper tables** (the files survive the `DROP`):
-
-```sql
-DROP TABLE IF EXISTS default._asb_pull_sql_html ON CLUSTER '<cluster>' SYNC;
-DROP TABLE IF EXISTS default._asb_pull_sql_config_json ON CLUSTER '<cluster>' SYNC;
-```
-
-**4. Verify on every node.** Compute the expected values locally from the
-artifact you intended to deploy (`sha256sum sql.html`, or
-`shasum -a 256 sql.html` on macOS; `wc -c < sql.html` for the length; likewise
-for the config file, which is the exact JSON without a trailing newline). Then:
-
-```sql
-SELECT hostName(), length(c), lower(hex(SHA256(c))) AS sha256
-FROM clusterAllReplicas('<cluster>', file('sql.html', 'RawBLOB', 'c String'));
-
+SELECT id, host, n, len, sha FROM clusterAllReplicas('<cluster>', view(
+  SELECT toString(serverUUID()) id, hostName() host, count() n, sum(length(c)) len, lower(hex(SHA256(any(c)))) sha
+  FROM file('sql.html', 'RawBLOB', 'c String')))
+ORDER BY host, id SETTINGS engine_file_empty_if_not_exists = 1;
 SELECT count() FROM system.clusters WHERE cluster = '<cluster>';
 ```
 
-(Repeat the first query with `sql-config.json`.) The deployment is successful
-**only when** the first query returns exactly as many rows as the second
-query's node count, and every row shows the expected length and hash, for both
-files. A file missing on any node makes the verify query fail outright
-(`FILE_DOESNT_EXIST`), which also counts as a failure.
+Repeat with `sql-config.json`. Success means exactly as many rows as the second query's
+count, each with the expected `len`/`sha`.
 
-**On any failure** (an `ON CLUSTER` statement errors, some nodes cannot reach
-the URL, or step 4 does not match): run step 1 again and retry from the start.
-A failed `CREATE ... ON CLUSTER` can leave `_asb_pull_*` tables on the hosts
-where it succeeded; a retry without the pre-clean would hit
-`TABLE_ALREADY_EXISTS`, and a plain `DROP ... ON CLUSTER` (without `IF EXISTS`)
-fails with `UNKNOWN_TABLE` on hosts where the table was never created. The
-`IF EXISTS` pre-clean avoids both. *The `IF EXISTS` recovery sequence follows
-from the ClickHouse behavior observed in testing, but the full
-partial-failure-then-retry flow was not separately tested.*
+### Failure and retry
 
-**Keep `engine_file_truncate_on_insert = 1`:** without it a re-run appends and
-doubles the file.
-
-- **Grants** (minimal): `CLUSTER ON *.*`, `CREATE TABLE, DROP TABLE ON default.*`,
-  `FILE ON *.*`, `URL ON *.*`; verification also needs READ ON FILE and REMOTE.
-- **Egress:** every node must reach the URL (e.g. the release asset
-  `https://github.com/Altinity/altinity-sql-browser/releases/download/<tag>/sql.html`,
-  or an internal mirror), and the host must be allowed by
-  `remote_url_allow_hosts` if configured. GitHub release downloads redirect, so
-  `url()` must follow redirects, or use a mirror that serves the bytes directly.
-
-**Tested** on ClickHouse 25.8 OSS, 26.3 OSS and Antalya 25.8.33, on all four
-nodes of a 2-shard x 2-replica cluster: byte-exact, idempotent with the
-truncate setting. The `sql-config.json` literal statement was tested on a **single node of
-ClickHouse 26.3 only** (byte-exact against the intended JSON, including a URL
-with `?`/`&` and `\'`/`\\` escaping; idempotent on a re-run); its `ON CLUSTER`
-behaviour is the same mechanism proven for `sql.html`, but was not separately
-run on a multi-node cluster. **Not tested:** pulling from the real GitHub release
-URL (a local HTTP server was used, so redirect handling is unverified). This
-procedure is the planned basis of the fixed installer.
-
-### Cleaning up after a failed `install.sh --cluster`
-
-If you already ran the broken `--cluster` path, it may have left its temporary
-tables behind on the node you connected to (and on other nodes where the
-`ON CLUSTER` `CREATE` ran). Remove them:
+Every step is idempotent: on any failure fix the cause and re-run the same command. If the
+installer was killed, its trap may not have run: re-running pre-cleans the temp tables, but
+a stale `_asb_stage_<token>.html` on the connected node (a plain copy of the SPA, never
+served) stays. A killed installer (`kill -9`, power loss) can leave one such full-size file per killed run on
+the node it was connected to; SQL cannot glob-delete it, and the next run reuses nothing from it (it
+uploads a new stage under a new token). To find it and empty it by hand, on that node:
 
 ```sql
-DROP TABLE IF EXISTS default._asb_sql_html ON CLUSTER '<cluster>' SYNC;
-DROP TABLE IF EXISTS default._asb_sql_config_json ON CLUSTER '<cluster>' SYNC;
+SELECT DISTINCT _file, _size FROM file('_asb_stage_*', 'One');   -- lists every stage file with its size, 0-byte ones too; does not read contents
+INSERT INTO FUNCTION file('_asb_stage_<token>.html', 'RawBLOB')
+  SETTINGS engine_file_truncate_on_insert = 1 SELECT '';
 ```
 
-Dropping a `File`-engine table does not delete the file in `user_files/`.
+(Removing the file itself needs shell access to `user_files/`.)
 
-## Single-node installs
+### Tested
 
-None of the above applies to a single node: `install.sh` without `--cluster` writes
-the assets to the one node's `user_files/` and you are done.
+`tests/deploy/` (`npm run test:deploy`, CI job `deploy-integration`) runs the real scripts
+against Keeper + a 2-shard x 2-replica cluster with a `<secret>`, a password-protected deploy
+user holding exactly the grants above, and the shipped `http_handlers.xml`; every scenario
+checks the byte-exact SHA-256 of `/sql` and `/sql/config.json` served by every node. Covered:
+fresh install, upgrade, HTTP transport, `--pull-url` through a 2-hop redirect, wiped-node
+repair, `--verify-only` on a tampered node and as the minimal `deploy_verify` user, a node stopped
+before the run (the preflight rejects it), a node **killed mid-run** right after the stage upload
+(the installer fails; each surviving node then serves byte-exactly the previous or the new version,
+never an empty or partial file; the queued DDL replay settles; a re-install converges every node on the new one), an unreachable pull URL, missing `REMOTE` / `URL`
+grants, a single node, and uninstall. Images (exact tags): `clickhouse/clickhouse-server:26.3.18.32` and
+`altinity/clickhouse-server:25.8.33.20001.altinityantalya`, with `clickhouse/clickhouse-keeper:25.8.33.6` (CI; locally `clickhouse-keeper:25.8` works too).
+**Not covered:** the real GitHub release URL, TLS (`--secure`) against a live server, and the
+per-replica-credentials interserver path. The script logic (strict row checks, cleanup, the
+password's reach) is additionally unit-tested against a simulator.
+
+## Appendix: manual SQL (same statements the installer runs)
+
+For a restricted environment where you cannot run the script. Replace `<cluster>`; run for both
+files, and verify as above before and after promoting. Pull mode shown (`<url>` serves
+`sql.html`); `<json>` is the config JSON as a SQL string literal (`\` becomes `\\`, `'` becomes `\'`).
+
+```sql
+-- 1 pre-clean (drop the temp tables, then EMPTY the next files so a stale one cannot pass verification)
+DROP TABLE IF EXISTS default._asb_t_next_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_next_cfg  ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_live_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_live_cfg  ON CLUSTER '<cluster>' SYNC;
+CREATE TABLE default._asb_t_next_html ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', '_asb_next_sql.html')
+  AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert = 1;
+CREATE TABLE default._asb_t_next_cfg ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', '_asb_next_sql-config.json')
+  AS SELECT '' AS c SETTINGS engine_file_truncate_on_insert = 1;
+DROP TABLE IF EXISTS default._asb_t_next_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_next_cfg  ON CLUSTER '<cluster>' SYNC;
+
+-- 2 phase 1: next files (a failure here cannot hurt the live files)
+CREATE TABLE default._asb_t_next_html ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', '_asb_next_sql.html')
+  AS SELECT c FROM url('<url>', 'RawBLOB', 'c String')
+  SETTINGS max_http_get_redirects = 10, engine_file_truncate_on_insert = 1,
+           max_execution_time = 180, http_connection_timeout = 10, http_receive_timeout = 180;
+CREATE TABLE default._asb_t_next_cfg ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', '_asb_next_sql-config.json')
+  AS SELECT '<json>' AS c SETTINGS engine_file_truncate_on_insert = 1;
+DROP TABLE IF EXISTS default._asb_t_next_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_next_cfg  ON CLUSTER '<cluster>' SYNC;
+
+-- 3 verify _asb_next_sql.html and _asb_next_sql-config.json on every node (query above)
+
+-- 4 phase 2: promote each node's OWN copy
+CREATE TABLE default._asb_t_live_html ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', 'sql.html')
+  AS SELECT c FROM file('_asb_next_sql.html', 'RawBLOB', 'c String')
+  SETTINGS engine_file_truncate_on_insert = 1;
+CREATE TABLE default._asb_t_live_cfg ON CLUSTER '<cluster>'
+  ENGINE = File('RawBLOB', 'sql-config.json')
+  AS SELECT c FROM file('_asb_next_sql-config.json', 'RawBLOB', 'c String')
+  SETTINGS engine_file_truncate_on_insert = 1;
+DROP TABLE IF EXISTS default._asb_t_live_html ON CLUSTER '<cluster>' SYNC;
+DROP TABLE IF EXISTS default._asb_t_live_cfg  ON CLUSTER '<cluster>' SYNC;
+
+-- 5 verify sql.html and sql-config.json on every node
+```
+
+Never point the step-4 `CREATE` at a remote source: a failed `CREATE ... AS SELECT`
+empties its target. Keep `engine_file_truncate_on_insert = 1` (without it a re-run appends).

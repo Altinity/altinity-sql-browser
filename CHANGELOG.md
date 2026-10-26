@@ -9,6 +9,38 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **#692 (part 2): `deploy/install.sh --cluster` now works on multi-replica clusters.**
+  SQL-only, two-phase install with server-side fan-out: preflight, pre-clean,
+  phase 1 to `_asb_next_*` (upload once and copy, or `--pull-url`), per-node length
+  and SHA-256 verification, phase 2 local promote, verify live, always-cleanup. Live
+  files are only written from a node-local verified copy (a failed
+  `CREATE ... AS SELECT` truncates its target). New flags `--artifact`, `--pull-url`,
+  `--transport native|http`, `--http-port`, `--ddl-timeout`, `--verify-only`;
+  `deploy/uninstall.sh` empties the files on every node. A hung `--pull-url`
+  download is bounded (`max_execution_time` and HTTP timeouts from `--ddl-timeout`).
+  Single-node mode writes with `INSERT INTO FUNCTION file` so it needs only `FILE`
+  (a CTAS also demanded `INSERT` on the temp table). New integration suite
+  `tests/deploy/` (`npm run test:deploy`, CI job `deploy-integration`, matrix
+  ClickHouse 26.3 and Antalya 25.8.33) and the release bundle now ships `deploy/`.
+  `docs/ASSET-DISTRIBUTION.md` documents the procedure, grants and limits.
+  Review hardening: `--ddl-timeout` must be a decimal integer 1..999999 (0 means asynchronous DDL; no octal or overflow) and
+  `distributed_ddl_output_mode=throw` is pinned on both transports; pre-clean and
+  `uninstall.sh` empty the `_asb_next_*` files on every node; verification demands
+  one row per node, as many distinct nodes (`serverUUID()`, port-independent, so several
+  instances per host work) as the cluster has, and `count() = 1`
+  per row (uninstall's 0-byte check alone accepts `n = 0`); a zero-byte artifact is
+  refused before any write; cleanup ignores INT/TERM, is bounded (DDL timeout capped at 30 s plus client-side
+  timeouts on every call)
+  and always removes the credential header file; the password is no longer exported
+  (only `clickhouse-client` sees it; never `npm`/`node`/OIDC `curl`); `curl -q`
+  ignores `~/.curlrc`; no `--artifact` and no build tree is a clear error. Concurrent
+  runs are documented as unsupported. The integration suite gains a node killed
+  mid-run and a minimal `deploy_verify` user (a verify-only user needs
+  `CREATE TEMPORARY TABLE`; the install/uninstall user does not), checks all four nodes with positive controls, pins exact
+  image tags, and dumps container logs on any failure; the bundle CI step now runs
+  the shipped installer with `--dry-run --artifact`.
+
 ### Fixed
 - **#692 (part 1): deployment docs and installer output corrections.**
   `deploy/install.sh` printed `https://` even without `--secure` and omitted the

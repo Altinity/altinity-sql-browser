@@ -1,19 +1,35 @@
 #!/usr/bin/env bash
-# Install the Altinity SQL Browser onto a ClickHouse cluster:
-#   1. build the single-file SPA (dist/sql.html)
+# Install the Altinity SQL Browser onto a ClickHouse server or cluster, SQL-only
+# (no ssh, no per-node upload):
+#   1. build the single-file SPA (dist/sql.html), or take --artifact <path>
 #   2. render config.json from the OAuth args
 #   3. render dist/http_handlers.xml (CSP connect-src filled from OIDC discovery)
-#   4. upload the SPA + config into ClickHouse user_files/ (sql.html, sql-config.json)
+#   4. distribute sql.html + sql-config.json into every node's user_files/ with
+#      server-side fan-out, in two phases so a failure never half-writes the
+#      live files (see "How it works" below)
 #   5. print the next step to enable /sql with the rendered http_handlers.xml
 #
-# The password is read from the CLICKHOUSE_PASSWORD env var or prompted — never
-# passed on the command line (it would leak via `ps`/shell history).
+# The password is read from the CLICKHOUSE_PASSWORD env var or prompted - never
+# passed on the command line (it would leak via `ps`/shell history). The script
+# takes it out of its environment at once and hands it only to clickhouse-client
+# (as an env prefix on that one call); npm, node and the OIDC curl never see it.
+# With --transport http it travels in a 0600 header file handed to curl, not argv.
+# HTTP(S)_PROXY / NO_PROXY apply to every curl call (curl's own rules, no --noproxy):
+# in plain-HTTP mode a configured proxy would see the credentials; use --secure or
+# unset the proxy variables. ~/.curlrc is ignored (curl -q).
 #
-# Prerequisites: bash, node 22+ and npm (the installer builds the SPA from source),
-# curl (only for OIDC discovery; it falls back to the Google connect-src without
-# it), and clickhouse-client (not needed for --dry-run). To skip the build, take
-# the prebuilt sql.html from the GitHub release and upload it yourself; see
-# docs/ASSET-DISTRIBUTION.md.
+# Concurrent runs against the same cluster are UNSUPPORTED (no lock): two installs
+# share the _asb_t_* temp tables and _asb_next_* files and can corrupt each other.
+# Run one installer (or uninstaller) at a time.
+#
+# Internal test hooks (not a user interface; used only by tests/deploy/run.sh and the unit suite):
+# ASB_STAGE_TOKEN fixes the stage-file token; ASB_TEST_BARRIER[_POINT|_TIMEOUT] parks the run at a
+# defined point (see "TEST HOOK" below). Both are validated; unset => no behavior change.
+#
+# Prerequisites: bash, node 22+ and npm (unless --artifact), curl (OIDC
+# discovery; and the HTTP transport), clickhouse-client (native transport; not
+# needed for --dry-run). The prebuilt sql.html from a GitHub release works as
+# --artifact; see docs/ASSET-DISTRIBUTION.md.
 #
 # Usage:
 #   CLICKHOUSE_PASSWORD=... ./deploy/install.sh \
@@ -21,18 +37,43 @@
 #     --ch-user admin \
 #     --client-id <oauth-client-id> \
 #     [--issuer https://accounts.google.com] \
-#     [--audience <aud>] \         # audience-gated CH → also sends access_token
-#     [--ch-auth basic] \          # OSS CH + ch-jwt-verify → JWT as Basic password
-#     [--cluster my_cluster] \     # BROKEN on multi-replica clusters (#692); omit
+#     [--audience <aud>] \         # audience-gated CH -> also sends access_token
+#     [--ch-auth basic] \          # OSS CH + ch-jwt-verify -> JWT as Basic password
+#     [--cluster my_cluster] \     # fan out to every node of this cluster
+#     [--artifact dist/sql.html] \ # skip the build; use this prebuilt SPA
+#     [--pull-url <url>] \         # cluster mode: nodes fetch the SPA from this URL
+#                                  #   (default: upload once, nodes copy from the stage)
+#     [--transport native|http] [--http-port N] \
+#     [--ddl-timeout 180] \        # distributed_ddl_task_timeout, seconds (>= 1)
+#     [--verify-only] \            # only compare every node's live files to the artifact
 #     [--secure] \
 #     [--dry-run]                  # build + render config.json + http_handlers.xml, print, no CH contact
+#
+# How it works (cluster mode). Facts proven in #692: a failed CREATE TABLE ...
+# AS SELECT truncates its target file, so a remote source is never CTAS'd into
+# the live file directly.
+#   preflight  every node reachable, cross-node reads authenticate
+#   pre-clean  DROP TABLE IF EXISTS default._asb_* ON CLUSTER ... SYNC, and EMPTY the
+#              _asb_next_* files on every node (a stale one can never pass phase-1 verify)
+#   phase 1    fan out to _asb_next_* on every node (stage upload to the
+#              connected node, or url() pull), then verify length + sha256
+#   phase 2    only if every node verified: each node copies its own _asb_next_*
+#              over the live sql.html / sql-config.json, then verify again
+#   always     truncate the stage file, drop the temp tables (live files untouched)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=deploy/lib/asb-ch.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/asb-ch.sh"
 
 CH_HOST="" CH_USER="default" ISSUER="https://accounts.google.com"
 CLIENT_ID="" AUDIENCE="" CLUSTER="" SECURE=0 CH_AUTH="" DRY_RUN=0
+ARTIFACT="" PULL_URL="" TRANSPORT="native" HTTP_PORT="" DDL_TIMEOUT=180 VERIFY_ONLY=0
 while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ch-host|--ch-user|--client-id|--issuer|--audience|--ch-auth|--cluster|--artifact|--pull-url|--transport|--http-port|--ddl-timeout)
+      [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; } ;;
+  esac
   case "$1" in
     --ch-host) CH_HOST="$2"; shift 2 ;;
     --ch-user) CH_USER="$2"; shift 2 ;;
@@ -41,6 +82,12 @@ while [[ $# -gt 0 ]]; do
     --audience) AUDIENCE="$2"; shift 2 ;;
     --ch-auth) CH_AUTH="$2"; shift 2 ;;
     --cluster) CLUSTER="$2"; shift 2 ;;
+    --artifact) ARTIFACT="$2"; shift 2 ;;
+    --pull-url) PULL_URL="$2"; shift 2 ;;
+    --transport) TRANSPORT="$2"; shift 2 ;;
+    --http-port) HTTP_PORT="$2"; shift 2 ;;
+    --ddl-timeout) DDL_TIMEOUT="$2"; shift 2 ;;
+    --verify-only) VERIFY_ONLY=1; shift ;;
     --secure) SECURE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;   # build + render config.json + http_handlers.xml, print, no ClickHouse contact
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -50,53 +97,105 @@ done
 [[ -n "$CLIENT_ID" ]] || { echo "--client-id is required" >&2; exit 2; }
 # --ch-host is only needed to reach ClickHouse; a --dry-run just renders artifacts.
 [[ -n "$CH_HOST" || "$DRY_RUN" == 1 ]] || { echo "--ch-host is required" >&2; exit 2; }
+case "$TRANSPORT" in native|http) ;; *) echo "--transport must be native or http" >&2; exit 2 ;; esac
+[[ -z "$CLUSTER" ]] || validate_cluster_name "$CLUSTER"
+validate_pos --ddl-timeout "$DDL_TIMEOUT"
+[[ -z "$HTTP_PORT" ]] || validate_uint --http-port "$HTTP_PORT"
+if [[ -n "$PULL_URL" && "$VERIFY_ONLY" == 1 ]]; then echo "--pull-url and --verify-only are mutually exclusive" >&2; exit 2; fi
+if [[ -n "$ARTIFACT" && ! -f "$ARTIFACT" ]]; then echo "--artifact: no such file: $ARTIFACT" >&2; exit 2; fi
+BUILD_DIR="$ROOT/build"; BUILD_ENTRY="$BUILD_DIR/build.mjs"   # (spelled in pieces: see the build-order policy test)
+if [[ -z "$ARTIFACT" && ! ( -f "$ROOT/package.json" && -f "$BUILD_ENTRY" ) ]]; then
+  echo "no build tree next to this script (package.json or the SPA build entry point is missing); pass --artifact <path to sql.html>" >&2
+  exit 2
+fi
 
 if [[ "$DRY_RUN" != 1 && -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
   read -r -s -p "ClickHouse password for $CH_USER@$CH_HOST: " CLICKHOUSE_PASSWORD
   echo
 fi
-export CLICKHOUSE_PASSWORD
+# Keep the password out of the environment of everything but clickhouse-client.
+CH_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
+unset CLICKHOUSE_PASSWORD
 
-CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER")
-[[ "$SECURE" == 1 ]] && CH+=(--secure)
+# Stage token: unique per run so concurrent/aborted runs never share a stage file.
+STAGE_TOKEN="${ASB_STAGE_TOKEN:-$(date +%s)${RANDOM}${RANDOM}}"
+validate_token "$STAGE_TOKEN"
+STAGE_FILE="_asb_stage_${STAGE_TOKEN}.html"
 
-# user_files is node-local. NOTE: --cluster is currently broken (#692): the
-# clusterAllReplicas INSERT below fails on any cluster with more than one
-# replica (STORAGE_REQUIRES_PARAMETER). The guard fails CLOSED, before building:
-# proceed only when the count query succeeds and prints exactly 1.
-if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
-  GUARD_ERR_FILE="$(mktemp)"
-  if ! NODES=$("${CH[@]}" --query "SELECT count() FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>"$GUARD_ERR_FILE"); then
-    GUARD_ERR="$(head -n 1 "$GUARD_ERR_FILE")"
-    rm -f "$GUARD_ERR_FILE"
-    echo "ERROR: could not query system.clusters on ${CH_HOST} to check cluster" >&2
-    echo "'${CLUSTER}': ${GUARD_ERR:-no error output}" >&2
-    exit 2
+# TEST HOOK (internal; used only by tests/deploy/run.sh, like ASB_STAGE_TOKEN): with ASB_TEST_BARRIER=<abs path>
+# the run pauses at ASB_TEST_BARRIER_POINT (pre_fanout = after stage upload+verify, before the phase-1 fan-out;
+# pre_promote = after phase-1 verify, before phase 2), creates "<path>.reached" and waits for "<path>.go"
+# (hard cap ASB_TEST_BARRIER_TIMEOUT seconds, default 120, then fails). Unset => no behavior change at all.
+BARRIER="${ASB_TEST_BARRIER:-}" BARRIER_POINT="${ASB_TEST_BARRIER_POINT:-pre_fanout}"
+BARRIER_TIMEOUT="${ASB_TEST_BARRIER_TIMEOUT:-120}"
+if [[ -n "$BARRIER" ]]; then
+  [[ "$BARRIER" =~ ^/[A-Za-z0-9_./-]+$ && "$BARRIER" != *..* ]] || fail "invalid ASB_TEST_BARRIER '$BARRIER' (absolute path; allowed: A-Z a-z 0-9 _ . / -)"
+  echo "WARNING: test hook ASB_TEST_BARRIER active (${BARRIER}, point ${BARRIER_POINT}); never set this in production" >&2
+  [[ "$BARRIER_POINT" == pre_fanout || "$BARRIER_POINT" == pre_promote ]] || fail "invalid ASB_TEST_BARRIER_POINT '$BARRIER_POINT' (pre_fanout|pre_promote)"
+  [[ "$BARRIER_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] || fail "invalid ASB_TEST_BARRIER_TIMEOUT '$BARRIER_TIMEOUT'"
+fi
+unset ASB_TEST_BARRIER ASB_TEST_BARRIER_POINT ASB_TEST_BARRIER_TIMEOUT   # never inherited by child processes
+barrier() {
+  [[ -n "$BARRIER" && "$BARRIER_POINT" == "$1" ]] || return 0
+  : > "${BARRIER}.reached"
+  local i
+  for (( i = 0; i < BARRIER_TIMEOUT * 5; i++ )); do
+    [[ -e "${BARRIER}.go" ]] && return 0
+    sleep 0.2
+  done
+  fail "test barrier ${BARRIER}.go not released within ${BARRIER_TIMEOUT}s"
+}
+NEXT_HTML="_asb_next_sql.html" NEXT_CFG="_asb_next_sql-config.json"
+# Table names are independent of the file names they point at.
+T_NEXT_HTML="default._asb_t_next_html" T_NEXT_CFG="default._asb_t_next_cfg"
+T_LIVE_HTML="default._asb_t_live_html" T_LIVE_CFG="default._asb_t_live_cfg"
+ALL_TABLES=("$T_NEXT_HTML" "$T_NEXT_CFG" "$T_LIVE_HTML" "$T_LIVE_CFG")
+EXPECTED_NODES=1 ON_CLUSTER=""
+CLEANUP_ARMED=0 STAGE_USED=0
+CH=()
+
+TMP="$(mktemp -d)"
+cleanup() {
+  local rc=$?
+  trap '' INT TERM   # a second ^C must not abandon the cleanup half-done
+  trap - EXIT
+  set +e             # nothing below may stop us reaching `rm -rf "$TMP"` (it holds the credentials)
+  if [[ "$CLEANUP_ARMED" == 1 ]]; then
+    limit_ddl_timeout 30   # bounded: every cleanup call ends within min(--ddl-timeout,30)+10 s, even on a dead node
+    echo "==> Cleanup (stage file emptied, temp tables dropped; live files are never touched here)"
+    if [[ "$STAGE_USED" == 1 ]]; then
+      ch_query "INSERT INTO FUNCTION file('${STAGE_FILE}','RawBLOB') SETTINGS engine_file_truncate_on_insert=1 SELECT ''" >/dev/null \
+        || echo "WARN: could not empty stage file ${STAGE_FILE} on ${CH_HOST}; remove its contents by hand" >&2
+    fi
+    local t
+    for t in "${ALL_TABLES[@]}"; do
+      ch_query "DROP TABLE IF EXISTS ${t}${ON_CLUSTER} SYNC" >/dev/null \
+        || echo "WARN: could not drop ${t}; drop it by hand before re-running" >&2
+    done
   fi
-  rm -f "$GUARD_ERR_FILE"
-  NODES="${NODES//[[:space:]]/}"
-  if [[ ! "$NODES" =~ ^[0-9]+$ ]]; then
-    echo "ERROR: unexpected system.clusters output for cluster '${CLUSTER}':" >&2
-    echo "'${NODES}' (expected a node count). Refusing to continue." >&2
-    exit 2
-  elif (( NODES == 0 )); then
-    echo "ERROR: cluster '${CLUSTER}' was not found in system.clusters on ${CH_HOST}" >&2
-    echo "(0 replicas). Check the cluster name and the node you connected to." >&2
-    exit 2
-  elif (( NODES > 1 )); then
-    echo "ERROR: cluster '${CLUSTER}' has ${NODES} replicas. --cluster is currently" >&2
-    echo "broken on multi-node clusters (#692); user_files is node-local. Use the" >&2
-    echo "manual procedure: 'Multi-node clusters (interim, manual)' in" >&2
-    echo "docs/ASSET-DISTRIBUTION.md." >&2
-    exit 2
-  fi
+  rm -rf "$TMP"
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+set_cluster_clause
+
+# ---- reachability first, so a bad host/cluster fails before the slow build ----
+if [[ "$DRY_RUN" != 1 ]]; then
+  setup_transport
+  if [[ -n "$CLUSTER" ]]; then preflight_cluster; else info "==> Single-node mode: only ${CH_HOST} is updated (behind a load balancer, pass --cluster to reach every node)"; fi
 fi
 
-echo "==> Building @altinity/clickhouse-http"
-npm --prefix "$ROOT" run build:clickhouse-http
+if [[ -z "$ARTIFACT" ]]; then
+  echo "==> Building @altinity/clickhouse-http"
+  npm --prefix "$ROOT" run build:clickhouse-http
 
-echo "==> Building dist/sql.html"
-node "$ROOT/build/build.mjs"
+  echo "==> Building dist/sql.html"
+  node "$ROOT/build/build.mjs"
+  ARTIFACT="$ROOT/dist/sql.html"
+else
+  echo "==> Using prebuilt artifact $ARTIFACT (no build)"
+fi
 
 echo "==> Rendering config.json"
 CONFIG_JSON="{\"issuer\":\"${ISSUER}\",\"client_id\":\"${CLIENT_ID}\""
@@ -112,9 +211,8 @@ if [[ "$CH_AUTH" == "basic" ]]; then
   CONFIG_JSON+=",\"ch_auth\":\"basic\""
 fi
 CONFIG_JSON+="}"
-CONFIG_FILE="$(mktemp)"
-trap 'rm -f "$CONFIG_FILE"' EXIT
-printf '%s\n' "$CONFIG_JSON" > "$CONFIG_FILE"
+CONFIG_FILE="$TMP/config.json"
+printf '%s' "$CONFIG_JSON" > "$CONFIG_FILE"
 
 echo "==> Rendering http_handlers.xml (CSP connect-src from OIDC discovery)"
 # The CSP connect-src must allow same-origin ('self', for ClickHouse + config.json)
@@ -125,7 +223,7 @@ echo "==> Rendering http_handlers.xml (CSP connect-src from OIDC discovery)"
 ISSUER_ORIGIN="$(printf '%s' "$ISSUER" | grep -oiE '^https?://[^/]+' || true)"
 CONNECT_HOSTS="https://accounts.google.com https://oauth2.googleapis.com"
 DISC_URL="${ISSUER%/}/.well-known/openid-configuration"
-if DISC_JSON="$(curl -fsS --max-time 10 "$DISC_URL" 2>/dev/null)"; then
+if DISC_JSON="$(curl -q -fsS --max-time 10 "$DISC_URL" 2>/dev/null)"; then
   # Pull the origin (scheme://host[:port]) of token/authorization endpoints, add
   # the issuer origin, dedupe. Tolerates whitespace variations in the JSON.
   EP_ORIGINS="$(printf '%s' "$DISC_JSON" \
@@ -141,13 +239,10 @@ fi
 # Rewrite only the connect-src host list in the committed template; everything else
 # (the rest of the CSP, the other headers) is copied verbatim.
 HANDLERS_OUT="$ROOT/dist/http_handlers.xml"
+mkdir -p "$ROOT/dist"
 sed -E "s#(connect-src 'self')[^;]*#\1 ${CONNECT_HOSTS}#" \
   "$ROOT/deploy/http_handlers.xml" > "$HANDLERS_OUT"
 
-# Print the post-install instructions. Called after upload, and also by --dry-run
-# so the URL/scheme logic is testable without a ClickHouse. The native port
-# --ch-host is used with (9000/9440) differs from the HTTP(S) port the browser
-# needs, so print the HTTP defaults (8123 plain / 8443 TLS) explicitly.
 print_next_steps() {
   local scheme="http" port="8123" host="${CH_HOST:-<ch-host>}"
   if [[ "$SECURE" == 1 ]]; then scheme="https"; port="8443"; fi
@@ -172,43 +267,105 @@ http_authentication verifier. See README.
 EOT
 }
 
+
 if [[ "$DRY_RUN" == 1 ]]; then
   echo
-  echo "==> DRY RUN — no ClickHouse contact. Rendered artifacts:"
+  echo "==> DRY RUN - no ClickHouse contact. Rendered artifacts:"
   echo "--- config.json ---"
-  cat "$CONFIG_FILE"
+  cat "$CONFIG_FILE"; echo
   echo "--- dist/http_handlers.xml ---"
   cat "$HANDLERS_OUT"
   print_next_steps
   exit 0
 fi
 
-# Upload raw bytes via FORMAT RawBLOB on stdin — no base64, no command-line
-# length limit, written as the clickhouse process so perms are correct.
-upload() {  # upload <local-file> <user_files-filename>
-  local src="$1"
-  local fname="$2"
-  local tbl
-  tbl="default._asb_$(echo "$fname" | tr '.-' '__')"
-  local on_cluster=""
-  [[ -n "$CLUSTER" ]] && on_cluster="ON CLUSTER '${CLUSTER}'"
-  "${CH[@]}" --query "CREATE TABLE IF NOT EXISTS ${tbl} ${on_cluster} (content String)
-    ENGINE = File('RawBLOB', '/var/lib/clickhouse/user_files/${fname}')"
-  if [[ -n "$CLUSTER" ]]; then
-    "${CH[@]}" --query "INSERT INTO FUNCTION clusterAllReplicas('${CLUSTER}','${tbl%.*}','${tbl#*.}')
-      SETTINGS engine_file_truncate_on_insert = 1 FORMAT RawBLOB" < "$src"
-  else
-    "${CH[@]}" --query "INSERT INTO ${tbl}
-      SETTINGS engine_file_truncate_on_insert = 1 FORMAT RawBLOB" < "$src"
-  fi
-  "${CH[@]}" --query "DROP TABLE IF EXISTS ${tbl} ${on_cluster}"
+[[ -f "$ARTIFACT" ]] || fail "artifact not found: $ARTIFACT (the build did not produce it)"
+ART_LEN="$(size_of "$ARTIFACT")" ART_SHA="$(sha256_of "$ARTIFACT")"
+CFG_LEN="$(size_of "$CONFIG_FILE")" CFG_SHA="$(sha256_of "$CONFIG_FILE")"
+# A 0-byte file is what a failed write leaves behind and what the static handler serves as an
+# empty 200; installing one (or "verifying" it) would be a silent outage. Refuse before any write.
+(( ART_LEN > 0 )) || fail "artifact ${ARTIFACT} is empty (0 bytes); refusing to install it"
+(( CFG_LEN > 0 )) || fail "rendered config.json is empty; refusing to install"
+info "==> Artifact: ${ART_LEN} bytes, sha256 ${ART_SHA}"
+
+verify_live() { verify_files "live files" one sql.html "$ART_LEN" "$ART_SHA" sql-config.json "$CFG_LEN" "$CFG_SHA"; }
+
+if [[ "$VERIFY_ONLY" == 1 ]]; then
+  verify_live || fail "live files differ from the artifact"
+  info "==> Verified: every node serves the expected files."
+  exit 0
+fi
+
+# ---------------------------------------------------------------- phases
+CLEANUP_ARMED=1
+
+pre_clean() {
+  info "==> Pre-clean (drop leftover temp tables, empty stale ${NEXT_HTML} / ${NEXT_CFG})"
+  local t
+  for t in "${ALL_TABLES[@]}"; do ddl "drop ${t}" "DROP TABLE IF EXISTS ${t}${ON_CLUSTER} SYNC"; done
+  # Phase-1 verify must only ever see bytes written by THIS run, never a leftover next file.
+  ddl "empty ${NEXT_HTML} on every node" "$(write_file_stmt "$T_NEXT_HTML" "$NEXT_HTML" "SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "empty ${NEXT_CFG} on every node" "$(write_file_stmt "$T_NEXT_CFG" "$NEXT_CFG" "SELECT '' AS c SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "drop ${T_NEXT_HTML}" "DROP TABLE IF EXISTS ${T_NEXT_HTML}${ON_CLUSTER} SYNC"
+  ddl "drop ${T_NEXT_CFG}" "DROP TABLE IF EXISTS ${T_NEXT_CFG}${ON_CLUSTER} SYNC"
 }
 
-echo "==> Uploading sql.html"
-upload "$ROOT/dist/sql.html" "sql.html"
-echo "==> Uploading sql-config.json"
-upload "$CONFIG_FILE" "sql-config.json"
+# next-file source for the SPA, as the SELECT of the fan-out statement.
+# A hung or slow url() is bounded: per-query max_execution_time plus HTTP
+# connect/receive timeouts, all derived from --ddl-timeout (>= 1).
+PULL_TIMEOUT="$DDL_TIMEOUT"
+phase1_html_source() {
+  if [[ -n "$PULL_URL" ]]; then
+    printf "SELECT c FROM url('%s','RawBLOB','c String') SETTINGS max_http_get_redirects=10, engine_file_truncate_on_insert=1, max_execution_time=%s, http_connection_timeout=10, http_receive_timeout=%s" \
+      "$(sql_str "$PULL_URL")" "$PULL_TIMEOUT" "$PULL_TIMEOUT"
+  else
+    printf "SELECT c FROM clusterAllReplicas('%s', file('%s','RawBLOB','c String')) SETTINGS engine_file_empty_if_not_exists=1, engine_file_truncate_on_insert=1" "$CLUSTER" "$STAGE_FILE"
+  fi
+}
+
+phase1() {
+  info "==> Phase 1: distribute to ${NEXT_HTML} / ${NEXT_CFG}"
+  local up_name="$STAGE_FILE" rc
+  [[ -n "$CLUSTER" ]] || up_name="$NEXT_HTML"
+  if [[ -z "$PULL_URL" ]]; then
+    info "    uploading $(basename "$ARTIFACT") to ${CH_HOST}:${up_name}"
+    if [[ -n "$CLUSTER" ]]; then STAGE_USED=1; fi
+    ch_query "INSERT INTO FUNCTION file('${up_name}','RawBLOB') SETTINGS engine_file_truncate_on_insert=1 FORMAT RawBLOB" "$ARTIFACT" >/dev/null \
+      || fail "upload of the artifact failed"
+    if [[ -n "$CLUSTER" ]]; then
+      if check_rows "$STAGE_FILE" "$ART_LEN" "$ART_SHA" 0; then rc=0; else rc=$?; fi
+      (( rc == 2 )) && fail "could not verify the staged upload"
+      # The stage lives on the connected node only: exactly one node must hold it, and every node must answer.
+      [[ "$ROWS" == "$EXPECTED_NODES" && "$HOSTS" == "$EXPECTED_NODES" ]] \
+        || fail "stage verification returned ${ROWS} rows / ${HOSTS} distinct nodes; expected ${EXPECTED_NODES}"
+      [[ "$MATCH" == 1 ]] || fail "staged upload not found with the expected length/sha256 on exactly one node (matches: ${MATCH}, rows: ${ROWS})"
+    fi
+  fi
+  barrier pre_fanout
+  if [[ -n "$CLUSTER" || -n "$PULL_URL" ]]; then
+    ddl "fan out sql.html to every node" "$(write_file_stmt "$T_NEXT_HTML" "$NEXT_HTML" "$(phase1_html_source)")"
+  fi
+  ddl "write sql-config.json to every node" "$(write_file_stmt "$T_NEXT_CFG" "$NEXT_CFG" "SELECT '$(sql_str "$(cat "$CONFIG_FILE")")' AS c SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "drop ${T_NEXT_HTML}" "DROP TABLE IF EXISTS ${T_NEXT_HTML}${ON_CLUSTER} SYNC"
+  ddl "drop ${T_NEXT_CFG}" "DROP TABLE IF EXISTS ${T_NEXT_CFG}${ON_CLUSTER} SYNC"
+}
+
+phase2() {
+  info "==> Phase 2: promote ${NEXT_HTML} / ${NEXT_CFG} over the live files (local copy on each node)"
+  ddl "promote sql.html" "$(write_file_stmt "$T_LIVE_HTML" sql.html "SELECT c FROM file('${NEXT_HTML}','RawBLOB','c String') SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "promote sql-config.json" "$(write_file_stmt "$T_LIVE_CFG" sql-config.json "SELECT c FROM file('${NEXT_CFG}','RawBLOB','c String') SETTINGS engine_file_truncate_on_insert=1")"
+  ddl "drop ${T_LIVE_HTML}" "DROP TABLE IF EXISTS ${T_LIVE_HTML}${ON_CLUSTER} SYNC"
+  ddl "drop ${T_LIVE_CFG}" "DROP TABLE IF EXISTS ${T_LIVE_CFG}${ON_CLUSTER} SYNC"
+}
+
+pre_clean
+phase1
+verify_files "phase 1 (next files)" one "$NEXT_HTML" "$ART_LEN" "$ART_SHA" "$NEXT_CFG" "$CFG_LEN" "$CFG_SHA" \
+  || fail "phase 1 verification failed; live files were NOT touched"
+barrier pre_promote
+phase2
+verify_live || fail "phase 2 verification failed: some live files do not match; re-run the installer"
 
 echo
-echo "==> Assets uploaded to ClickHouse user_files/."
+echo "==> Assets uploaded to ClickHouse user_files/ and verified on ${EXPECTED_NODES} node(s)."
 print_next_steps

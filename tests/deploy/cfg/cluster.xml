@@ -1,0 +1,18 @@
+<clickhouse>
+  <listen_host>0.0.0.0</listen_host>
+  <zookeeper><node><host>@PFX@-k</host><port>9181</port></node></zookeeper>
+  <distributed_ddl><path>/clickhouse/task_queue/ddl</path></distributed_ddl>
+  <!-- 2 shards x 2 replicas. <secret> is what lets cross-node reads
+       (clusterAllReplicas) authenticate as the initiating user. -->
+  <remote_servers>
+    <c>
+      <secret>asb-test-secret</secret>
+      <shard><internal_replication>true</internal_replication>
+        <replica><host>@PFX@-n1</host><port>9000</port></replica>
+        <replica><host>@PFX@-n2</host><port>9000</port></replica></shard>
+      <shard><internal_replication>true</internal_replication>
+        <replica><host>@PFX@-n3</host><port>9000</port></replica>
+        <replica><host>@PFX@-n4</host><port>9000</port></replica></shard>
+    </c>
+  </remote_servers>
+</clickhouse>

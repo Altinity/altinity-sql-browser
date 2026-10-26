@@ -28,6 +28,7 @@ jobs:
       build: ${{ steps.filter.outputs.build }}
       bundle: ${{ steps.filter.outputs.bundle }}
       docker: ${{ steps.filter.outputs.docker }}
+      deploy: ${{ steps.filter.outputs.deploy }}
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v7
@@ -98,6 +99,15 @@ jobs:
               - 'package-lock.json'
               - '.github/workflows/**'
               - 'packages/**'
+            # #692: the installer integration test (real Keeper + 2x2 ClickHouse
+            # cluster in Docker). The installer, its tests, and the workflow.
+            deploy:
+              - 'deploy/**'
+              - 'tests/deploy/**'
+              - 'tests/helpers/deploy-*'
+              - 'tests/unit/*-script.test.js'
+              - 'package.json'
+              - '.github/workflows/**'
             docker:
               - 'Dockerfile'
               - 'deploy/caddy/**'
@@ -239,7 +249,7 @@ jobs:
           set -euo pipefail
           tmp=$(mktemp -d)
           tar -C "$tmp" -xzf dist/altinity-sql-browser.tar.gz --strip-components=1
-          for f in sql.html local.py sql-browser.xml run.sh VERSION; do
+          for f in sql.html local.py sql-browser.xml run.sh VERSION deploy/install.sh deploy/uninstall.sh deploy/lib/asb-ch.sh deploy/http_handlers.xml; do
             test -f "$tmp/$f" || { echo "missing $f in bundle" >&2; exit 1; }
           done
           python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$tmp/local.py"
@@ -253,13 +263,18 @@ jobs:
           curl -fsS "http://localhost:8901/config.json" \
             | python3 -c "import sys,json; assert json.load(sys.stdin)['hosts'], 'no hosts parsed'"
           kill "$pid"
+          # The shipped installer, from the extracted bundle, with no build tree: --artifact is the
+          # whole contract. --dry-run renders config + http_handlers.xml; the (unreachable) OIDC
+          # discovery must be a soft failure.
+          "$tmp/deploy/install.sh" --dry-run --artifact "$tmp/sql.html" --client-id x --issuer http://idp.invalid
+          test -s "$tmp/dist/http_handlers.xml"
       - name: Lint the installer (shellcheck)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           # #630 Phase 8 modifies both build wrappers (each now composes the
           # package build explicitly) — lint both alongside the existing root
           # installer shell script.
-          shellcheck install.sh build/bundle.sh deploy/install.sh
+          shellcheck install.sh build/bundle.sh deploy/install.sh deploy/uninstall.sh deploy/lib/asb-ch.sh tests/deploy/run.sh
 
   # Exercise the published runtime shape, including Caddy's static
   # Content-Encoding negotiation. Node decodes each selected sidecar, so the
@@ -407,12 +422,52 @@ jobs:
           path: test-results/
           retention-days: 14
 
+  # #692: run the real installer against a Keeper + 2-shard x 2-replica
+  # ClickHouse cluster (with <secret>) and assert, per node and byte-exact, what
+  # /sql and /sql/config.json serve after install, upgrade, repair, partial
+  # failure, and uninstall. Matrix over the supported server flavours; pin exact
+  # tags so a moving image cannot turn this red unrelated to the diff.
+  deploy-integration:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.deploy == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - clickhouse/clickhouse-server:26.3.18.32
+          - altinity/clickhouse-server:25.8.33.20001.altinityantalya
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Build the artifact
+        run: npm run build
+      - name: Installer integration test
+        env:
+          CH_IMAGE: ${{ matrix.image }}
+        run: npm run test:deploy
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: deploy-test-logs-${{ strategy.job-index }}
+          path: dist/deploy-test-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Require this stable check in branch protection. It runs even when some
   # expensive jobs were correctly skipped and fails if any applicable job did.
   gate:
     name: CI gate
     if: always()
-    needs: [changes, examples, test, size, bundle, docker-smoke, e2e]
+    needs: [changes, examples, test, size, bundle, docker-smoke, deploy-integration, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify applicable jobs
